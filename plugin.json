@@ -1,0 +1,10 @@
+{
+  "name": "cognitive-frameworks",
+  "version": "1.4.0",
+  "description": "Behavioral protocols for AI assistants. OWL (Operational Wisdom Layer) — pre-implementation reasoning. ANCHOR (Operational Persistence System) — execution continuity. DOX — documentation contract hierarchy. FUSE (Functional Utility Selection & Execution) — tool-call strategy and evidence interpretation. FLOW (Friction, Load, Overhead, and Workload) — operational efficiency evaluation, triggered by ten drag areas. WARD — authority, trust-boundary, secrets, and blast-radius governance. SISPIS — decision-routing and response calibration. Pipeline: OWL → ANCHOR → DOX → FUSE + WARD → FLOW → SISPIS.",
+  "author": {
+    "name": "B-A-M-N"
+  },
+  "license": "MIT",
+  "keywords": ["owl", "anchor", "dox", "fuse", "flow", "ward", "sispis", "behavioral-protocols", "decision-routing", "code-reasoning", "documentation-contracts", "operational-persistence", "tool-selection", "execution-strategy", "evidence-interpretation", "operational-efficiency", "retry-discipline", "backpressure", "cache-hygiene", "authority", "trust-boundaries", "blast-radius", "secrets"]
+}
