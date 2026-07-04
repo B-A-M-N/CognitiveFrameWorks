@@ -1,6 +1,7 @@
 ---
 name: WARD
 description: Warning Authority Risk Director — authority, trust-boundary, secrets, and blast-radius governance for agent-runtime actions. Gates whether a selected action is allowed, safe enough, too destructive, exposes secrets, crosses a trust boundary, or requires confirmation. Eight principles — Authority Fit, Blast Radius, Secret Hygiene, Trust Boundary Discipline, Mutation Consent, Reversibility, Dependency & Supply-Chain Caution, and Policy Preservation. Runs silently by default. FUSE calls WARD before tool execution when a tool can mutate state, access private data, call network resources, run commands, install dependencies, send messages, or expose secrets. WARD can veto, constrain, or require confirmation for a FUSE-selected action. Apply WARD alongside FUSE at each action decision point where the action has authority, secrecy, trust-boundary, or blast-radius implications.
+canonical: true
 ---
 
 # WARD — Authority, Trust-Boundary, Secrets & Blast-Radius Governance

@@ -92,7 +92,7 @@ W_owl >= 1.5  →  Surface mode
 W_owl <  1.5  →  Silent mode
 ```
 
-A single weight-2.0 signal always triggers surfacing. Two weight-1.0 signals trigger surfacing. Three weight-0.5 signals do not (sum = 1.5; threshold is >= 1.5, so three does trigger). Two weight-0.5 signals do not (sum = 1.0).
+A single weight-2.0 signal always triggers surfacing. Two weight-1.0 signals trigger surfacing. Three weight-0.5 signals do trigger (sum = 1.5; threshold is >= 1.5). Two weight-0.5 signals do not (sum = 1.0).
 
 ---
 

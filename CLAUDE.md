@@ -48,7 +48,7 @@ Running the full seven-skill pipeline on every request is unnecessary overhead. 
 **Rules:**
 - DOX only activates when editing files in a DOX-enabled project (one with AGENTS.md). It does not run on conversational or analysis-only tasks.
 - ANCHOR only activates when a task spans multiple turns or involves state that would be costly to lose. It does not run on tasks under 5 turns with no state accumulation.
-- OWL always runs unless the task is purely mechanical with no code to read and no ambiguity (see OWL Suppression Conditions).
+- OWL always runs unless the task is purely mechanical with no code to read and no ambiguity (see OWL Suppression Conditions in `references/signal-schema.md`).
 - FUSE activates whenever tools are being called. It suppresses for single obvious calls (known target, only fitting tool, no retry/parallel/evidence ambiguity). It does not run on conversational or analysis-only tasks.
 - WARD activates whenever tools can mutate state, access private data, call network resources, run commands, install dependencies, send messages, or expose secrets. It suppresses for pure reads of project files with no boundary crossing, no secret exposure, and no policy implication.
 - FLOW activates only when the implementation touches one of ten trigger areas:

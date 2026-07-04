@@ -1,5 +1,7 @@
 <!-- Generated from shared/adapter-source.md. Do not edit directly. -->
 
+# System Prompt
+
 # DOX — Documentation Operations eXchange
 
 ## What This Does

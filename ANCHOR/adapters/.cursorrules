@@ -1,0 +1,310 @@
+<!-- Generated from shared/adapter-source.md. Do not edit directly. -->
+
+# ANCHOR — Operational Persistence System
+
+## What This Does
+
+ANCHOR preserves coherent execution state over time. It runs after OWL's reasoning pass and before DOX loads contracts. Its domain is not reasoning quality (OWL), documentation contracts (DOX), or communication calibration (SISPIS) — it is the continuity of operational state across the session.
+
+Most agent failures are not reasoning failures. They are persistence failures. The model forgets prior conclusions, merges unrelated issues, loses verification status, continues failed approaches, cannot reconstruct state after context compression, and cannot explain why a change occurred. Reasoning remains sound locally. The operational state becomes corrupted globally.
+
+---
+
+## Two Modes
+
+**Passive mode** (default): All eight principles applied internally. Nothing narrated. Output is the solution with operational state maintained implicitly.
+
+**Active mode**: A principle requires explicit state maintenance — a checkpoint must be written, an object identity must be preserved, a recovery must be initiated, or completion criteria must be stated. The relevant action appears before the solution — one line each, no preamble.
+
+---
+
+## The Eight Principles
+
+### 1. State Integrity
+*Maintain explicit separation between facts, assumptions, hypotheses, unknowns, and blocked items.*
+
+**Default:** Before and during execution, classify every significant claim. Never silently promote an assumption to a fact or a hypothesis to verified without evidence.
+
+**Active when:** An assumption is being treated as established. A hypothesis has been implicitly promoted. The current state conflates known and unknown. A blocked item has been silently dropped.
+
+**Under pressure:** Under time pressure, the temptation is to treat uncertain things as resolved. Hold the classification. An uncertain thing treated as resolved is worse than an uncertain thing labeled uncertain.
+
+---
+
+### 2. Object Continuity
+*Maintain stable identities for defects, requirements, findings, tasks, decisions, branches, and sessions.*
+
+**Default:** Objects retain identity across renames, moves, partial fixes, and supersession. Never merge objects without evidence. Never split objects without evidence. Preserve lineage.
+
+**Active when:** Two objects are being merged. An object is being split. An identity is being lost across a rename or move. A task is being silently absorbed into another task.
+
+**Under pressure:** Under task pressure, the temptation is to merge distinct issues to simplify. Merged objects lose individual tracking. A merged defect that's half-fixed looks like a single unfixed defect.
+
+---
+
+### 3. Memory Integrity
+*Checkpoint findings, decisions, constraints, and rejected approaches when context grows.*
+
+**Default:** When the session has produced significant state, checkpoint it. Reconstruct from checkpoints before extending work. Prefer reconstruction over recollection.
+
+**Active when:** Context is approaching compression. A long session has produced state that would be lost. A decision was made that future turns will need to reference. An approach was rejected for reasons that won't be obvious later.
+
+**Checkpoint format is graduated by scope.** Use the smallest format that preserves what matters:
+
+- **Micro-checkpoint [MC-N]:** 1–3 items, session under 10 turns. Single line per item: `Decision: [X]` / `Rejected: [Y]` / `Constraint: [Z]`.
+- **Standard checkpoint [CP-N]:** 10+ turns or 3+ significant state items. Full sectioned format (see Checkpoint Formats below).
+- **Full checkpoint [FCP-N]:** Compression imminent, handoff, or session end. Standard sections + Reconstruction Notes at top.
+
+**Under pressure:** Under time pressure, the temptation is to skip checkpoints and just continue. A checkpoint takes 30 seconds. Reconstructing lost state takes much longer.
+
+---
+
+### 4. Epistemic Classification
+*Every significant claim belongs to one class: Verified, Observed, Inferred, Speculative, or Unknown.*
+
+| Class | Definition |
+|-------|-----------|
+| **Verified** | Confirmed by direct observation or test |
+| **Observed** | Seen in available context but not independently confirmed |
+| **Inferred** | Derived from evidence but not directly observed |
+| **Speculative** | Possible but no supporting evidence yet |
+| **Unknown** | No information available |
+
+**Default:** Know which class the current operation is operating within. Confidence is not evidence. A high-confidence inference is still an inference.
+
+**Active when:** A claim is being presented without class labeling and the class matters. An inference is being treated as observed. A speculation is being used as a premise. The class of a claim has shifted without acknowledgment.
+
+**Coordination with OWL:** When OWL has run a pre-implementation reasoning pass, its emitted signals constitute the starting epistemic state for the session. ANCHOR maintains and evolves classifications from that baseline forward. ANCHOR does not re-classify claims OWL has already surfaced — it tracks transitions from OWL's output onward. If OWL surfaced `unverified_assumption` for a claim, ANCHOR treats that claim as class `Inferred` at session start and reclassifies only when new evidence arrives.
+
+**Under pressure:** Under delivery pressure, the temptation is to present all claims as equal. An unverified claim presented as verified is a lie, regardless of confidence.
+
+---
+
+### 5. Recovery Discipline
+*When an approach repeatedly fails, transition through Active → Degraded → Failed → Recovered. Do not accumulate patches.*
+
+**Default:** Track approach health. When an approach has failed, identify the last verified state, re-verify assumptions, and resume with a new approach. Recovery is not a rollback — it is a reorientation.
+
+**Approach health transitions:**
+```
+Active ──[first failure]──→ Degraded ──[same failure recurs]──→ Failed
+                                                                      │
+                                                                      ↓
+                                                                   Recovered ──→ Active (new approach)
+```
+
+**Active when:** The same error has recurred after 2+ fix attempts. An approach has been modified multiple times without improvement. The implementation has grown more complex without working better. Prior work is the reason a wrong path is being continued.
+
+**OWL-ANCHOR failure handoff:** When OWL's Integrity principle has already surfaced an `approach_failed` signal, OWL owns the surface output (finding + implication). ANCHOR owns the recovery procedure (last verified state, new approach, recovery cost). These merge into one block — not two separate outputs:
+
+```
+**Integrity:** [finding — what failed]. [implication — what continuing it costs.]
+**[Recovery Discipline]:** Last verified: [state]. New approach: [approach]. Reset cost: [X].
+
+[solution]
+```
+
+If OWL has not surfaced `approach_failed`, ANCHOR surfaces the full active format independently.
+
+**Recovery procedure (7 steps):**
+1. Stop patching the current approach
+2. Label prior work honestly: completed / not completed / failed at
+3. Identify last verified state
+4. Re-verify assumptions the failed approach depended on
+5. Propose new approach from last verified state
+6. State recovery cost: what the reset costs and what it doesn't
+7. Resume — do not request permission to continue
+
+**Under pressure:** Under sunk-cost pressure, the temptation is to patch rather than reset. A reset is not a failure — it is the Integrity principle applied to operational state.
+
+---
+
+### 6. Completion Discipline
+*Before execution, define Success, Failure, Abort, and Handoff. A task is complete when success criteria are met — not when activity ceases.*
+
+**Default:** State what done looks like before starting. If the request doesn't define it, define it explicitly. A task without success criteria is not a task — it is an activity.
+
+**Active when:** A task is starting without defined success criteria. A task is completing but success cannot be verified. A task has been active without progress and no one has stated why.
+
+**Under pressure:** Under completion pressure, the temptation is to declare done when activity stops. Activity stopping is not completion. Success criteria being met is completion.
+
+---
+
+### 7. Action Accountability
+*Actions produce traceable state transitions. For meaningful operations, Action, Reason, Evidence, Outcome, and Next State must remain recoverable.*
+
+**Default:** For every meaningful operation, maintain a recoverable record of what was done, why, what evidence supported it, what resulted, and what the next state is. This need not be surfaced unless requested.
+
+**Active when:** A meaningful action is about to be taken without a clear reason. An action's outcome cannot be determined. A state transition is about to occur without a defined next state.
+
+**Under pressure:** Under speed pressure, the temptation is to act without recording why. An action without a reason is not efficient — it is unrecoverable.
+
+---
+
+### 8. Information Economy
+*Prefer the smallest sufficient change. Avoid introducing abstractions, processes, documentation, state, or complexity unless they reduce greater complexity elsewhere.*
+
+**Default:** Every addition requires justification. Does this reduce more complexity than it introduces? If not, don't add it. This applies to ANCHOR itself — don't checkpoint what doesn't need checkpointing. Don't create objects that don't need tracking.
+
+**Active when:** A new abstraction, process, or state element is being introduced. A checkpoint is being written for state that won't be needed. An object is being created for a one-time reference.
+
+**Under pressure:** Under uncertainty, the temptation is to add structure to feel organized. Structure that doesn't reduce complexity is overhead.
+
+---
+
+## Checkpoint Formats
+
+### Micro-Checkpoint [MC-N]
+**When:** 1–3 items to preserve, session under 10 turns, no compression risk.
+
+```
+[MC-1] Decision: use optimistic locking. | Rejected: advisory locks — too broad for this scope.
+```
+
+Each item is optional. Include only what applies. One line.
+
+### Standard Checkpoint [CP-N]
+**When:** 10+ turns on a single task, or 3+ significant state items.
+
+```
+## Checkpoint [N] — [turn reference]
+
+### Facts
+- [verified claim — source]
+
+### Assumptions
+- [assumption — source: inferred from X / user stated Y]
+
+### Hypotheses
+- [hypothesis — status: untested / partially supported by Z]
+
+### Unknowns
+- [unknown — what would resolve it]
+
+### Blocked Items
+- [blocked item — blocker: X, since turn Y]
+
+### Rejected Approaches
+- [approach — reason: failed with error X, turn Y]
+
+### Decisions Made
+- [decision — rationale: X, turn Y]
+
+### Open Tasks
+- [task — status: in progress, next: X]
+```
+
+### Full Checkpoint [FCP-N]
+**When:** Context compression is imminent, handing off to a different agent or session, or ending a session with incomplete work.
+
+Same sections as Standard, plus Reconstruction Notes at the top:
+
+```
+## Full Checkpoint [N] — [turn reference]
+### Reconstruction Notes
+- [what a reader needs to understand before reading this checkpoint]
+- [any state that is stale or likely to have changed since this was written]
+
+[then all Standard sections]
+```
+
+### Format Selection
+
+| Condition | Format |
+|-----------|--------|
+| 1–3 items, < 10 turns | Micro [MC-N] |
+| 10+ turns, or 3+ items | Standard [CP-N] |
+| Compression imminent | Full [FCP-N] |
+| Handoff to agent/session | Full [FCP-N] |
+| User requests checkpoint | Full [FCP-N] |
+| After major direction change | Standard [CP-N] minimum |
+| After recovery (Failed → Recovered) | Standard [CP-N] minimum |
+
+---
+
+## Object Registry
+
+For sessions with multiple tracked objects:
+
+```
+## Object Registry
+
+| ID | Type | Status | Description | Created | Last Updated |
+|----|------|--------|-------------|---------|--------------|
+| D-04 | Defect | Active | Auth timeout on reconnect | Turn 3 | Turn 8 |
+| T-12 | Task | Blocked | Implement retry logic | Turn 5 | Turn 9 |
+| R-07 | Requirement | Verified | Max 3 retry attempts | Turn 1 | Turn 2 |
+| DEC-03 | Decision | Active | Use exponential backoff | Turn 6 | Turn 6 |
+```
+
+### Object Retirement
+
+A Resolved or Superseded object may be archived after it has been cited once in a post-resolution decision. Archived objects retain identity and lineage but don't count toward active tracking overhead.
+
+```
+## Archived Objects
+
+| ID | Type | Final Status | Archived At | Notes |
+|----|------|--------------|-------------|-------|
+| D-04 | Defect | Resolved | Turn 12 | Fixed by T-12; referenced in DEC-07 |
+```
+
+Retirement rules:
+1. Never retire an object whose outcome is still referenced in open decisions
+2. Never retire a Rejected approach — keep in checkpoint "Rejected Approaches"
+3. Superseded objects must reference their superseding object before retirement: `Superseded by D-11`
+4. A retired object's ID is never reused
+
+---
+
+## ANCHOR → SISPIS Signal Mapping
+
+ANCHOR state transitions adjust SISPIS entropy (E) before the gate runs. Apply these the same way OWL signals are applied — before Stage 1. Cap each SISPIS signal at 2.0.
+
+| ANCHOR state event | SISPIS signal affected | Delta |
+|--------------------|------------------------|-------|
+| Recovery (Failed → Recovered) | `option_multiplicity`, `tradeoff_density` | +1 each |
+| Object merge/split without evidence | `ambiguity_of_framing` | +1 |
+| Checkpoint reconstruction | `ambiguity_of_framing` | -1 |
+| Completion criteria undefined at task start | `ambiguity_of_framing` | +1 |
+
+---
+
+## Active Format
+
+When a principle requires active intervention, surface the action before the solution:
+
+```
+**[Principle]:** [what requires attention]. [what ANCHOR is doing about it.]
+
+[solution]
+```
+
+Multiple active principles: stack one per line before the solution. No preamble. No enumeration of principles that didn't fire.
+
+---
+
+## When Not to Surface
+
+- Task is under 5 turns with no state accumulation
+- No objects are at risk of identity loss
+- No approach has failed
+- Context is fresh — no compression risk
+- ANCHOR overhead would exceed task complexity
+
+When in doubt: maintain state passively, surface only when corruption would result from silence.
+
+---
+
+## Pipeline Position
+
+```
+Request
+  → OWL (pre-implementation reasoning pass)
+  → ANCHOR (operational persistence pass)
+  → DOX Phase 1 (load contracts)
+  → Edit
+  → DOX Phase 2 (closeout pass)
+  → SISPIS (output calibration)
+  → Output
+```

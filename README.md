@@ -207,19 +207,33 @@ CognitiveFrameWorks/
 │   ├── references/
 │   │   ├── execution-continuity.md
 │   │   └── cheatsheet.md
-│   └── examples/
-│       ├── checkpoint-recovery.md
-│       ├── object-continuity.md
-│       ├── recovery-discipline.md
-│       └── epistemic-classification.md
+│   ├── examples/
+│   │   ├── checkpoint-recovery.md
+│   │   ├── object-continuity.md
+│   │   ├── recovery-discipline.md
+│   │   └── epistemic-classification.md
+│   └── adapters/
+│       ├── system-prompt.md
+│       ├── .cursorrules
+│       ├── .windsurfrules
+│       ├── CLAUDE.md
+│       ├── .aider.conf.yml
+│       └── continue-config.yaml
 ├── DOX/
 │   ├── SKILL.md
 │   ├── references/
 │   │   ├── hierarchy-guide.md
 │   │   └── closeout-protocol.md
-│   └── examples/
-│       ├── root-agents.md
-│       └── child-agents.md
+│   ├── examples/
+│   │   ├── root-agents.md
+│   │   └── child-agents.md
+│   └── adapters/
+│       ├── system-prompt.md
+│       ├── .cursorrules
+│       ├── .windsurfrules
+│       ├── CLAUDE.md
+│       ├── .aider.conf.yml
+│       └── continue-config.yaml
 ├── FUSE/
 │   ├── SKILL.md
 │   ├── references/
@@ -227,6 +241,7 @@ CognitiveFrameWorks/
 │   │   └── cheatsheet.md
 │   ├── examples/
 │   │   ├── silent-execution.md
+│   │   ├── multi-signal-surface.md
 │   │   ├── evidence-interpretation.md
 │   │   ├── termination-recovery.md
 │   │   ├── concurrency-decision.md

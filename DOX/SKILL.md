@@ -50,8 +50,8 @@ When Phase 1 loads a contract and finds a constraint that applies to the current
 ```
 
 **Integration with OWL and ANCHOR:**
-- OWL's Locality and Conservation principles should absorb this signal. A contract constraint on scope maps to `scope_expansion` risk; a constraint on behavior maps to `behavior_change_risk`.
-- ANCHOR's State Integrity principle should absorb it as a verified constraint (class: Observed from the AGENTS.md).
+- OWL's Locality and Conservation principles absorb this as scope and behavior constraints — a constraint on scope maps to `scope_expansion` risk, a constraint on behavior maps to `behavior_change_risk`.
+- ANCHOR's State Integrity absorbs it as a verified constraint (class: Observed from the AGENTS.md).
 - DOX does not score entropy or emit signal weights — it surfaces the constraint once, before the edit, in the format above.
 
 ---

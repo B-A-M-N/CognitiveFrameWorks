@@ -40,21 +40,13 @@ def build_adapter_outputs() -> Dict[Path, str]:
         adapter_dir = skill_dir / "adapters"
 
         for name in ["CLAUDE.md", ".cursorrules", ".windsurfrules"]:
-            target = adapter_dir / name
-            if target.exists():
-                outputs[target] = MARKDOWN_HEADER + canonical
+            outputs[adapter_dir / name] = MARKDOWN_HEADER + canonical
 
-        system_prompt = adapter_dir / "system-prompt.md"
-        if system_prompt.exists():
-            outputs[system_prompt] = MARKDOWN_HEADER + "# System Prompt\n\n" + canonical
+        outputs[adapter_dir / "system-prompt.md"] = MARKDOWN_HEADER + "# System Prompt\n\n" + canonical
 
-        aider = adapter_dir / ".aider.conf.yml"
-        if aider.exists():
-            outputs[aider] = YAML_HEADER + "system-prompt: |\n" + indent_markdown(canonical.rstrip(), 2)
+        outputs[adapter_dir / ".aider.conf.yml"] = YAML_HEADER + "system-prompt: |\n" + indent_markdown(canonical.rstrip(), 2)
 
-        continue_config = adapter_dir / "continue-config.yaml"
-        if continue_config.exists():
-            outputs[continue_config] = YAML_HEADER + "systemMessage: |\n" + indent_markdown(canonical.rstrip(), 2)
+        outputs[adapter_dir / "continue-config.yaml"] = YAML_HEADER + "systemMessage: |\n" + indent_markdown(canonical.rstrip(), 2)
 
     return outputs
 

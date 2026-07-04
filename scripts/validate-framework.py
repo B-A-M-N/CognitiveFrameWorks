@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 EXPECTED_SKILLS = ["OWL", "ANCHOR", "DOX", "FUSE", "FLOW", "WARD", "SISPIS"]
+ADAPTER_VARIANTS = ["CLAUDE.md", ".cursorrules", ".windsurfrules", "system-prompt.md", ".aider.conf.yml", "continue-config.yaml"]
 IGNORED_DIRS = {".git", ".crush", ".claude", "__pycache__"}
 ADAPTER_SUFFIXES = {".md", ".yml", ".yaml"}
 
@@ -108,10 +109,24 @@ def validate_adapter_generation(messages: List[str]) -> None:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         build_adapter_outputs = module.build_adapter_outputs
+        MARKDOWN_HEADER = module.MARKDOWN_HEADER
+        YAML_HEADER = module.YAML_HEADER
     except Exception as exc:
         messages.append(f"Cannot import adapter generator: {exc}")
         return
 
+    # Check every skill has all 6 expected adapter variants
+    for skill in EXPECTED_SKILLS:
+        canonical_path = ROOT / skill / "adapters" / "CLAUDE.md"
+        if not canonical_path.exists():
+            continue
+        adapter_dir = canonical_path.parent
+        for variant in ADAPTER_VARIANTS:
+            target = adapter_dir / variant
+            if not target.exists():
+                messages.append(f"Missing adapter file: {rel(target)}")
+
+    # Check content matches generated output
     expected = build_adapter_outputs()
     for path, content in sorted(expected.items()):
         if not path.exists():
