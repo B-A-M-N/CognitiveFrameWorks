@@ -4,6 +4,152 @@ A set of behavioral protocols for AI assistants. Seven skills: OWL, ANCHOR, DOX,
 
 ---
 
+## Why This Matters
+
+AI coding assistants fail in predictable ways: they hallucinate fixes without reading the code, expand scope beyond what was asked, run unsafe commands, claim a passing test proves the feature works, and lose track of what they've already tried after a long session. These are not random errors — they are systematic patterns that compound under pressure.
+
+CognitiveFrameWorks targets five failure classes directly:
+
+- **Hallucinated fixes** → OWL's Reality principle forces code-reading before implementation; Epistemics separates verified facts from assumptions
+- **Scope creep** → OWL's Locality principle constrains changes to what the request implies; surfaces scope expansion before it happens
+- **Unsafe tool use** → WARD gates destructive commands, secret exposure, trust-boundary crossings, and authority violations before execution
+- **Verification overclaiming** → FUSE's Evidence Interpretation principle defines exactly what a tool result proves vs. what it appears to prove
+- **Context drift** → ANCHOR's Memory Integrity checkpoints state; Recovery Discipline forces resets instead of patch accumulation
+
+Each skill catches a different class of error. Together, they form a pipeline where reasoning failures are caught before implementation, execution failures are caught before they compound, and communication failures are caught before they mislead.
+
+---
+
+## Quickstart
+
+### Use an adapter with your tool
+
+Each skill ships platform-ready adapters. Copy the adapter for your tool into your project:
+
+| Platform | File | Destination |
+|----------|------|-------------|
+| Claude / Cursor rules | `OWL/adapters/CLAUDE.md` | `.claude/CLAUDE.md` or project root |
+| Cursor | `OWL/adapters/.cursorrules` | Project root |
+| Windsurf | `OWL/adapters/.windsurfrules` | Project root |
+| Aider | `OWL/adapters/.aider.conf.yml` | `~/.aider.conf.yml` or project root |
+| Continue | `OWL/adapters/continue-config.yaml` | VS Code Continue config |
+| System prompt (any) | `OWL/adapters/system-prompt.md` | Paste into your model's system prompt |
+
+Repeat for each skill you want active. Start with OWL alone — it's the highest-value single skill.
+
+### Minimal active subsets
+
+You don't need all seven skills. Load only what the task needs:
+
+| Task | Skills |
+|------|--------|
+| Quick question or explanation | SISPIS only (or OWL + SISPIS if ambiguity exists) |
+| Single-turn code advice | OWL + SISPIS |
+| Multi-turn debugging | OWL + ANCHOR + FUSE + SISPIS |
+| Tool-using implementation | OWL + ANCHOR + FUSE + WARD + SISPIS |
+| Performance review | OWL + FLOW + SISPIS |
+| File editing in a DOX-enabled project | OWL + ANCHOR + DOX + FUSE + WARD + SISPIS; FLOW if triggered |
+| Risky commands / secrets | WARD required |
+
+---
+
+## Architecture
+
+```
+Request
+  │
+  ▼
+OWL ─────── pre-implementation reasoning (9 principles)
+  │           emits signals with severity
+  ▼
+ANCHOR ──── state baseline (8 principles)
+  │           checkpoints, object identity, epistemic classification
+  ▼
+DOX load ── contract hierarchy (only in DOX-enabled projects)
+  │           reads AGENTS.md chain before editing
+  ▼
+FUSE+WARD ─ wrap every tool/action decision
+  │  │        FUSE: which tool, what order, what result proves
+  │  │        WARD: is the action allowed, safe, reversible?
+  │  ▼
+  │  Edit ── artifact produced
+  │
+  ▼
+FLOW ────── operational drag evaluation (only if trigger fires)
+  │           retries, backpressure, caches, hot paths, N+1 queries
+  ▼
+DOX closeout (only if durable contracts changed)
+  │
+  ▼
+ANCHOR ──── checkpoint / reclassify if needed
+  │
+  ▼
+SISPIS ──── output calibration
+  │           direct answer vs. explanation vs. decision framework
+  ▼
+Output
+```
+
+FUSE + WARD run per-action, not per-request. FLOW runs once per artifact, only if a trigger area is touched. DOX load runs before edits; DOX closeout runs after FLOW.
+
+---
+
+## Validation
+
+```bash
+python3 scripts/validate-framework.py
+```
+
+Checks JSON syntax, skill count, adapter generation drift, WARD `recover` mapping, canonical integration drift, and adapter duplicate hashes.
+
+---
+
+## Examples
+
+### Bugfix — OWL catches a contradiction before code is written
+
+> **User:** Fix the login bug — the API returns 500 on POST /auth/login.
+>
+> **OWL (Reality):** The existing handler at `src/auth/login.py:42` already wraps the password check in a try/except. The 500 is thrown by `verify_token()` at line 58, which is called *after* successful login — not during. Fixing the password check won't address the 500.
+>
+> **OWL (Epistemics):** The request assumes the bug is in password verification. The traceback points to token verification. These are different code paths.
+>
+> Fix targets `verify_token()` — the error is a missing null check on the refresh token, not a password verification issue.
+
+Without OWL, the model reads "login bug" and patches the password path. OWL's Reality principle forced reading the actual code first, and its Epistemics principle separated the user's framing from what the code shows.
+
+---
+
+### Dangerous command blocked by WARD
+
+> **User:** Clean up the old config files in /var/lib/myapp.
+>
+> **WARD (Authority Fit):** The user said "clean up old config files" — this grants authority to remove specific files in `/var/lib/myapp/`, not to recursively delete the entire data directory.
+>
+> **WARD (Blast Radius):** The proposed command `rm -rf /var/lib/myapp` would delete the application data directory irreversibly. No backup exists. Blast radius: high — irreversible data loss across the application.
+>
+> **Required action: refuse.**
+>
+> Action blocked. The scoped equivalent is `rm /var/lib/myapp/*.old.conf` — removing only files matching the `.old.conf` pattern.
+
+WARD refused the broad command and proposed the narrowest safe alternative. Without WARD, the model matches "clean up" to `rm -rf` and destroys the data directory.
+
+---
+
+### Messy debugging session recovered by ANCHOR
+
+> **Turn 1–3:** Model investigates a flaky test. Tries mocking the database (approach A). Test still flaky.
+> **Turn 4–6:** Adds a retry wrapper around the test assertion (approach B). Test passes twice, then fails again.
+> **Turn 7:** Model is about to add a third patch on top of B.
+>
+> **ANCHOR (Recovery Discipline):** Current approach has failed twice (same error: assertion timeout despite retry). Transitioning Degraded → Failed.
+>
+> **[Recovery]:** Last verified state: test passes reliably when run against the real database (turn 2). Approaches A (mock DB) and B (retry wrapper) both addressed symptoms, not the cause. New approach: investigate why the mock diverges from the real database — the flake is likely a mock fidelity issue, not a timing issue. Reset cost: 2 turns of investigation.
+
+ANCHOR stopped the patch accumulation at 2 attempts, identified the last known-good state, and redirected to a structurally different approach. Without ANCHOR, the model continues stacking patches on a failed approach.
+
+---
+
 ## ANCHOR
 
 ### Why It Exists
