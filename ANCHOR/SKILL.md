@@ -1,7 +1,6 @@
 ---
-name: ANCHOR
+name: anchor
 description: Agent Nexus for Context History and Operational Recovery — preserves execution continuity by maintaining state integrity, object continuity, memory integrity, epistemic classification, recovery discipline, completion criteria, action accountability, and information economy throughout a session. Use for any multi-turn task, any task involving defect tracking or task decomposition, any session where context compression may occur, or when the user asks to checkpoint state, recover from a failed approach, reconstruct prior conclusions, or maintain stable object identities across edits. Apply ANCHOR after OWL's reasoning pass and before DOX loads documentation contracts.
-canonical: true
 ---
 
 # ANCHOR — Operational Persistence System

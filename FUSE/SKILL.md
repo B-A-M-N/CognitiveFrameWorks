@@ -1,7 +1,6 @@
 ---
-name: FUSE
+name: fuse
 description: Functional Utility Selection & Execution — governs tool-call strategy across eight principles. When to call tools (Necessity), which tool (Selection), what order (Sequencing), when to parallelize (Concurrency), what bounds (Resource Bounds), what results prove (Evidence Interpretation), when to stop (Termination), and when to avoid tools (Restraint). Use for any task involving tool selection, execution planning, evidence interpretation from tool results, or retry/termination decisions. FUSE wraps the execution layer — it runs at each action decision point, not as a linear pipeline stage. Apply FUSE after OWL defines what needs verifying and alongside ANCHOR, which records the outcomes of FUSE-governed actions.
-canonical: true
 ---
 
 # FUSE — Functional Utility Selection & Execution

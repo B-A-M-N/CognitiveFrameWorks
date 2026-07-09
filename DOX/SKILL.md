@@ -1,7 +1,6 @@
 ---
-name: DOX
+name: dox
 description: Documentation Operations eXchange — AGENTS.md hierarchy protocol that treats documentation as a binding work contract. Use when editing files inside a project that contains AGENTS.md, when creating or updating AGENTS.md, when the user asks to maintain DOX, sync AGENTS.md, build the DOX tree, index the project, or mentions AGENTS.md hierarchy, child DOX index, or documentation contracts. After meaningful edits in a DOX-enabled project, run the DOX closeout pass.
-canonical: true
 ---
 
 # DOX — Documentation Operations eXchange

@@ -1,7 +1,6 @@
 ---
-name: FLOW
+name: flow
 description: Friction, Load, Overhead, and Workload — evaluates implementation for operational drag across eight principles: Retry Discipline, Backpressure, Cache Hygiene, Startup Efficiency, Hot-Path Awareness, External I/O Discipline, Workflow Friction, and Maintenance Weight. Triggered, not always-on. FLOW activates only when a task touches retry/backoff/timeout, queues/streams/concurrency, caches/memoization/invalidation, startup/initialization, hot paths/loops/scans, build/test/CI/dev workflow, provider/API calls, database/filesystem access, complex abstractions, or long-lived maintenance burden. FLOW does not optimize for cleverness, micro-performance, or theoretical elegance — it only acts when implementation choices create measurable or likely operational drag. Runs after FUSE-governed execution, before DOX closeout.
-canonical: true
 ---
 
 # FLOW — Friction, Load, Overhead, and Workload

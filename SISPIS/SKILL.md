@@ -1,7 +1,6 @@
 ---
-name: SISPIS
+name: sispis
 description: Skank in Sheets, Princess in Streets — output calibration gate that determines response format (direct answer, analytical explanation, or structured decision framework) based on entropy, upstream signals from OWL, ANCHOR, FUSE, FLOW, and WARD, and weighted intent. Prevents over-structuring simple queries and under-structuring complex ones. Use at the end of the pipeline to calibrate how findings from all upstream skills are communicated. Applies when the request contains potential decision structure, comparative evaluation, or downstream impact.
-canonical: true
 ---
 
 # SISPIS
