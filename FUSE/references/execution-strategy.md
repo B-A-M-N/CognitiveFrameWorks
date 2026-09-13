@@ -8,8 +8,9 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 
 | Signal Type | Weight | Condition |
 |-------------|--------|-----------|
-| `unnecessary_tool_call` | 0.5 | A tool is about to be called to answer a question already resolved in current context — the call would only reconfirm established information |
+| `unnecessary_tool_call` | 0.5 | A tool is about to be called to answer a question already resolved in current context and uncontested by newer evidence — the call would only reconfirm established information |
 | `unverified_external_claim` | 1.0 | A claim about external state (file contents, command output, API response) is being made or acted on without an observed tool result to back it this session |
+| `conflicting_evidence_unrechecked` | 1.0 | An earlier observation or passing test is being relied on after a user report or newer tool result contradicts the relevant behavioral claim, without fresh inspection or reproduction |
 
 ### Selection
 
@@ -46,6 +47,7 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 | `overclaimed_evidence` | 1.0 | A tool result is being interpreted more broadly than it warrants — a passing test treated as "feature works," a successful build treated as "code is correct" |
 | `absence_inference` | 1.0 | An empty result is being treated as proof of absence — grep returning nothing treated as "the pattern doesn't exist," rather than "not found in the searched scope" |
 | `exit_code_misread` | 0.5 | A command exit code is being misinterpreted — exit 0 treated as "did what was intended" rather than "ran to completion," or non-zero treated as "goal impossible" rather than "this invocation failed" |
+| `self_validating_evidence` | 1.0 | Implementation and verification are structurally coupled so the check cannot detect the relevant failure — implementation-mirroring assertions, an unexercised failing boundary, edit existence, or a prior agent message treated as behavioral proof |
 
 ### Termination
 
@@ -67,7 +69,7 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 
 | Weight | Signal Types |
 |--------|-------------|
-| 1.0 | `unverified_external_claim`, `tool_affordance_mismatch`, `wrong_tool_for_evidence`, `out_of_order_execution`, `skipped_prerequisite`, `unsafe_parallelization`, `unbounded_operation`, `overclaimed_evidence`, `absence_inference`, `retry_without_variation`, `retry_bound_exceeded` |
+| 1.0 | `unverified_external_claim`, `conflicting_evidence_unrechecked`, `tool_affordance_mismatch`, `wrong_tool_for_evidence`, `out_of_order_execution`, `skipped_prerequisite`, `unsafe_parallelization`, `unbounded_operation`, `overclaimed_evidence`, `absence_inference`, `self_validating_evidence`, `retry_without_variation`, `retry_bound_exceeded` |
 | 0.5 | `unnecessary_tool_call`, `false_serialization`, `disproportionate_read`, `exit_code_misread`, `performative_tool_call`, `heavyweight_for_lightweight` |
 
 No FUSE signal carries 2.0 by default. The highest-impact FUSE findings (approach failure from retries, evidence misinterpretation) escalate through ANCHOR's Recovery Discipline and SISPIS's entropy elevation, not through FUSE surface weight. This keeps FUSE's gate from firing on routine execution choices while still escalating consequential findings through the downstream skills.
@@ -119,9 +121,12 @@ Examples: reading a file you've already located by path; editing a file you've a
 ```
 Is the claim about external state (file, command, API)?
 ├── No → answer from context. No tool needed.
-└── Yes → has it been observed this session?
+└── Yes → has it been observed this session, with no newer
+    |        conflicting evidence?
     ├── Yes → use prior observation. No tool needed.
-    └── No → is it load-bearing for the current action?
+    ├── No, because conflict arrived → fresh observation/reproduction required.
+    |      Emit `conflicting_evidence_unrechecked` if skipped.
+    └── No conflict → is it load-bearing for the current action?
         ├── No → proceed, but label as inferred.
         └── Yes → tool call required. Emit `unverified_external_claim` if skipped.
 ```
@@ -217,12 +222,17 @@ Is the result size disproportionate to evidence needed?
 | Build succeeds | Code compiles/builds | Code is correct; code is complete; no runtime errors |
 | Lint passes | No lint-rule violations | Code is well-architected; code is secure; code is performant |
 | Type check passes | Types are consistent | Logic is correct; all edge cases handled |
+| User reports feature still failing | There is a conflicting observed report requiring investigation | The user's proposed root cause is correct |
+| Agent-authored requirement-level regression test passes | The externally observable requirement holds under those tested conditions | Untested paths, production behavior, or newer conflicting observations are disproved |
+| Agent-authored structural test mirrors implementation | The implementation matches its own asserted structure | The user-visible requirement is satisfied |
 
 Overclaim check:
 - Treating "test passes" as "feature works" → emit `overclaimed_evidence`
 - Treating "grep empty" as "doesn't exist" → emit `absence_inference`
 - Treating "exit 0" as "correct" → emit `exit_code_misread`
 - Treating "build succeeds" as "code is correct" → emit `overclaimed_evidence`
+- Relying on a green test after a newer conflicting report without rechecking → emit `conflicting_evidence_unrechecked`
+- Using a check that cannot detect the described failure → emit `self_validating_evidence`
 
 ### Termination Procedure
 
@@ -288,6 +298,8 @@ FUSE signals trigger ANCHOR state transitions. The handoff mirrors OWL's handoff
 |-------------|-----------------|--------|
 | `retry_bound_exceeded` | Recovery Discipline trigger (Failed transition). FUSE owns the finding; ANCHOR owns the recovery procedure. One merged block. | See below. |
 | `overclaimed_evidence` | Epistemic Classification trigger. Reclassify the claim from Verified to Inferred. | ANCHOR tracks the reclassification; no separate surface block. |
+| `conflicting_evidence_unrechecked` | Downgrade/downgrade-and-reopen the relevant claim to Unknown pending fresh evidence; inspect or reproduce before reclassification. | Coordinate with OWL/ANCHOR; stale evidence cannot satisfy Necessity. |
+| `self_validating_evidence` | Downgrade the behavioral claim to Unknown; replace the coupled check with a requirement-level test or direct reproduction at the failing boundary. | ANCHOR tracks the reclassification; no separate surface block. |
 | `absence_inference` | Epistemic Classification trigger. Reclassify from Verified to Speculative. | ANCHOR tracks the reclassification; no separate surface block. |
 
 **FUSE-ANCHOR failure handoff format** (mirrors OWL-ANCHOR):
@@ -312,6 +324,8 @@ The SISPIS entropy signals are: `option_multiplicity`, `tradeoff_density`, `ambi
 | FUSE signal_type | SISPIS signal affected | Delta |
 |------------------|----------------------|-------|
 | `overclaimed_evidence` | `tradeoff_density` | +1 |
+| `conflicting_evidence_unrechecked` | `ambiguity_of_framing`, `downstream_impact` | +1 each |
+| `self_validating_evidence` | `ambiguity_of_framing`, `downstream_impact` | +1 each |
 | `absence_inference` | `ambiguity_of_framing` | +1 |
 | `retry_bound_exceeded` | `option_multiplicity`, `tradeoff_density` | +1 each |
 | `unsafe_parallelization` | `ambiguity_of_framing` | +1 |
@@ -355,7 +369,8 @@ OWL's signals define what FUSE needs to verify. The handoff:
 | OWL signal | FUSE response |
 |-----------|---------------|
 | `code_not_read` | FUSE Sequencing: schedule read before edit |
-| `contradiction` | FUSE Necessity: tool call required to resolve |
+| `contradiction` / `user_observation_conflict` | FUSE Necessity: fresh tool evidence required; stale evidence cannot satisfy the shortcut |
+| `circular_verification` | FUSE Evidence Interpretation: replace implementation-coupled proof with a requirement-level check at the failing boundary |
 | `missing_criteria` | FUSE Evidence Interpretation: define what result would prove success |
 | `unverifiable_claim` | FUSE Necessity: if no tool can verify, label as inferred |
 | `partial_completion` | FUSE Evidence Interpretation: verify the completed portion, label the rest |

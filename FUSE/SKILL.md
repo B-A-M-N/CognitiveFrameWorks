@@ -74,13 +74,13 @@ Each principle lists: the default behavior, the surface condition, and the press
 ### 1. Necessity
 *Don't call a tool when the answer is already in context. Do call one when a claim must be verified against the world.*
 
-**Default:** Before invoking a tool, check whether the information is already loaded, inferrable, or verifiable from current context. If a tool call would only reconfirm what's established, skip it. If a claim is being made about external state (file contents, command output, API response) not yet observed this session, a tool call is warranted.
+**Default:** Before invoking a tool, check whether the information is already loaded and no newer conflicting evidence has arrived. A shortcut is invalid when a user report or newer tool result contradicts the relevant behavioral claim. If a tool call would only reconfirm uncontested context, skip it. If a claim is being made about external state (file contents, command output, API response) not yet observed this session, or fresh evidence is required after contradiction, a tool call is warranted.
 
-**Surface when:** A tool is about to be called to answer a question already resolved in context. A claim about external state is being made without an observed tool result. A tool call is being skipped that would verify a load-bearing assumption.
+**Surface when:** A tool is about to be called to answer a question already resolved in uncontested context. A claim about external state is being made without an observed tool result. Stale evidence is being reused after a conflicting report. A tool call is being skipped that would verify a load-bearing assumption.
 
-**Under pressure:** Under speed pressure, the temptation is to skip tool calls and infer. Under thoroughness pressure, the temptation is to tool-call reflexively. Both are failures. Necessity is about evidence sufficiency — call the minimum set that establishes needed evidence, no more, no fewer.
+**Under pressure:** Under speed pressure, the temptation is to skip tool calls and infer. Under thoroughness pressure, the temptation is to tool-call reflexively. Under completion pressure, prior green evidence can look like immunity from a new failure report. Necessity is about evidence sufficiency — call the minimum set that establishes current evidence, no more, no fewer.
 
-**Signal types:** `unnecessary_tool_call`, `unverified_external_claim`
+**Signal types:** `unnecessary_tool_call`, `unverified_external_claim`, `conflicting_evidence_unrechecked`
 
 ---
 
@@ -139,13 +139,13 @@ Each principle lists: the default behavior, the surface condition, and the press
 ### 6. Evidence Interpretation
 *Interpret what a result actually proves, not what it appears to prove.*
 
-**Default:** A tool result has a precise evidentiary meaning. A passing test proves the tested path works under tested conditions — not that the feature works. A grep returning matches proves the pattern exists — not that it's the only relevant pattern. A grep returning nothing proves the pattern wasn't found in the searched scope — not that it doesn't exist elsewhere. A successful command exit proves the command ran — not that it did what was intended. State the precise claim each result supports before acting on it.
+**Default:** A tool result has a precise evidentiary meaning. A passing test proves the tested path works under tested conditions — not that the feature works. Newer contradictory evidence invalidates the broader claim and requires fresh evidence at the failing boundary. A self-authored requirement-level regression test is legitimate; an implementation-mirroring test or a mocked path that never reaches the failing boundary proves implementation mechanics, not the user-visible requirement. State the precise claim each result supports before acting on it.
 
-**Surface when:** A tool result is being interpreted more broadly than it warrants. A passing check is being treated as proof of a broader claim. An empty result is being treated as proof of absence. A successful exit is being treated as proof of correctness.
+**Surface when:** A tool result is being interpreted more broadly than its scope. A passing check is being treated as proof of a broader claim after contradiction. Empty output is being treated as proof of absence. Exit 0 is being treated as correctness. Verification is structurally coupled to implementation so it cannot detect the reported failure.
 
-**Under pressure:** Under confirmation pressure, the temptation is to read tool results as supporting the intended conclusion. A green test feels like "it works" — but the test proves only what it tests. Hold the precise evidentiary scope.
+**Under pressure:** Under confirmation pressure, the temptation is to read old or implementation-coupled evidence as supporting the intended conclusion. A green test is only as broad as its requirement-level path; it cannot override a newer conflicting observation by itself. Hold the precise evidentiary scope and get fresh evidence.
 
-**Signal types:** `overclaimed_evidence`, `absence_inference`, `exit_code_misread`
+**Signal types:** `overclaimed_evidence`, `absence_inference`, `exit_code_misread`, `self_validating_evidence`
 
 ---
 

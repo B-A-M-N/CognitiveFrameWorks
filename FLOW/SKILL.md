@@ -1,6 +1,6 @@
 ---
 name: flow
-description: Friction, Load, Overhead, and Workload — evaluates implementation for operational drag across eight principles: Retry Discipline, Backpressure, Cache Hygiene, Startup Efficiency, Hot-Path Awareness, External I/O Discipline, Workflow Friction, and Maintenance Weight. Triggered, not always-on. FLOW activates only when a task touches retry/backoff/timeout, queues/streams/concurrency, caches/memoization/invalidation, startup/initialization, hot paths/loops/scans, build/test/CI/dev workflow, provider/API calls, database/filesystem access, complex abstractions, or long-lived maintenance burden. FLOW does not optimize for cleverness, micro-performance, or theoretical elegance — it only acts when implementation choices create measurable or likely operational drag. Runs after FUSE-governed execution, before DOX closeout.
+description: Friction, Load, Overhead, and Workload — evaluates implementation for operational drag across eight principles: Retry Discipline, Backpressure, Cache Hygiene, Startup Efficiency, Hot-Path Awareness, External I/O Discipline, Workflow Friction, and Maintenance Weight. Triggered, not always-on. FLOW activates only when a task touches retry/backoff/timeout, queues/streams/concurrency, caches/memoization/invalidation, startup/initialization, hot paths/loops/scans, build/test/CI/dev workflow, provider/API calls, database/filesystem access, complex abstractions, responsibility concentration / central-object growth, or long-lived maintenance burden. FLOW does not optimize for cleverness, micro-performance, or theoretical elegance — it only acts when implementation choices create measurable or likely operational drag. Runs after FUSE-governed execution, before DOX closeout.
 ---
 
 # FLOW — Friction, Load, Overhead, and Workload
@@ -37,6 +37,7 @@ FLOW is triggered, not always-on. It only activates when the task touches one or
 - **Provider/API calls** — external service calls, rate limits, pagination, batching
 - **Database or filesystem access** — queries, index usage, file I/O, connection pooling
 - **Complex abstractions** — abstraction layers, indirection, coupling, pattern introduction
+- **Responsibility concentration / central-object growth** — a component accumulating unrelated domains, reasons to change, or feature branches
 - **Long-lived maintenance burden** — code that will require ongoing upkeep, coupling that complicates future changes
 
 If none of these triggers are present, FLOW does not run. This is the primary suppression mechanism — not a weight threshold, but a domain gate.
@@ -189,15 +190,15 @@ Each principle lists: the default behavior, the surface condition, and the press
 ---
 
 ### 8. Maintenance Weight
-*Abstractions and patterns must reduce more complexity than they add. Maintenance cost must be proportional to benefit.*
+*Abstractions must earn their cost, and responsibility must not concentrate. Both excessive indirection and excessive centralization create maintenance weight.*
 
-**Default:** When adding abstractions, patterns, or indirection, verify they reduce more complexity than they introduce. An abstraction that requires ongoing updates without simplifying the calling code is net negative. Tight coupling that complicates future changes creates maintenance burden. The test: will this code be easier or harder to change in six months?
+**Default:** When adding a reusable abstraction, verify a concrete second use or other concrete benefit; unused flexibility is maintenance cost. Separately, evaluate responsibility ownership: does this change make ownership clearer or more entangled? A thin coordinator with cohesive collaborators is preferable to either many meaningless layers or one component that owns unrelated domains.
 
-**Surface when:** An abstraction is being added that doesn't reduce complexity at the call site. A change introduces tight coupling that will complicate future modifications. A pattern is being introduced where the maintenance cost exceeds the benefit.
+**Surface when:** An abstraction is being added that doesn't reduce complexity at the call site. A change introduces tight coupling that will complicate future modifications. A component becomes owner/coordinator/implementation point for multiple unrelated domains (`responsibility_concentration`), or a routine change must thread one central component plus multiple unrelated branches/state paths (`change_amplification`).
 
-**Under pressure:** Under flexibility pressure, the temptation is to add abstractions "for future use." Unused flexibility is maintenance cost with no benefit. Add abstraction when there's a concrete second use case, not when there's a hypothetical one.
+**Under pressure:** Under flexibility pressure, don't invent abstractions for hypothetical reuse. Under locality pressure, don't add another responsibility to an already overloaded coordinator merely to avoid creating a boundary. The second-use-case rule governs reuse/generalization, not cohesion extraction.
 
-**Signal types:** `coupling_burden`, `unnecessary_abstraction`
+**Signal types:** `coupling_burden`, `unnecessary_abstraction`, `responsibility_concentration`, `change_amplification`
 
 ---
 
@@ -280,6 +281,8 @@ FLOW findings feed SISPIS's entropy score. A `retry_storm_risk` or `n_plus_one_q
 | `sync_blocking_io` | `downstream_impact` | +1 |
 | `workflow_friction` | `tradeoff_density` | +1 |
 | `coupling_burden` | `downstream_impact`, `tradeoff_density` | +1 each |
+| `responsibility_concentration` | `downstream_impact`, `tradeoff_density` | +1 each |
+| `change_amplification` | `downstream_impact` | +1 |
 Sub-threshold deltas (+0.5) and the complete mapping: `references/operational-efficiency.md`.
 
 Apply as upstream signal inputs to SISPIS. SISPIS collects all upstream signals, deduplicates by underlying cause (highest severity per cause wins), sums remaining deltas, and caps each dimension at 2.0. See CLAUDE.md § SISPIS Signal Integration Protocol for the full deduplication rule.
@@ -343,4 +346,5 @@ Working examples in `examples/`:
 - **`retry-storm-detection.md`** — Retry without backoff detected, retry_storm_risk fires
 - **`n-plus-one-query.md`** — N+1 query pattern in a loop detected
 - **`backpressure-detection.md`** — Unbounded queue detected, unbounded_accumulation fires
-- **`maintenance-weight.md`** — Abstraction that adds coupling without reducing complexity
+- **`maintenance-weight.md`** — Reuse abstraction that adds coupling without reducing complexity
+- **`responsibility-concentration.md`** — God Object growth, valid single-use extraction, and a large-but-cohesive negative control

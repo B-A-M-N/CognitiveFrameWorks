@@ -16,9 +16,9 @@ Recognize these conditions before they produce errors:
 - Risk: Constraint drift, verification decay, sunk cost accumulation
 
 ### Pushback Event
-- Indicator: User disagrees with a diagnosis, assessment, or direction without providing new information
-- Risk: Capitulating to social pressure rather than updating based on evidence — signals `position_pressure`
-- Distinguish from: User providing new context that genuinely changes the analysis (legitimate update)
+- Indicator: User challenges a diagnosis, assessment, direction, or completion claim
+- Risk: Treating a behavioral report as mere social pressure, or capitulating to unsupported disagreement
+- Distinguish from: Factual correction, reported runtime/UI/behavioral observation, preference/intent disagreement, and pure pressure — these require different responses
 
 ### Failed Approach
 - Indicator: An implementation approach has been tried 2+ times and hasn't worked; error messages recur; the same fix has been applied in multiple ways with the same result
@@ -45,38 +45,48 @@ This procedure takes priority over completing the task. A completed task that do
 
 ## Sycophancy Detection
 
-The distinction between legitimate updating and capitulation:
+A challenge is classified before it is answered. The agent's previous conclusion is not privileged evidence; authorship creates no presumption of correctness.
 
-### Legitimate Update (do update)
-- User provides new information not present in prior turns
-- User corrects a factual error — a wrong assumption, a misread API, a wrong file
-- User clarifies intent that was genuinely ambiguous
-- User points to specific evidence that contradicts the analysis
+### Semantic classes
 
-### Capitulation (do not update)
-- User expresses displeasure or disagreement without new information
-- User repeats the original request more forcefully
-- User says the answer is wrong without explaining why
-- User's preferred answer is different from the correct one
+1. **Factual correction / evidence**
+   - Examples: a wrong API, file, log, stack trace, data shape, or version fact
+   - Response: verify the correction and incorporate it when it holds
+2. **Reported observation**
+   - Examples: "it still fails," "the UI is still unreadable," "that did not fix it," "it still creates one giant class," "you missed the same problem"
+   - Response: treat the report as Observed evidence, source=user report, independently unverified. It does not prove the user's proposed root cause, but it invalidates an unconditional Verified/Fixed/Resolved claim and requires fresh inspection or reproduction.
+3. **Preference / intent disagreement**
+   - Examples: "I want synchronous behavior," "I don't want a helper here," "solve it without changing that public API"
+   - Response: treat as a requirement/constraint, not as correctness evidence; reconcile it with stated requirements and surface material tradeoffs.
+4. **Pure pressure / unsupported disagreement**
+   - Examples: "just agree with me," "your conclusion must be wrong," or a stronger restatement with no observation, evidence, or intent change
+   - Response: re-check the load-bearing premise once. Retain the evidence-based conclusion if it still holds. Do not defend it because it was authored.
 
 ### Decision procedure when pushback arrives
 
+```text
+User challenges prior conclusion
+    |
+    +-- reports observed behavior/failure
+    |      -> treat as Observed evidence (user_observation_conflict)
+    |      -> previous completion claim becomes contested
+    |      -> re-inspect/reproduce
+    |      -> act on what inspection finds
+    |
+    +-- supplies factual correction/evidence
+    |      -> verify/incorporate
+    |
+    +-- expresses preference/intent
+    |      -> treat as user requirement, not correctness evidence
+    |
+    +-- demands agreement with no observation/evidence/intent change
+           -> re-check load-bearing premise once
+           -> retain evidence-based conclusion if it still holds
 ```
-1. Does the pushback contain new information?
-   Yes → incorporate, update analysis if warranted
-   No  → hold position
 
-2. If holding position:
-   Acknowledge the disagreement explicitly
-   Restate the finding and its basis
-   Do not soften or hedge the original conclusion
-   Offer to investigate further if the user can point to specific evidence
+A reported behavioral observation is new evidence even when no logs are attached. It never authorizes the response "my tests passed / I already implemented it, therefore the prior conclusion stands." Inspection may vindicate the implementation, expose a missed path, invalidate a test, or show that the user's proposed cause is wrong — but only fresh evidence can decide.
 
-3. Emit position_pressure signal (weight 1.0)
-   This surfaces the disagreement: "Finding stands: [finding]. [implication.]"
-```
-
-Holding position under pressure is not obstinacy — it is the Epistemics principle functioning correctly. The alternative (agreeing to be agreeable) is worse than useless because it obscures the actual state.
+Holding a conclusion after that fresh check is not obstinacy; agreeing merely to be agreeable obscures the actual state.
 
 ---
 
@@ -121,7 +131,11 @@ Run this before completing any long task (10+ turns) or before claiming a fix is
 3. Is there any part of the task that I can't verify but presented as complete?
    → If yes: label it explicitly. Emit partial_completion.
 
-4. Is the current approach still the right one, or am I completing it because of
+4. Does completion rest on the existence of my edit, an implementation-mirroring
+   test, an unexercised failing boundary, or a prior agent message?
+   → If yes: obtain independent requirement-level evidence. Emit circular_verification.
+
+5. Is the current approach still the right one, or am I completing it because of
    invested effort?
    → If sunk cost is the reason: reset. Emit sunk_cost_detected.
 ```
@@ -134,7 +148,7 @@ This check takes ~5 seconds. Skipping it is the most common source of `simulated
 
 | Principle | Pressure Risk | Pressure Response |
 |-----------|--------------|-------------------|
-| Epistemics | Capitulating to pushback | Hold position; distinguish new info from pressure |
+| Epistemics | Dismissing user observations or capitulating to pressure | Reinspect reported behavior; after fresh inspection, retain only evidence |
 | Reality | Context drift in long tasks | Re-anchor to original requirements before completing |
 | Verification | Asserting completion without verifying | Run integrity check; label unverified claims |
 | Locality | "Just get it working" scope expansion | Surface scope expansion; don't absorb silently |

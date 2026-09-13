@@ -27,6 +27,7 @@ FLOW only activates when the task touches one or more of:
 - provider/API calls
 - database or filesystem access
 - complex abstractions
+- responsibility concentration / central-object growth
 - long-lived maintenance burden
 
 **No triggers → FLOW does not run.** This is the primary suppression mechanism.
@@ -103,10 +104,10 @@ Surface when: change introduces friction in build/test/CI/dev workflow; change p
 Under pressure: don't add synchronous steps "because it's correct." Slow CI is operational drag affecting every developer on every push.
 Signals: `workflow_friction` (1.0), `missing_incremental` (0.5)
 
-### 8. Maintenance Weight — Abstractions and patterns must reduce more complexity than they add. Maintenance cost must be proportional to benefit.
-Surface when: abstraction added that doesn't reduce complexity at call site; change introduces tight coupling complicating future modifications; pattern introduced where maintenance cost exceeds benefit.
-Under pressure: don't add abstractions "for flexibility." Unused flexibility is maintenance cost with no benefit. Add abstraction when there's a concrete second use case.
-Signals: `coupling_burden` (1.0), `unnecessary_abstraction` (0.5)
+### 8. Maintenance Weight — Abstractions must earn their cost, and responsibility must not concentrate. Avoid excessive indirection and excessive centralization.
+Surface when: reusable abstraction doesn't simplify call site; coupling complicates future changes; component becomes owner/coordinator for multiple unrelated domains; routine changes thread central component plus unrelated branches.
+Under pressure: second-use-case rule governs reuse, not cohesion extraction. A single-use responsibility boundary can be correct; don't add another domain to a God Object to avoid it.
+Signals: `coupling_burden` (1.0), `unnecessary_abstraction` (0.5), `responsibility_concentration` (2.0), `change_amplification` (1.0)
 
 ---
 

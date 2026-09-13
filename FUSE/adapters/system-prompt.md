@@ -49,10 +49,10 @@ no retry/parallelization/evidence ambiguity → W_fuse = 0, silent regardless.
 
 ## The Eight Principles
 
-### 1. Necessity — Don't call a tool when the answer is already in context. Do call one when a claim must be verified against the world.
-Surface when: tool about to be called to answer already-resolved question; external claim made without observed result; load-bearing assumption being skipped.
-Under pressure: don't skip calls to appear fast; don't call reflexively to appear thorough.
-Signals: `unnecessary_tool_call` (0.5), `unverified_external_claim` (1.0)
+### 1. Necessity — Don't call a tool when uncontested context answers the question. Do call one when current evidence is required.
+Surface when: tool answers already-resolved uncontested question; external claim made without observed result; stale evidence reused after a conflicting report; load-bearing assumption skipped.
+Under pressure: don't skip calls to appear fast; don't call reflexively; a newer failure report invalidates the prior-result shortcut.
+Signals: `unnecessary_tool_call` (0.5), `unverified_external_claim` (1.0), `conflicting_evidence_unrechecked` (1.0)
 
 ### 2. Selection — Match the task shape to the tool's actual affordance.
 Surface when: tool used outside its affordance (grep for filenames, bash for edits); result trusted from wrong tool.
@@ -75,9 +75,9 @@ Under pressure: don't read everything to "be safe" — costs context, gains litt
 Signals: `unbounded_operation` (1.0), `disproportionate_read` (0.5)
 
 ### 6. Evidence Interpretation — Interpret what a result actually proves, not what it appears to prove.
-Surface when: result interpreted more broadly than warranted; passing check treated as proof of broader claim; empty result treated as proof of absence; exit 0 treated as proof of correctness.
-Under pressure: don't read results as supporting intended conclusion. Green test proves only what it tests.
-Signals: `overclaimed_evidence` (1.0), `absence_inference` (1.0), `exit_code_misread` (0.5)
+Surface when: result interpreted beyond scope; stale passing evidence used after contradiction; implementation-coupled verification cannot detect the reported failure; empty result treated as absence; exit 0 treated as correctness.
+Under pressure: a self-authored requirement-level regression test is valid; implementation-mirroring tests, unexercised failing boundaries, and prior agent messages are not behavioral proof.
+Signals: `overclaimed_evidence` (1.0), `absence_inference` (1.0), `exit_code_misread` (0.5), `self_validating_evidence` (1.0)
 
 ### 7. Termination — Know when to stop. Retry with variation up to a bound, then escalate.
 Surface when: same call retried without varying input; retries exceeded 2 without strategy change; call waited on past useful bound; failed approach patched with retries.

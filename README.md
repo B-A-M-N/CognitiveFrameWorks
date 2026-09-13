@@ -8,12 +8,14 @@ A set of behavioral protocols for AI assistants. Seven skills: OWL, ANCHOR, DOX,
 
 AI coding assistants fail in predictable ways: they hallucinate fixes without reading the code, expand scope beyond what was asked, run unsafe commands, claim a passing test proves the feature works, and lose track of what they've already tried after a long session. These are not random errors — they are systematic patterns that compound under pressure.
 
-CognitiveFrameWorks targets five failure classes directly:
+CognitiveFrameWorks targets seven failure classes directly:
 
 - **Hallucinated fixes** → OWL's Reality principle forces code-reading before implementation; Epistemics separates verified facts from assumptions
-- **Scope creep** → OWL's Locality principle constrains changes to what the request implies; surfaces scope expansion before it happens
+- **Scope creep** → OWL's Locality principle constrains unrelated scope while preserving structural correctness
 - **Unsafe tool use** → WARD gates destructive commands, secret exposure, trust-boundary crossings, and authority violations before execution
-- **Verification overclaiming** → FUSE's Evidence Interpretation principle defines exactly what a tool result proves vs. what it appears to prove
+- **Verification overclaiming** → FUSE's Evidence Interpretation defines exactly what a result proves and rejects stale or implementation-coupled evidence
+- **Self-certification / dismissed user observations** → OWL treats "it still fails" as observed evidence, ANCHOR reopens the prior claim, FUSE requires fresh evidence at the failing boundary. The user is not automatically right about root cause, but a behavioral report must be investigated.
+- **Responsibility concentration / God Objects** → OWL detects pre-edit cohesion risk; FLOW's Maintenance Weight catches excessive centralization as well as excessive indirection. Simplicity is not file count.
 - **Context drift** → ANCHOR's Memory Integrity checkpoints state; Recovery Discipline forces resets instead of patch accumulation
 
 Each skill catches a different class of error. Together, they form a pipeline where reasoning failures are caught before implementation, execution failures are caught before they compound, and communication failures are caught before they mislead.
@@ -76,7 +78,8 @@ FUSE+WARD ─ wrap every tool/action decision
   │
   ▼
 FLOW ────── operational drag evaluation (only if trigger fires)
-  │           retries, backpressure, caches, hot paths, N+1 queries
+  │           retries, backpressure, caches, hot paths, N+1 queries,
+  │           responsibility concentration
   ▼
 DOX closeout (only if durable contracts changed)
   │
@@ -270,9 +273,9 @@ FUSE governs which tools the agent calls and what their results prove — it doe
 
 The gap matters because operational drag compounds. A retry storm that works in testing fails under load. An unbounded queue that holds 10 items in development holds 10,000 in production and leaks memory. An N+1 query that's fast with 100 records is slow with 10,000. These are not correctness bugs — the code works. They are efficiency defects that manifest at scale, under load, or over time — exactly when they're hardest to debug and most expensive to fix.
 
-FLOW addresses this with eight principles: Retry Discipline (backoff, jitter, bounds, idempotency), Backpressure (bounded queues, producer respects consumer capacity), Cache Hygiene (invalidation strategy, stampede guards, no unnecessary caching), Startup Efficiency (fast startup, lazy loading), Hot-Path Awareness (algorithmic complexity in frequently-run code), External I/O Discipline (batching, pagination, no N+1), Workflow Friction (build/test/CI/dev cycle speed), and Maintenance Weight (abstractions must reduce more complexity than they add).
+FLOW addresses this with eight principles: Retry Discipline (backoff, jitter, bounds, idempotency), Backpressure (bounded queues, producer respects consumer capacity), Cache Hygiene (invalidation strategy, stampede guards, no unnecessary caching), Startup Efficiency (fast startup, lazy loading), Hot-Path Awareness (algorithmic complexity in frequently-run code), External I/O Discipline (batching, pagination, no N+1), Workflow Friction (build/test/CI/dev cycle speed), and Maintenance Weight (reuse abstractions must earn their cost, while responsibility boundaries must prevent central-object growth).
 
-FLOW is triggered, not always-on. It only runs when the implementation touches one of ten trigger areas — retries, queues, caches, startup, hot paths, build/test/CI, provider/API calls, database/filesystem, complex abstractions, or maintenance burden. If no trigger fires, FLOW does not run at all. This is the primary suppression mechanism: a domain gate, not a weight threshold. The anti-goal is explicit — FLOW does not optimize for cleverness, micro-performance, or theoretical elegance. It only acts when implementation choices create measurable or likely operational drag.
+FLOW is triggered, not always-on. It only runs when the implementation touches one of eleven trigger areas — retries, queues, caches, startup, hot paths, build/test/CI, provider/API calls, database/filesystem, complex abstractions, responsibility concentration, or maintenance burden. If no trigger fires, FLOW does not run at all. This is the primary suppression mechanism: a domain gate, not a weight threshold. The anti-goal is explicit — FLOW does not optimize for cleverness, micro-performance, or theoretical elegance. It only acts when implementation choices create measurable or likely operational drag.
 
 FLOW runs after FUSE-governed execution produces the artifact, before DOX closeout. It evaluates the produced code — not the agent's tool use (that's FUSE's domain). FUSE and FLOW are orthogonal: FUSE governs the agent's execution; FLOW governs the code that execution produces. When FLOW surfaces a finding and the user accepts the tradeoff, ANCHOR's Action Accountability records the decision. DOX records it only if the tradeoff establishes a durable project constraint, recurring exception, or future implementation rule — not every accepted tradeoff belongs in AGENTS.md.
 

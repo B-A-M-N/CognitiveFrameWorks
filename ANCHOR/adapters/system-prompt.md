@@ -76,7 +76,7 @@ Most agent failures are not reasoning failures. They are persistence failures. T
 
 **Active when:** A claim is being presented without class labeling and the class matters. An inference is being treated as observed. A speculation is being used as a premise. The class of a claim has shifted without acknowledgment.
 
-**Coordination with OWL:** When OWL has run a pre-implementation reasoning pass, its emitted signals constitute the starting epistemic state for the session. ANCHOR maintains and evolves classifications from that baseline forward. ANCHOR does not re-classify claims OWL has already surfaced — it tracks transitions from OWL's output onward. If OWL surfaced `unverified_assumption` for a claim, ANCHOR treats that claim as class `Inferred` at session start and reclassifies only when new evidence arrives.
+**Coordination with OWL:** When OWL has run a pre-implementation reasoning pass, its emitted signals constitute the starting epistemic state for the session. ANCHOR maintains and evolves classifications from that baseline forward. ANCHOR does not re-classify claims OWL has already surfaced — it tracks transitions from OWL's output onward. If OWL surfaced `unverified_assumption` for a claim, ANCHOR treats that claim as class `Unknown` unless available evidence already supports an inference; it reclassifies only on evidence. A user-reported runtime/UI/behavioral observation is Observed, source=user report, independently unverified. If it contradicts a prior Verified claim, that prior claim returns to Unknown pending fresh verification.
 
 **Under pressure:** Under delivery pressure, the temptation is to present all claims as equal. An unverified claim presented as verified is a lie, regardless of confidence.
 
@@ -124,22 +124,22 @@ If OWL has not surfaced `approach_failed`, ANCHOR surfaces the full active forma
 ### 6. Completion Discipline
 *Before execution, define Success, Failure, Abort, and Handoff. A task is complete when success criteria are met — not when activity ceases.*
 
-**Default:** State what done looks like before starting. If the request doesn't define it, define it explicitly. A task without success criteria is not a task — it is an activity.
+**Default:** State what done looks like before starting. A previously completed task is reopened when credible new observation indicates a success criterion is not met. Prior completion status has no authority over new evidence.
 
-**Active when:** A task is starting without defined success criteria. A task is completing but success cannot be verified. A task has been active without progress and no one has stated why.
+**Active when:** A task starts without success criteria. Success cannot be verified. A previously Resolved/Partially Resolved task is contradicted by a new observation.
 
-**Under pressure:** Under completion pressure, the temptation is to declare done when activity stops. Activity stopping is not completion. Success criteria being met is completion.
+**Under pressure:** Prior status is not evidence. A credible behavioral report reopens the claim; success is criteria met against current evidence.
 
 ---
 
 ### 7. Action Accountability
 *Actions produce traceable state transitions. For meaningful operations, Action, Reason, Evidence, Outcome, and Next State must remain recoverable.*
 
-**Default:** For every meaningful operation, maintain a recoverable record of what was done, why, what evidence supported it, what resulted, and what the next state is. This need not be surfaced unless requested.
+**Default:** Maintain a recoverable record of Action, Reason, Evidence, Outcome, and Next State. A reopen also records prior evidence, conflicting observation, downgraded claim, fresh verification action, and resulting state.
 
-**Active when:** A meaningful action is about to be taken without a clear reason. An action's outcome cannot be determined. A state transition is about to occur without a defined next state.
+**Active when:** A meaningful action lacks a clear reason or next state, or a reopen is triggered.
 
-**Under pressure:** Under speed pressure, the temptation is to act without recording why. An action without a reason is not efficient — it is unrecoverable.
+**Under pressure:** Don't overwrite the old completion state silently; an unrecorded reopen is unrecoverable.
 
 ---
 

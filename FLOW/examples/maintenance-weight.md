@@ -1,6 +1,8 @@
-# Maintenance Weight — "Abstraction that adds coupling without reducing complexity"
+# Maintenance Weight — "Reuse abstraction that adds coupling without reducing complexity"
 
-Calibrates: abstraction layer that doesn't simplify the call site but introduces tight coupling. `coupling_burden` and `unnecessary_abstraction` both fire.
+Calibrates: a reusable/generalizing abstraction that doesn't simplify the call site but introduces tight coupling. `coupling_burden` and `unnecessary_abstraction` both fire.
+
+The second-use-case requirement applies to **reuse abstractions**, not to **cohesion boundaries**. See `responsibility-concentration.md` for a valid single-use extraction that removes an unrelated responsibility from a central object.
 
 ---
 
@@ -66,8 +68,8 @@ The call site is not simpler. It requires instantiating the repository, passing 
 
 The abstraction adds a dependency layer without reducing any. Future changes to the query now require editing the repository class, not just the function. The repository class becomes a coupling point — every caller depends on its interface.
 
-**Second use case check:**
-Is there a concrete second use case for the repository? The request says "for flexibility" — this is hypothetical, not concrete. There is no second implementation, no test double that requires the interface, no swap-out scenario that's been discussed.
+**Second use case check (reuse/generalization only):**
+Is there a concrete second use case for this repository-as-reuse abstraction? The request says "for flexibility" — this is hypothetical, not concrete. There is no second implementation, no test double requiring an interface, no swap-out scenario, and no distinct responsibility currently trapped in a central object. Therefore this is a reuse abstraction without its required justification.
 
 **Signals:**
 - `unnecessary_abstraction` (0.5) — the abstraction is being added without a concrete second use case; the call site is not simpler with the abstraction than without
@@ -109,14 +111,17 @@ The direct query is simpler at the call site, has fewer dependencies, and is eas
 
 This is the hardest FLOW judgment to make, because abstractions are genuinely useful — sometimes. The distinction FLOW draws:
 
-- **Justified abstraction:** There's a concrete second use case. The call site is simpler with the abstraction. The abstraction reduces more complexity than it adds.
-- **Unjustified abstraction:** There's only a hypothetical use case ("for flexibility"). The call site is not simpler. The abstraction adds a layer that must be maintained.
+- **Justified reuse abstraction:** There's a concrete second use case or other concrete benefit. The call site is simpler with the abstraction. The abstraction reduces more complexity than it adds.
+- **Unjustified reuse abstraction:** There's only a hypothetical use case ("for flexibility"). The call site is not simpler. The abstraction adds a layer that must be maintained.
+- **Different case — cohesion boundary:** A single-use extraction can be correct when it removes a distinct responsibility from a central owner. Caller count is not the criterion; ownership cohesion is.
 
 The repository pattern is a good pattern — when there's a reason for it. A test suite that needs mock data sources. A migration from SQL to NoSQL. Multiple data backends. Without one of those, it's a class that wraps one method and calls it `_execute_query`.
 
 The test FLOW applies: "Will this code be easier or harder to change in six months?" With the repository, changing the query means editing the repository class. Without it, changing the query means editing the function. The repository adds a step without removing one.
 
-Anti-pattern to avoid: "We should use a repository pattern for flexibility." Flexibility for what? If the answer is "in case we need it," that's hypothetical flexibility — maintenance cost with no benefit. Add the abstraction when the second use case arrives, not before.
+Anti-pattern to avoid: "We should use a repository pattern for flexibility." Flexibility for what? If the answer is "in case we need it," that's hypothetical reuse flexibility — maintenance cost with no benefit. Add that kind of abstraction when the second use case arrives, not before.
+
+Do not extend this rule to responsibility decomposition. If the direct call site lives in a coordinator that already owns many unrelated responsibilities, a single-use persistence boundary may be the smallest structurally safe change.
 
 ---
 
@@ -126,7 +131,7 @@ OWL's Simplicity principle would also fire here: "Minimum code that solves the p
 
 FLOW and OWL overlap on this case but from different angles:
 - OWL's Simplicity: the code is more complex than the problem requires (synchronous judgment).
-- OWL's Generalization: an abstraction is being added without justification (synchronous judgment).
+- OWL's Generalization: reusable abstraction without a concrete second use or cohesion need (synchronous judgment). A single-use responsibility extraction is not premature solely because it has one caller.
 - FLOW's Maintenance Weight: the abstraction will create ongoing maintenance burden (longitudinal judgment).
 
 All three fire. The OWL signals surface first (OWL runs before FLOW in the pipeline). FLOW's signal adds the longitudinal dimension — it's not just "too complex now," it's "will be harder to maintain over time."

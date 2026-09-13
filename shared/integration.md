@@ -22,16 +22,46 @@ Request
 
 FUSE + WARD are not a linear stage. They wrap each action/tool decision. FLOW runs once per artifact, not per tool call. DOX load happens before edits; DOX closeout happens after FLOW only when documentation contracts need updating.
 
+## User Contradiction Path
+
+A user report of current observable behavior is evidence, not social pressure.
+
+```text
+user-reported observation
+    -> OWL Reality/Epistemics: user_observation_conflict
+    -> ANCHOR: prior Verified/Resolved state downgraded/reopened
+    -> FUSE: fresh evidence required; stale evidence cannot satisfy Necessity
+    -> execution/reinspection
+    -> ANCHOR: reclassify based on fresh evidence
+```
+
+The report does not prove the user's proposed root cause. Unsupported disagreement still triggers one fresh check of load-bearing evidence before a conclusion is retained. The agent's prior conclusion has no privilege merely because the agent authored it.
+
+## Structural Concentration Path
+
+Responsibility cohesion is evaluated before and after the edit.
+
+```text
+proposed change
+    -> OWL: cohesion_risk before edit
+    -> minimal responsibility-boundary correction
+    -> implementation
+    -> FLOW: responsibility_concentration/change_amplification postflight
+    -> fix before DOX closeout
+```
+
+Conflict resolution: OWL Locality cannot suppress a decomposition required to prevent responsibility concentration; OWL Generalization cannot classify responsibility extraction as premature solely because there is one caller. Conservation governs extraction—preserve behavior while moving ownership, then implement the new behavior through that boundary.
+
 ## Skill Ownership
 
 | Skill | Owns | Does not own |
 |-------|------|--------------|
-| OWL | Pre-implementation reasoning, uncertainty, contradiction detection, verification criteria, reset triggers | Tool selection, authority gating, documentation contracts, operational efficiency, response structure |
-| ANCHOR | Operational state continuity, checkpoints, object identity, epistemic classification, recovery procedure, completion state | Reasoning quality, tool selection, security authority, communication style |
+| OWL | Pre-implementation reasoning, uncertainty, user-observation conflicts, responsibility cohesion risk, verification criteria, reset triggers | Tool selection, authority gating, documentation contracts, operational efficiency, response structure |
+| ANCHOR | Operational state continuity, checkpoints, object identity, epistemic classification, reopen lifecycle, recovery procedure, completion state | Reasoning quality, tool selection, security authority, communication style |
 | DOX | Documentation contracts, AGENTS.md hierarchy, closeout updates for durable contracts | Runtime reasoning, tool strategy, entropy scoring, security decisions |
-| FUSE | Tool necessity, tool selection, sequencing, concurrency, bounds, evidence interpretation, retry termination | Whether an action is permitted, whether code has operational drag |
+| FUSE | Tool necessity under conflicting evidence, tool selection, sequencing, concurrency, bounds, stale/circular evidence rejection, retry termination | Whether an action is permitted, whether code has operational drag |
 | WARD | Authority, trust boundaries, secrets, mutation consent, reversibility, supply-chain risk, policy preservation | Whether the selected tool is optimal, whether the produced code is efficient |
-| FLOW | Operational drag in the produced artifact: retry storms, backpressure, cache hygiene, startup, hot paths, I/O, workflow friction, maintenance weight | Agent tool-use strategy, authority gating, documentation contracts |
+| FLOW | Operational drag in the produced artifact: retry storms, backpressure, cache hygiene, startup, hot paths, I/O, workflow friction, responsibility concentration, maintenance weight | Agent tool-use strategy, authority gating, documentation contracts |
 | SISPIS | Output mode and response structure based on entropy, intent weight, suppression, and decision space | Reasoning, state persistence, tool execution, authority, operational efficiency |
 
 ## Activation Budget

@@ -113,22 +113,22 @@ Full recovery procedure: `references/execution-continuity.md` § Recovery Proced
 ### 6. Completion Discipline
 *Before execution, define Success, Failure, Abort, and Handoff. A task is complete when success criteria are met — not when activity ceases.*
 
-**Default:** State what done looks like before starting. If the request doesn't define it, define it explicitly. A task without success criteria is not a task — it is an activity.
+**Default:** State what done looks like before starting. If the request doesn't define it, define it explicitly. A previously completed task is reopened when credible new observation indicates that a success criterion is not met. Prior completion status has no authority over new evidence.
 
-**Active when:** A task is starting without defined success criteria. A task is completing but success cannot be verified. A task has been active without progress and no one has stated why.
+**Active when:** A task is starting without defined success criteria. A task is completing but success cannot be verified. A previously Resolved or Partially Resolved task is contradicted by a new observation. A task has been active without progress and no one has stated why.
 
-**Pressure variant:** Under completion pressure, the temptation is to declare done when activity stops. Activity stopping is not completion. Success criteria being met is completion.
+**Pressure variant:** Under completion pressure, the temptation is to declare done when activity stops or to defend a prior Resolved label. Activity stopping is not completion, and prior status is not evidence. Success criteria being met against current evidence is completion.
 
 ---
 
 ### 7. Action Accountability
 *Actions produce traceable state transitions. For meaningful operations, Action, Reason, Evidence, Outcome, and Next State must remain recoverable.*
 
-**Default:** For every meaningful operation, maintain a recoverable record of what was done, why, what evidence supported it, what resulted, and what the next state is. This need not be surfaced unless requested.
+**Default:** For every meaningful operation, maintain a recoverable record of what was done, why, what evidence supported it, what resulted, and what the next state is. A reopen records the previous evidence, the conflicting observation, the claim downgraded, the fresh verification action, and the resulting state. This need not be surfaced unless requested.
 
-**Active when:** A meaningful action is about to be taken without a clear reason. An action's outcome cannot be determined. A state transition is about to occur without a defined next state.
+**Active when:** A meaningful action is about to be taken without a clear reason. An action's outcome cannot be determined. A reopen is triggered. A state transition is about to occur without a defined next state.
 
-**Pressure variant:** Under speed pressure, the temptation is to act without recording why. An action without a reason is not efficient — it is unrecoverable.
+**Pressure variant:** Under speed pressure, the temptation is to act without recording why or to overwrite the old completion state silently. An action without a reopen trail is unrecoverable.
 
 ---
 

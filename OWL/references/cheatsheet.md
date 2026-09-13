@@ -13,13 +13,13 @@ Purely mechanical + no code read  →  W_owl = 0, silent always
 
 | # | Principle | Default | Under Pressure |
 |---|-----------|---------|----------------|
-| 1 | **Epistemics** | State assumptions. Surface if wrong changes approach. | Hold position under pushback unless new info arrives. |
-| 2 | **Reality** | Read code before acting. Surface contradictions. | Re-anchor to original constraints on long tasks. |
-| 3 | **Verification** | Define done before starting. Surface missing criteria. | Verification standard doesn't decay with task length. |
-| 4 | **Locality** | Smallest change. Surface scope expansions. | "Just get it working" doesn't justify silent scope growth. |
+| 1 | **Epistemics** | State assumptions. Classify challenge as observation, correction, preference, or pressure. | Reported behavior forces reinspection; unsupported disagreement gets one fresh evidence check. |
+| 2 | **Reality** | Read code before acting. Surface contradictions. | User-reported behavior is evidence; re-anchor on long tasks. |
+| 3 | **Verification** | Define done before starting; reject circular proof. | Verification standard doesn't decay with task length. |
+| 4 | **Locality** | Minimize unrelated scope, not structural correctness. Surface scope/cohesion conflicts. | Fewer files doesn't justify worsening responsibility ownership. |
 | 5 | **Conservation** | Preserve behavioral intent. Surface semantic drift. | Behavioral drift most likely when moving fast. |
-| 6 | **Simplicity** | Minimum code. Surface over-complexity. | Complex problem ≠ complex solution. |
-| 7 | **Generalization** | No unasked abstractions. Surface before adding. | Don't abstract to manage your own uncertainty. |
+| 6 | **Simplicity** | Smallest structurally safe solution, not maximum centralization. | Complex problem ≠ complex solution; file count ≠ ownership clarity. |
+| 7 | **Generalization** | Separate reuse abstraction from responsibility cohesion. | Don't invent flexibility; don't suppress a needed single-caller boundary. |
 | 8 | **Debuggability** | Make behavior obvious. Surface opacity risks. | Explain most when it's most inconvenient. |
 | 9 | **Integrity** | Honest state. Label incomplete. Reset when wrong. | Reset on failed approach; don't patch sunk costs. |
 
@@ -27,7 +27,7 @@ Purely mechanical + no code read  →  W_owl = 0, silent always
 
 | Weight | Signal Types |
 |--------|-------------|
-| 2.0 | `contradiction`, `intent_deviation`, `approach_failed`, `simulated_completion_risk` |
+| 2.0 | `contradiction`, `intent_deviation`, `approach_failed`, `simulated_completion_risk`, `user_observation_conflict`, `circular_verification`, `cohesion_risk` |
 | 1.0 | `unverified_assumption`, `position_pressure`, `code_not_read`, `constraint_drift`, `missing_criteria`, `unverifiable_claim`, `partial_completion`, `scope_expansion`, `behavior_change_risk`, `sunk_cost_detected` |
 | 0.5 | `ambiguous_requirement`, `multiple_interpretations`, `missing_context`, `unrelated_change_detected`, `over_complexity_detected`, `abstraction_added`, `premature_pattern`, `opacity_risk` |
 
@@ -35,12 +35,12 @@ Purely mechanical + no code read  →  W_owl = 0, silent always
 
 | Principle | Signal Types |
 |-----------|-------------|
-| Epistemics | `unverified_assumption`, `ambiguous_requirement`, `multiple_interpretations`, `position_pressure` |
-| Reality | `code_not_read`, `contradiction`, `missing_context`, `constraint_drift` |
-| Verification | `missing_criteria`, `unverifiable_claim`, `partial_completion` |
+| Epistemics | `unverified_assumption`, `ambiguous_requirement`, `multiple_interpretations`, `user_observation_conflict`, `position_pressure` |
+| Reality | `code_not_read`, `contradiction`, `missing_context`, `constraint_drift`, `user_observation_conflict` |
+| Verification | `missing_criteria`, `unverifiable_claim`, `partial_completion`, `circular_verification` |
 | Locality | `scope_expansion`, `unrelated_change_detected` |
 | Conservation | `intent_deviation`, `behavior_change_risk` |
-| Simplicity | `over_complexity_detected` |
+| Simplicity | `over_complexity_detected`, `cohesion_risk` |
 | Generalization | `abstraction_added`, `premature_pattern` |
 | Debuggability | `opacity_risk` |
 | Integrity | `approach_failed`, `simulated_completion_risk`, `sunk_cost_detected` |
@@ -65,7 +65,8 @@ Multiple signals: stack by descending weight, cap at 5 lines.
 ## Pressure Triggers → Read references/pressure-protocol.md
 
 - 10+ turns on one task
-- User disagrees without new information
+- User challenges a prior conclusion
+- User reports behavior conflicting with a prior completion claim
 - Same error recurred 2+ times
 - Current direction no longer traceable to original request
 
@@ -90,6 +91,7 @@ Full table: `references/signal-schema.md` § SISPIS Entropy Mapping
 | Approach tried 2+ times, same result | Reset |
 | Fix applied, behavior unchanged | Reset |
 | Task has grown significantly more complex without working better | Reset |
-| User provided new info that changes direction | Continue (legitimate update) |
-| User disagrees, no new info | Continue (hold position) |
+| User reports observed behavior after a completion claim | Reopen/reinspect; act on fresh evidence |
+| User provided factual correction or intent/preference | Verify/incorporate as correction or requirement |
+| User disagrees with no observation/evidence/intent change | One fresh load-bearing check; then hold evidence-based position |
 | Partial progress, wrong path | Reset, label completed portion |

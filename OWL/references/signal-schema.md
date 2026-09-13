@@ -11,6 +11,7 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 | `unverified_assumption` | 1.0 | Approach depends on an assumption that hasn't been verified and is not inferable from available context |
 | `ambiguous_requirement` | 0.5 | The request has two or more distinct interpretations with meaningfully different implementations |
 | `multiple_interpretations` | 0.5 | More than two interpretations exist; presenting them requires a decision from the user |
+| `user_observation_conflict` | 2.0 | The user reports current observable behavior that conflicts with a prior agent conclusion, completion claim, or verified state — reinspection is required |
 | `position_pressure` | 1.0 | User disagreement arrived without new information — social pressure to revise a correct analysis |
 
 ### Reality
@@ -29,6 +30,7 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 | `missing_criteria` | 1.0 | Success is not derivable from the request — "fix it" or "make it work" without a testable state |
 | `unverifiable_claim` | 1.0 | A claim is being made that cannot be verified with available tools, context, or code |
 | `partial_completion` | 1.0 | Some part of the task is complete but another part cannot be verified — labeling required |
+| `circular_verification` | 2.0 | A completion claim materially rests on edit existence, an implementation-mirroring test, an unexercised failing boundary, rereading newly written code, or a prior agent message |
 
 ### Locality
 
@@ -49,6 +51,7 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 | Signal Type | Weight | Condition |
 |-------------|--------|-----------|
 | `over_complexity_detected` | 0.5 | Current approach is detectably more complex than the problem requires |
+| `cohesion_risk` | 2.0 | A proposed edit adds another distinct responsibility to an already multi-responsibility unit — responsibility ownership is becoming entangled |
 
 ### Generalization
 
@@ -77,7 +80,7 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 
 | Weight | Signal Types |
 |--------|-------------|
-| 2.0 | `contradiction`, `intent_deviation`, `approach_failed`, `simulated_completion_risk` |
+| 2.0 | `contradiction`, `intent_deviation`, `approach_failed`, `simulated_completion_risk`, `user_observation_conflict`, `circular_verification`, `cohesion_risk` |
 | 1.0 | `unverified_assumption`, `position_pressure`, `code_not_read`, `constraint_drift`, `missing_criteria`, `unverifiable_claim`, `partial_completion`, `scope_expansion`, `behavior_change_risk`, `sunk_cost_detected` |
 | 0.5 | `ambiguous_requirement`, `multiple_interpretations`, `missing_context`, `unrelated_change_detected`, `over_complexity_detected`, `abstraction_added`, `premature_pattern`, `opacity_risk` |
 
@@ -140,6 +143,8 @@ The SISPIS entropy signals are: `option_multiplicity`, `tradeoff_density`, `ambi
 | OWL signal_type | SISPIS signal affected | Delta |
 |-----------------|----------------------|-------|
 | `contradiction` | `option_multiplicity`, `downstream_impact` | +2 each |
+| `user_observation_conflict` | `ambiguity_of_framing` | +1 |
+| `user_observation_conflict` | `downstream_impact` | +2 |
 | `ambiguous_requirement` | `ambiguity_of_framing` | +2 |
 | `unverified_assumption` | `ambiguity_of_framing` | +1 |
 | `multiple_interpretations` | `comparative_intent`, `ambiguity_of_framing` | +1 each |
@@ -159,6 +164,8 @@ The SISPIS entropy signals are: `option_multiplicity`, `tradeoff_density`, `ambi
 | `missing_context` | `ambiguity_of_framing` | +0.5 |
 | `unverifiable_claim` | `tradeoff_density` | +0.5 |
 | `partial_completion` | `downstream_impact` | +0.5 |
+| `circular_verification` | `tradeoff_density`, `downstream_impact` | +1 each |
+| `cohesion_risk` | `tradeoff_density`, `downstream_impact` | +1 each |
 | `premature_pattern` | `option_multiplicity` | +0.5 |
 | `unrelated_change_detected` | `downstream_impact` | +0.5 |
 

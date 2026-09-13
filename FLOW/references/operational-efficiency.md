@@ -62,7 +62,9 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 | Signal Type | Weight | Condition |
 |-------------|--------|-----------|
 | `coupling_burden` | 1.0 | A change introduces tight coupling that will complicate future modifications — changes in one place require changes in another |
-| `unnecessary_abstraction` | 0.5 | An abstraction is being added that doesn't reduce complexity at the call site — the abstraction adds indirection without benefit |
+| `responsibility_concentration` | 2.0 | A component becomes the owner/coordinator/implementation point for multiple unrelated domains — future unrelated changes converge on it |
+| `change_amplification` | 1.0 | A routine change must touch one central component plus multiple unrelated branches/state paths because responsibilities are entangled |
+| `unnecessary_abstraction` | 0.5 | A reusable abstraction is being added that doesn't reduce complexity at the call site — the abstraction adds indirection without benefit |
 
 ---
 
@@ -70,11 +72,11 @@ Complete registry of all signal types, organized by principle. Multiple types pe
 
 | Weight | Signal Types |
 |--------|-------------|
-| 2.0 | `retry_storm_risk`, `unbounded_accumulation`, `n_plus_one_query`, `cache_stampede_risk` |
-| 1.0 | `non_idempotent_retry`, `missing_timeout`, `missing_flow_control`, `stale_cache_risk`, `blocking_startup`, `algorithmic_drag`, `missing_pagination`, `sync_blocking_io`, `workflow_friction`, `coupling_burden` |
+| 2.0 | `retry_storm_risk`, `unbounded_accumulation`, `n_plus_one_query`, `cache_stampede_risk`, `responsibility_concentration` |
+| 1.0 | `non_idempotent_retry`, `missing_timeout`, `missing_flow_control`, `stale_cache_risk`, `blocking_startup`, `algorithmic_drag`, `missing_pagination`, `sync_blocking_io`, `workflow_friction`, `coupling_burden`, `change_amplification` |
 | 0.5 | `unnecessary_caching`, `eager_loading`, `repeated_computation`, `missing_batching`, `missing_incremental`, `unnecessary_abstraction` |
 
-The 2.0 weight is reserved for signals that represent cascading operational hazards — patterns that don't just create drag but actively compound under load. A retry storm cascades. An unbounded queue leaks memory progressively. An N+1 query scales with traffic. A cache stampede multiplies load. These are qualitatively different from a missing timeout or a slow build — they get worse nonlinearly.
+The 2.0 weight is reserved for signals that represent compounding operational hazards — under load or over future change. A retry storm cascades. An unbounded queue leaks memory progressively. An N+1 query scales with traffic. A cache stampede multiplies load. Responsibility concentration makes unrelated changes converge on one component, compounding maintenance and regression risk.
 
 ---
 
@@ -111,6 +113,7 @@ FLOW only runs when the task touches one or more trigger areas. The trigger chec
 | Provider/API calls | Code adds or modifies external service calls, API integrations, or rate-limited endpoints |
 | Database or filesystem access | Code adds or modifies database queries, index usage, file I/O, or connection pooling |
 | Complex abstractions | Code adds new abstraction layers, indirection, design patterns, or coupling between modules |
+| Responsibility concentration / central-object growth | A proposed edit adds another distinct domain/reason-to-change to an already multi-responsibility class/module, grows a central dispatcher with feature-specific branches, or places unrelated subsystem state under one owner |
 | Long-lived maintenance burden | Code introduces patterns requiring ongoing upkeep across locations — duplicated config/constants that must stay in sync, hardcoded values spread across modules, or coupling that forces coordinated edits on every change |
 
 ### Trigger-to-Principle Map
@@ -128,6 +131,7 @@ The trigger gate determines which principles are worth evaluating. Not all eight
 | Database or filesystem access | External I/O Discipline, Hot-Path Awareness |
 | Build, test, CI, or dev workflow | Workflow Friction |
 | Complex abstractions | Maintenance Weight |
+| Responsibility concentration / central-object growth | Maintenance Weight |
 | Long-lived maintenance burden | Maintenance Weight |
 
 A task touching multiple trigger areas evaluates multiple principles. A task touching only one trigger area evaluates only the relevant principle — the full eight-principle pass is overhead.
@@ -239,17 +243,39 @@ A task touching multiple trigger areas evaluates multiple principles. A task tou
 
 ### Maintenance Weight
 
-**Correct abstraction pattern:**
-- Abstract when there's a concrete second use case
-- Abstract when the call site is simpler with the abstraction than without
-- Coupling is intentional and documented
+Ask: **does this change make responsibility ownership clearer or more entangled?**
+
+```text
+Too many layers       -> unnecessary_abstraction
+Too few boundaries    -> responsibility_concentration
+Cross-boundary edits  -> coupling_burden / change_amplification
+```
+
+**Correct pattern:**
+- For reuse/generalization: abstract when there is a concrete second use case or equivalent concrete benefit.
+- For cohesion: extract a distinct responsibility when the coordinator otherwise owns policy, orchestration, persistence, provider/API access, state, or unrelated domains. One caller does not mean one responsibility.
+- Prefer a thin coordinator plus cohesive collaborators; do not simply split a file or create twenty meaningless one-method interfaces.
+- Good first boundaries are often side-effect boundaries — persistence, provider/API access, transport, configuration — followed by domain/policy, while orchestration remains in the façade.
+- Preserve behavior while moving ownership first; implement new behavior through the resulting boundary.
 
 **Anti-patterns:**
-- Adding a factory layer when there's one implementation → `unnecessary_abstraction`
+- Adding a factory layer when there's one implementation and no cohesion need → `unnecessary_abstraction`
 - Adding a config system for values that are hardcoded and stable → `unnecessary_abstraction`
 - Change that couples two previously independent modules → `coupling_burden`
+- Adding another feature branch/method to a central class that already owns unrelated domains → `responsibility_concentration`
+- Routine changes repeatedly touching the same coordinator plus unrelated state → `change_amplification`
 
-**The distinction FLOW draws:** An abstraction without a second use case is not "flexible" — it is maintenance cost with no benefit. The test: will this code be easier or harder to change in six months? If harder, the abstraction is net negative.
+**Responsibility indicators — not raw LOC:**
+- Multiple unrelated reasons to change
+- One owner combines orchestration, policy, persistence, provider/API interaction, and state
+- Feature-specific conditionals accumulate in a central dispatcher
+- Unrelated subsystem state is owned by one object
+- Tests for unrelated behavior all require the same central class
+- Repeated feature work continually targets the same coordinator
+
+A 1,200-line cohesive parser may be legitimate. A 250-line class owning authentication, database lifecycle, provider routing, configuration mutation, and UI state can be a God Object. Responsibility and change reasons are the criterion; LOC is only a heuristic.
+
+**The distinction FLOW draws:** A reusable abstraction without a second use case is hypothetical flexibility. A cohesion boundary may be necessary with one caller because it removes an unrelated responsibility from a central object. File count is not the measure of simplicity; ownership clarity is.
 
 ---
 
@@ -304,6 +330,8 @@ The SISPIS entropy signals are: `option_multiplicity`, `tradeoff_density`, `ambi
 | `sync_blocking_io` | `downstream_impact` | +1 |
 | `workflow_friction` | `tradeoff_density` | +1 |
 | `coupling_burden` | `downstream_impact`, `tradeoff_density` | +1 each |
+| `responsibility_concentration` | `downstream_impact`, `tradeoff_density` | +1 each |
+| `change_amplification` | `downstream_impact` | +1 |
 | `unnecessary_caching` | `tradeoff_density` | +0.5 |
 | `eager_loading` | `downstream_impact` | +0.5 |
 | `repeated_computation` | `downstream_impact` | +0.5 |

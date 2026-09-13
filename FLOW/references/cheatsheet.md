@@ -12,6 +12,7 @@ FLOW only activates when the task touches one or more of:
 - provider/API calls
 - database or filesystem access
 - complex abstractions
+- responsibility concentration / central-object growth
 - long-lived maintenance burden
 
 **No triggers → FLOW does not run.** This is the primary suppression mechanism.
@@ -42,14 +43,14 @@ Triggers present:
 | 5 | **Hot-Path Awareness** | Hot paths avoid algorithmic drag. Loops efficient at expected scale. | Don't ignore O(n²) "because n is small." n grows. |
 | 6 | **External I/O Discipline** | External calls batched, paginated, non-blocking where volume warrants. | Don't fetch one-by-one "because it's simpler." N+1 is a classic for a reason. |
 | 7 | **Workflow Friction** | Change doesn't slow build/test/dev cycle. Feedback loops stay fast. | Don't add synchronous steps "because it's correct." Slow CI is operational drag. |
-| 8 | **Maintenance Weight** | Abstractions reduce more complexity than they add. Maintenance proportional to benefit. | Don't add abstractions "for flexibility." Unused flexibility is maintenance cost. |
+| 8 | **Maintenance Weight** | Reuse abstractions earn their cost; responsibility boundaries prevent concentration. | Don't invent hypothetical flexibility; don't add another domain to an overloaded coordinator. |
 
 ## Signal Weights
 
 | Weight | Signal Types |
 |--------|-------------|
-| 2.0 | `retry_storm_risk`, `unbounded_accumulation`, `n_plus_one_query`, `cache_stampede_risk` |
-| 1.0 | `non_idempotent_retry`, `missing_timeout`, `missing_flow_control`, `stale_cache_risk`, `blocking_startup`, `algorithmic_drag`, `missing_pagination`, `sync_blocking_io`, `workflow_friction`, `coupling_burden` |
+| 2.0 | `retry_storm_risk`, `unbounded_accumulation`, `n_plus_one_query`, `cache_stampede_risk`, `responsibility_concentration` |
+| 1.0 | `non_idempotent_retry`, `missing_timeout`, `missing_flow_control`, `stale_cache_risk`, `blocking_startup`, `algorithmic_drag`, `missing_pagination`, `sync_blocking_io`, `workflow_friction`, `coupling_burden`, `change_amplification` |
 | 0.5 | `unnecessary_caching`, `eager_loading`, `repeated_computation`, `missing_batching`, `missing_incremental`, `unnecessary_abstraction` |
 
 ## Signal Types by Principle
@@ -63,7 +64,7 @@ Triggers present:
 | Hot-Path Awareness | `algorithmic_drag`, `repeated_computation` |
 | External I/O Discipline | `n_plus_one_query`, `missing_pagination`, `sync_blocking_io`, `missing_batching` |
 | Workflow Friction | `workflow_friction`, `missing_incremental` |
-| Maintenance Weight | `coupling_burden`, `unnecessary_abstraction` |
+| Maintenance Weight | `coupling_burden`, `unnecessary_abstraction`, `responsibility_concentration`, `change_amplification` |
 
 ## Surface Format
 
@@ -94,7 +95,8 @@ Multiple signals: stack by descending weight, cap at 5 lines.
 | Is the hot path efficient? | Hot-Path Awareness | O(n²) where O(n) suffices → `algorithmic_drag`. Repeated work in loop → `repeated_computation`. |
 | Are external calls batched/paginated? | External I/O Discipline | Query in loop → `n_plus_one_query`. No limit on fetch → `missing_pagination`. Blocking I/O on stall path → `sync_blocking_io`. |
 | Does this slow the dev cycle? | Workflow Friction | Slower build/test/CI → `workflow_friction`. Breaks incremental → `missing_incremental`. |
-| Does the abstraction earn its cost? | Maintenance Weight | Adds coupling → `coupling_burden`. No complexity reduction → `unnecessary_abstraction`. |
+| Does the abstraction earn its cost? | Maintenance Weight | Pointless reuse wrapper → `unnecessary_abstraction`. Adds coupling → `coupling_burden`. |
+| Is ownership clearer or more entangled? | Maintenance Weight | More unrelated domains in one owner → `responsibility_concentration`. Central edits fan out → `change_amplification`. |
 
 ## Integration Points
 
@@ -116,6 +118,8 @@ Multiple signals: stack by descending weight, cap at 5 lines.
 | `sync_blocking_io` | `downstream_impact` | +1 |
 | `workflow_friction` | `tradeoff_density` | +1 |
 | `coupling_burden` | `downstream_impact`, `tradeoff_density` | +1 each |
+| `responsibility_concentration` | `downstream_impact`, `tradeoff_density` | +1 each |
+| `change_amplification` | `downstream_impact` | +1 |
 | `unnecessary_caching` | `tradeoff_density` | +0.5 |
 | `eager_loading` | `downstream_impact` | +0.5 |
 | `repeated_computation` | `downstream_impact` | +0.5 |
@@ -153,6 +157,7 @@ Before running FLOW, check if the task touches any trigger:
 7. Database/filesystem access? → Yes → run External I/O Discipline, Hot-Path Awareness
 8. Build/test/CI/dev workflow? → Yes → run Workflow Friction
 9. New abstraction/pattern/coupling? → Yes → run Maintenance Weight
-10. Long-lived maintenance burden (duplicated config, hardcoded values spread across modules, coupling forcing coordinated edits)? → Yes → run Maintenance Weight
+10. New domain/reason-to-change added to an already multi-responsibility owner? → Yes → run Maintenance Weight
+11. Long-lived maintenance burden (duplicated config, hardcoded values spread across modules, coupling forcing coordinated edits)? → Yes → run Maintenance Weight
 
 All No → FLOW does not run.

@@ -152,11 +152,17 @@ Created ──[work begins]──→ Active ──[work completes]──→ Reso
                          [identity preserved]
                               ↓
                          [new name/context]
+
+Resolved ──[success criterion contradicted by new observation]──→ Active
+Partially Resolved ──[remaining behavior observed]─────────────→ Active
 ```
 
 **Rules:**
 - Identity persists across all state transitions
 - An object is only Resolved when success criteria are met
+- A credible user-reported runtime/UI/behavioral observation is a reopen trigger; it is Observed, source=user report, independently unverified
+- A reopen is a reopen. Do not create a new defect identity unless fresh evidence proves it is genuinely a different defect.
+- On reopen, retain the previous evidence and record: conflicting observation, claim downgraded (Resolved/Partially Resolved → Active), fresh verification action, and resulting state.
 - Superseded objects retain their history — the superseding object references the superseded one
 - Partially Resolved objects track what was completed and what remains
 
@@ -168,6 +174,7 @@ Unknown ──[inference]───→ Inferred
 Inferred ──[verification]──→ Verified
 Observed ──[verification]──→ Verified
 Any class ──[contradicted]──→ Unknown (re-classify, don't delete)
+Verified/Resolved claim ──[user reports conflicting observable behavior]──→ Unknown pending reinspection
 Speculative ──[adopted as premise]──→ STOP. Return to Unknown.
 ```
 
@@ -283,15 +290,17 @@ Active registries accumulate. Objects must be retired to prevent unbounded growt
 
 ### Classification Rules
 
-1. **Default to the lowest supported class.** If you haven't read the code, it's not Verified — it's at best Inferred.
+1. **Default to the lowest supported class.** If you haven't read the code, it's not Verified. An OWL `unverified_assumption` starts as Unknown unless available evidence supports an inference.
 
 2. **Confidence is not evidence.** "I'm 90% sure it's a connection pool issue" is still Inferred, not Verified.
 
 3. **Label the class when it matters.** If a claim's class affects the approach, state the class. If it doesn't affect the approach, classification can be implicit.
 
-4. **Re-classify on new evidence.** When new information arrives, update classifications. Don't accumulate stale classifications.
+4. **A user-reported observation is evidence.** "It still crashes" is Observed, source=user report, independently unverified. It does not automatically establish the user's root-cause theory, but it invalidates an unconditional Verified/Fixed claim until fresh inspection occurs.
 
-5. **Never present Inferred as Observed.** This is the most common epistemic error. An inference presented as observation is a fabrication.
+5. **Re-classify on new evidence.** When new information arrives, update classifications. Don't accumulate stale classifications. A prior Verified claim contradicted by a new observation returns to Unknown pending fresh verification.
+
+6. **Never present Inferred as Observed.** This is the most common epistemic error. An inference presented as observation is a fabrication.
 
 ---
 

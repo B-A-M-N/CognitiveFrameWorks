@@ -4,12 +4,12 @@ Behavioral protocols for AI assistants. Seven skills that operate as a pipeline,
 
 ## Skills
 
-- **OWL** — Operational Wisdom Layer. Pre-implementation reasoning protocol. Runs a nine-principle pass before acting, surfaces findings only when they'd change what the user does or expects.
-- **ANCHOR** — Agent Nexus for Context History and Operational Recovery. Preserves execution continuity by maintaining state integrity, object continuity, memory integrity, epistemic classification, recovery discipline, completion criteria, action accountability, and information economy throughout a session.
+- **OWL** — Operational Wisdom Layer. Pre-implementation reasoning protocol. Runs a nine-principle pass before acting; treats user-reported behavior as evidence requiring reinspection, rejects circular verification, and detects responsibility-concentration risk before edits.
+- **ANCHOR** — Agent Nexus for Context History and Operational Recovery. Preserves execution continuity by maintaining state integrity, object continuity, memory integrity, epistemic classification, reopen lifecycle, recovery discipline, completion criteria, action accountability, and information economy throughout a session.
 - **DOX** — Documentation Operations eXchange. AGENTS.md hierarchy protocol. Loads the applicable doc contract before editing, runs a closeout pass after. Preserves repo-local documentation as a binding work contract.
 - **SISPIS** — Skank in Sheets, Princess in Streets. Decision-routing and response calibration. Gates output structure based on entropy. Simple queries get direct answers; decision-laden queries get a structured framework.
-- **FUSE** — Functional Utility Selection & Execution. Governs tool-call strategy: when to call tools, which tool, in what order, when to parallelize, what bounds, what results prove, when to stop retrying, when to avoid tools. Wraps the execution layer — runs per-action, not per-request.
-- **FLOW** — Friction, Load, Overhead, and Workload. Evaluates the implementation for operational drag across eight principles: Retry Discipline, Backpressure, Cache Hygiene, Startup Efficiency, Hot-Path Awareness, External I/O Discipline, Workflow Friction, and Maintenance Weight. Triggered, not always-on — the trigger gate (10 areas) is the primary suppression. Runs after FUSE-governed execution, before DOX closeout.
+- **FUSE** — Functional Utility Selection & Execution. Governs tool-call strategy: when fresh evidence is required, which tool, in what order, when to parallelize, what bounds, what results prove, when stale or circular evidence cannot certify success, when to stop retrying, and when to avoid tools. Wraps the execution layer — runs per-action, not per-request.
+- **FLOW** — Friction, Load, Overhead, and Workload. Evaluates the implementation for operational drag across eight principles: Retry Discipline, Backpressure, Cache Hygiene, Startup Efficiency, Hot-Path Awareness, External I/O Discipline, Workflow Friction, and Maintenance Weight. Maintenance Weight covers excessive abstraction and responsibility concentration / God Objects. Triggered, not always-on — the trigger gate is the primary suppression. Runs after FUSE-governed execution, before DOX closeout.
 - **WARD** — Warning Authority Risk Director. Gates whether a selected action is allowed, safe enough, too destructive, exposes secrets, crosses a trust boundary, or requires confirmation. Eight principles — Authority Fit, Blast Radius, Secret Hygiene, Trust Boundary Discipline, Mutation Consent, Reversibility, Dependency & Supply-Chain Caution, and Policy Preservation. Runs alongside FUSE at each action decision point. WARD can veto, constrain, or require confirmation for a FUSE-selected action.
 
 ## Pipeline Order
@@ -43,6 +43,8 @@ Running the full seven-skill pipeline on every request is unnecessary overhead. 
 | File-editing in DOX-governed project | OWL + ANCHOR + DOX + FUSE + WARD + FLOW + SISPIS as needed |
 | Risky commands / secrets / external effects | WARD required |
 
+These ownership contracts explicitly target **self-certification / dismissal of contradictory user observations** and **responsibility concentration / God Objects**. A user report of observed behavior is evidence requiring reinspection; it does not automatically prove the user's root cause. Simplicity is not file count when responsibility ownership deteriorates.
+
 **Loading a skill is itself overhead.** The minimum sufficient subset is required by ANCHOR's Information Economy and FLOW's Maintenance Weight principles.
 
 **Rules:**
@@ -51,7 +53,7 @@ Running the full seven-skill pipeline on every request is unnecessary overhead. 
 - OWL always runs unless the task is purely mechanical with no code to read and no ambiguity (see OWL Suppression Conditions in `references/signal-schema.md`).
 - FUSE activates whenever tools are being called. It suppresses for single obvious calls (known target, only fitting tool, no retry/parallel/evidence ambiguity). It does not run on conversational or analysis-only tasks.
 - WARD activates whenever tools can mutate state, access private data, call network resources, run commands, install dependencies, send messages, or expose secrets. It suppresses for pure reads of project files with no boundary crossing, no secret exposure, and no policy implication.
-- FLOW activates only when the implementation touches one of ten trigger areas:
+- FLOW activates only when the implementation touches one of eleven trigger areas:
   1. Retry/backoff logic
   2. Queues/streams/buffers
   3. Caches (invalidation, eviction, consistency)
@@ -61,7 +63,8 @@ Running the full seven-skill pipeline on every request is unnecessary overhead. 
   7. Provider/API calls (network, external services)
   8. Database/filesystem operations
   9. Complex abstractions (e.g., metaprogramming, reflection)
-  10. Maintenance burden (e.g., deprecated APIs, technical debt)
+  10. Responsibility concentration / central-object growth
+  11. Maintenance burden (e.g., deprecated APIs, technical debt)
   If no trigger fires, FLOW does not run. It does not optimize for cleverness or micro-performance — only measurable or likely operational drag.
 - SISPIS always runs — it is the output gate and has negligible cost when it resolves to NO_DECISION.
 
