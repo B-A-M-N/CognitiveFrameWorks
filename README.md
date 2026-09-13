@@ -463,3 +463,11 @@ CognitiveFrameWorks/
         ├── .aider.conf.yml
         └── continue-config.yaml
 ```
+
+---
+
+## Acknowledgement and Disclaimer
+
+[FreeInference.org](https://freeinference.org) was utilized in part in making this project. If this project has been helpful, please consider supporting FreeInference.org; it provides a valuable service.
+
+FreeInference.org did not review, sponsor, direct, endorse, approve, fund, or otherwise control this work. Its mention here does not imply affiliation, partnership, or responsibility for this project's content.
