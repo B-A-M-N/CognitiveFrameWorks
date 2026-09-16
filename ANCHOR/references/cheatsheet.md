@@ -90,13 +90,9 @@ Request → OWL → ANCHOR → DOX(load) → FUSE → Edit → FLOW → DOX(clos
 | `overclaimed_evidence` | Epistemic Classification trigger (reclassify Verified → Inferred) |
 | `absence_inference` | Epistemic Classification trigger (reclassify Verified → Speculative) |
 
-### ANCHOR → SISPIS (concrete deltas)
+### ANCHOR → SISPIS
 
-| ANCHOR state event | SISPIS signal | Delta |
-|--------------------|---------------|-------|
-| Recovery (Failed → Recovered) | `option_multiplicity`, `tradeoff_density` | +1 each |
-| Object merge/split without evidence | `ambiguity_of_framing` | +1 |
-| Checkpoint reconstruction | `ambiguity_of_framing` | -1 |
-| Completion criteria undefined | `ambiguity_of_framing` | +1 |
-
-Apply before Stage 1. Cap each SISPIS signal at 2.0.
+ANCHOR emits semantic state signals (recovery, checkpoint, object/completion)
+in the canonical envelope (`shared/signal.schema.json`). ANCHOR does not compute
+SISPIS entropy or intent weight; SISPIS owns every signal → calibration mapping
+(`shared/integration.md` § SISPIS Integration).

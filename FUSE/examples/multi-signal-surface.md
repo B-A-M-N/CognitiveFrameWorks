@@ -76,8 +76,3 @@ Anti-pattern to avoid: proceeding with the blind edit because "I'll fix it if th
 ---
 
 ## SISPIS Integration
-
-- `out_of_order_execution` → `downstream_impact` +0.5
-- `disproportionate_read` → `downstream_impact` +0.5
-
-SISPIS receives +1.0 to `downstream_impact` total. Modest elevation; gate depends on base E. The output frames the sequencing risk without escalating to SCHEMA unless base E was already high.

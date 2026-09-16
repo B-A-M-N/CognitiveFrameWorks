@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.0.0",
+  "owner": "cognitive-frameworks",
+  "handlers": {
+    "authority.boundaries": {
+      "version": "1",
+      "hooks": ["before_action"],
+      "modes": ["structural", "tool_gate"],
+      "parameter_schema": {
+        "type": "object",
+        "required": ["blocked_bindings"],
+        "properties": {
+          "blocked_bindings": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "completion.boundary_evidence": {
+      "version": "1", "hooks": ["before_completion"], "modes": ["structural"],
+      "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": false}
+    },
+    "contradiction.reinspect": {
+      "modes": ["structural", "tool_gate", "state_transition"],
+      "version": "1", "hooks": ["before_action", "before_transition"],
+      "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": false}
+    },
+    "retry.changed_hypothesis": {
+      "version": "1", "hooks": ["before_retry"], "modes": ["structural"],
+      "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": false}
+    },
+    "stale_model.reinspect": {
+      "version": "1", "hooks": ["before_action", "before_transition"],
+      "modes": ["structural", "tool_gate", "state_transition"],
+      "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": false}
+    },
+    "tool_gate.bad_action": {
+      "version": "1", "hooks": ["before_action"], "modes": ["structural", "tool_gate"],
+      "parameter_schema": {
+        "type": "object",
+        "required": ["blocked_bindings"],
+        "properties": {
+          "blocked_bindings": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

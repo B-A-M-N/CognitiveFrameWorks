@@ -87,12 +87,9 @@ W_flow = 1.5 (1.0 + 0.5) >= 1.5 → Surface mode.
 
 ## SISPIS Integration
 
-- `coupling_burden` → `downstream_impact` +1, `tradeoff_density` +1
-- `unnecessary_abstraction` → `tradeoff_density` +0.5
 
-Total: `downstream_impact` +1, `tradeoff_density` +1.5 (capped at 2.0).
 
-E elevates moderately. SISPIS gate depends on base E, but the tradeoff density elevation means the output should frame this as a design decision, not just deliver the refactored code.
+SISPIS applies its own calibration; the framing depends on its gate.
 
 ---
 

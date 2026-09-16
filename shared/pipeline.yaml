@@ -1,0 +1,155 @@
+version: 1.2.0
+# Canonical pipeline manifest. adapters/docs derive their repetitive integration
+# sections from this file; the validator checks semantics here, not English
+# phrases scattered through prose.
+#
+# requires:     hard dependency — the stage cannot run unless these are active.
+# order_after:  ordering only — "if both are active, these run before this".
+#               NOT a dependency. Activation profiles may omit order_after
+#               stages entirely (that is a minimal runtime, not a violation).
+# execution_mode / frequency: lifecycle semantics beyond a linear DAG.
+#   preflight / wrapper / postflight / state / pre_edit / output
+#   per_task / per_action / per_artifact / per_edit / per_response
+# aliases:      profile names may reference an owner; the alias expands to the
+#               owner's concrete stages.
+aliases:
+  anchor: [anchor_open, anchor_closeout]
+  dox: [dox_load, dox_closeout]
+
+profiles:
+  quick: [sispis]
+  advice: [owl, sispis]
+  debug: [owl, anchor, fuse, sispis]
+  implement: [owl, anchor, fuse, ward, sispis]
+  performance: [owl, flow, sispis]
+  doc_edit: [owl, anchor, dox, fuse, ward, sispis]
+
+stages:
+  - id: owl
+    owner: owl
+    activation_rule: non-trivial reasoning task; reasoning risk exists
+    input: [task]
+    output: [owl.verification_needed, owl.approach_failed, owl.constraint_drift, owl.user_observation_conflict, owl.circular_verification, owl.cohesion_risk]
+    requires: []
+    order_after: []
+    execution_mode: preflight
+    frequency: per_task
+    suppression_condition: trivial one-line answer
+    runtime_cost_class: low
+    activation_predicates:
+      - event: task_start
+        predicate: task.nontrivial
+  - id: anchor_open
+    owner: anchor
+    activation_rule: multi-turn work, state continuity, checkpoints, recovery
+    input: [owl.constraint_drift, task_context]
+    output: [anchor.recovery_started]
+    requires: [owl]
+    order_after: [owl]
+    execution_mode: state
+    frequency: per_task
+    suppression_condition: single-turn stateless answer
+    runtime_cost_class: low
+  - id: dox_load
+    owner: dox
+    activation_rule: editing inside a DOX-enabled project
+    input: [task_context, target_files]
+    output: [dox.contract_packet]
+    requires: []
+    order_after: [anchor_open]
+    execution_mode: pre_edit
+    frequency: per_edit
+    suppression_condition: no AGENTS contract applies to the edit target (load is mandatory before editing whenever one applies)
+    runtime_cost_class: low
+  - id: fuse
+    owner: fuse
+    activation_rule: any tool/action decision
+    input: [owl.verification_needed, anchor.recovery_started, evidence]
+    output: [fuse.retry_bound_exceeded, fuse.overclaimed_evidence, fuse.conflicting_evidence_unrechecked]
+    requires: []
+    order_after: [owl, anchor_open, dox_load]
+    execution_mode: wrapper
+    frequency: per_action
+    suppression_condition: no tool call needed
+    runtime_cost_class: low
+    activation_predicates:
+      - event: action
+        predicate: action.any
+  - id: ward
+    owner: ward
+    activation_rule: mutation, authority, secrets, blast radius, external effect
+    input: [fuse.retry_bound_exceeded, dox.contract_packet]
+    output: [ward.authority_risk, ward.secret_exposure, ward.confirmation_required]
+    requires: [fuse]
+    order_after: [fuse]
+    execution_mode: wrapper
+    frequency: per_action
+    suppression_condition: wholly internal read-only analysis
+    runtime_cost_class: low
+    activation_predicates:
+      - event: action
+        predicate: action.mutating
+      - event: action
+        predicate: action.external_effect
+      - event: action
+        predicate: action.secret_access
+      - event: action
+        predicate: action.high_blast_radius
+      - event: action
+        predicate: action.untrusted
+  - id: flow
+    owner: flow
+    activation_rule: FLOW triggers fire (retry/backoff, queues, caches, startup, hot paths, I/O, workflow, central-object growth)
+    input: [produced_artifact]
+    output: [flow.operational_drag, flow.responsibility_concentration, flow.change_amplification]
+    requires: []
+    order_after: [anchor_open, fuse, ward]
+    execution_mode: postflight
+    frequency: per_artifact
+    suppression_condition: no operational-drag trigger present
+    runtime_cost_class: medium
+    activation_predicates:
+      - event: artifact
+        predicate: artifact.flow_triggered
+  - id: dox_closeout
+    owner: dox
+    activation_rule: durable documentation contract changed by the edit
+    input: [produced_artifact, dox.contract_packet]
+    output: [dox.closeout_packet]
+    requires: [dox_load]
+    order_after: [dox_load, fuse, ward, flow]
+    execution_mode: postflight
+    frequency: per_edit
+    suppression_condition: no durable documentation contract affected
+    runtime_cost_class: low
+    activation_predicates:
+      - event: artifact
+        predicate: artifact.durable_contract_changed
+  - id: anchor_closeout
+    owner: anchor
+    activation_rule: checkpoint/reclassification needed after artifact
+    input: [produced_artifact, flow.operational_drag]
+    output: [anchor.recovery_started]
+    requires: [anchor_open]
+    order_after: [anchor_open, fuse, ward, flow, dox_closeout]
+    execution_mode: state
+    frequency: per_artifact
+    suppression_condition: no state change requiring reclassification
+    runtime_cost_class: low
+    activation_predicates:
+      - event: artifact
+        predicate: artifact.state_changed
+  - id: sispis
+    owner: sispis
+    activation_rule: final response calibration
+    input: [owl.verification_needed, owl.approach_failed, owl.constraint_drift, anchor.recovery_started, fuse.retry_bound_exceeded, fuse.overclaimed_evidence, ward.authority_risk, ward.secret_exposure, ward.confirmation_required, flow.operational_drag, user intent]
+    output: [response_structure]
+    requires: []
+    order_after: [owl, anchor_open, anchor_closeout, fuse, ward, flow, dox_load, dox_closeout]
+    execution_mode: output
+    frequency: per_response
+    suppression_condition: none (always runs last)
+    runtime_cost_class: low
+    activation_predicates:
+      - event: completion
+        predicate: completion.any

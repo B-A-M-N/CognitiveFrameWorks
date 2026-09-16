@@ -1,6 +1,19 @@
 ---
 name: flow
-description: Friction, Load, Overhead, and Workload — evaluates implementation for operational drag across eight principles: Retry Discipline, Backpressure, Cache Hygiene, Startup Efficiency, Hot-Path Awareness, External I/O Discipline, Workflow Friction, and Maintenance Weight. Triggered, not always-on. FLOW activates only when a task touches retry/backoff/timeout, queues/streams/concurrency, caches/memoization/invalidation, startup/initialization, hot paths/loops/scans, build/test/CI/dev workflow, provider/API calls, database/filesystem access, complex abstractions, responsibility concentration / central-object growth, or long-lived maintenance burden. FLOW does not optimize for cleverness, micro-performance, or theoretical elegance — it only acts when implementation choices create measurable or likely operational drag. Runs after FUSE-governed execution, before DOX closeout.
+description: >
+  Friction, Load, Overhead, and Workload — evaluates implementation for
+  operational drag across eight principles: Retry Discipline, Backpressure,
+  Cache Hygiene, Startup Efficiency, Hot-Path Awareness, External I/O
+  Discipline, Workflow Friction, and Maintenance Weight. Triggered, not
+  always-on. FLOW activates only when a task touches retry/backoff/timeout,
+  queues/streams/concurrency, caches/memoization/invalidation,
+  startup/initialization, hot paths/loops/scans, build/test/CI/dev workflow,
+  provider/API calls, database/filesystem access, complex abstractions,
+  responsibility concentration / central-object growth, or long-lived
+  maintenance burden. FLOW does not optimize for cleverness,
+  micro-performance, or theoretical elegance — it only acts when
+  implementation choices create measurable or likely operational drag. Runs
+  after FUSE-governed execution, before DOX closeout.
 ---
 
 # FLOW — Friction, Load, Overhead, and Workload
@@ -263,29 +276,7 @@ FLOW findings are about the artifact, not the execution state. FLOW does not tri
 FLOW answers: *What operational drag does this create?*
 SISPIS answers: *How should this be communicated?*
 
-FLOW findings feed SISPIS's entropy score. A `retry_storm_risk` or `n_plus_one_query` finding elevates entropy — the output must frame the tradeoff, not just deliver the code. A `workflow_friction` finding elevates `tradeoff_density` — the user needs to know the dev cycle cost.
-
-| FLOW signal | SISPIS signal | Delta |
-|-------------|---------------|-------|
-| `retry_storm_risk` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `unbounded_accumulation` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `n_plus_one_query` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `cache_stampede_risk` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `non_idempotent_retry` | `tradeoff_density` | +1 |
-| `missing_timeout` | `downstream_impact` | +1 |
-| `missing_flow_control` | `downstream_impact` | +1 |
-| `stale_cache_risk` | `downstream_impact` | +1 |
-| `blocking_startup` | `downstream_impact` | +1 |
-| `algorithmic_drag` | `downstream_impact` | +1 |
-| `missing_pagination` | `downstream_impact` | +1 |
-| `sync_blocking_io` | `downstream_impact` | +1 |
-| `workflow_friction` | `tradeoff_density` | +1 |
-| `coupling_burden` | `downstream_impact`, `tradeoff_density` | +1 each |
-| `responsibility_concentration` | `downstream_impact`, `tradeoff_density` | +1 each |
-| `change_amplification` | `downstream_impact` | +1 |
-Sub-threshold deltas (+0.5) and the complete mapping: `references/operational-efficiency.md`.
-
-Apply as upstream signal inputs to SISPIS. SISPIS collects all upstream signals, deduplicates by underlying cause (highest severity per cause wins), sums remaining deltas, and caps each dimension at 2.0. See CLAUDE.md § SISPIS Signal Integration Protocol for the full deduplication rule.
+FLOW emits **semantic signals** in the canonical envelope (`shared/signal.schema.json`) — e.g. `retry_storm_risk`, `n_plus_one_query`, `workflow_friction`, `responsibility_concentration`. FLOW does not compute SISPIS entropy or intent weight; SISPIS owns every signal → calibration mapping and decides how a finding shapes the output.
 
 ### DOX ↔ FLOW
 

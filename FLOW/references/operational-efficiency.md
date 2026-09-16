@@ -308,40 +308,11 @@ FLOW runs but does not surface (W_flow < 1.5) when:
 
 ### FLOW → SISPIS
 
-FLOW signals map to SISPIS entropy dimensions. When FLOW runs before SISPIS, emitted signals pre-score specific SISPIS entropy signals.
-
-The SISPIS entropy signals are: `option_multiplicity`, `tradeoff_density`, `ambiguity_of_framing`, `comparative_intent`, `downstream_impact`.
-
-#### Mapping Table
-
-| FLOW signal_type | SISPIS signal affected | Delta |
-|------------------|----------------------|-------|
-| `retry_storm_risk` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `unbounded_accumulation` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `n_plus_one_query` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `cache_stampede_risk` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `non_idempotent_retry` | `tradeoff_density` | +1 |
-| `missing_timeout` | `downstream_impact` | +1 |
-| `missing_flow_control` | `downstream_impact` | +1 |
-| `stale_cache_risk` | `downstream_impact` | +1 |
-| `blocking_startup` | `downstream_impact` | +1 |
-| `algorithmic_drag` | `downstream_impact` | +1 |
-| `missing_pagination` | `downstream_impact` | +1 |
-| `sync_blocking_io` | `downstream_impact` | +1 |
-| `workflow_friction` | `tradeoff_density` | +1 |
-| `coupling_burden` | `downstream_impact`, `tradeoff_density` | +1 each |
-| `responsibility_concentration` | `downstream_impact`, `tradeoff_density` | +1 each |
-| `change_amplification` | `downstream_impact` | +1 |
-| `unnecessary_caching` | `tradeoff_density` | +0.5 |
-| `eager_loading` | `downstream_impact` | +0.5 |
-| `repeated_computation` | `downstream_impact` | +0.5 |
-| `missing_batching` | `downstream_impact` | +0.5 |
-| `missing_incremental` | `tradeoff_density` | +0.5 |
-| `unnecessary_abstraction` | `tradeoff_density` | +0.5 |
-
-#### Capping
-
-SISPIS entropy signals are scored 0-2 per signal. FLOW deltas can push a signal past 2. Cap each SISPIS signal at 2.0 after applying deltas. Overflow does not carry to adjacent signals.
+FLOW emits **semantic signals** in the canonical envelope
+(`shared/signal.schema.json`): `retry_storm_risk`, `n_plus_one_query`,
+`workflow_friction`, `responsibility_concentration`, etc. FLOW does not
+compute SISPIS entropy or intent weight — SISPIS owns every signal →
+calibration mapping (`shared/integration.md` § SISPIS Integration).
 
 #### Pipeline Operation
 
@@ -351,13 +322,11 @@ SISPIS entropy signals are scored 0-2 per signal. FLOW deltas can push a signal 
 3. FLOW gate: if W_flow >= 1.5, surface findings before output
 4. If drag found and fixable, fix is applied before DOX closeout
 5. If drag found and accepted as tradeoff, decision is recorded
-6. FLOW passes emitted signal list to SISPIS
-7. SISPIS applies delta table to its entropy score E
+6. FLOW passes emitted signals to SISPIS in the canonical envelope
+7. SISPIS owns signal → entropy / intent / output-floor calibration
 8. SISPIS runs its gate function on the resulting E
 9. Output mode: NO_DECISION / EXPLANATION / SCHEMA
 ```
-
-A single `retry_storm_risk` (2.0) elevates SISPIS E by +4 (two signals +2 each, capped at 2 each). This is likely to push E past 6, triggering SISPIS Stage 1 hard override → SCHEMA mode. The output must frame the retry storm risk as a decision, not just deliver the code.
 
 ### FLOW → ANCHOR
 
@@ -419,13 +388,10 @@ Fix a typo in an error message. No triggers touched. FLOW does not run. W_flow =
 `retry_storm_risk` fires — a retry loop without backoff. W_flow = 2.0 >= 1.5 → surface. SISPIS receives +4 total (two signals +2 each, capped at 2 each). E likely crosses 6 → SISPIS Stage 1 hard override → SCHEMA mode.
 
 ### Two weight-1.0 signals (W_flow = 2.0)
-`algorithmic_drag` + `coupling_burden`. A change adds a nested loop in a hot path that also introduces tight coupling. Surfaces. SISPIS receives +1 to `downstream_impact` and +1 to both `downstream_impact` and `tradeoff_density`. E elevates; SISPIS gate depends on base E.
 
 ### Single weight-1.0 signal (W_flow = 1.0)
-`missing_timeout` fires — an API call without a timeout. W_flow = 1.0 < 1.5 → silent. SISPIS receives +1 to `downstream_impact`. The timeout is added internally without surfacing.
 
 ### Three weight-0.5 signals (W_flow = 1.5)
-`unnecessary_caching` + `eager_loading` + `unnecessary_abstraction`. A change adds a cache for a cheap computation, eager-loads a config, and adds an abstraction layer. W_flow = 1.5 >= 1.5 → surfaces. SISPIS receives +0.5 to `tradeoff_density` + +0.5 to `downstream_impact` + +0.5 to `tradeoff_density` = +1.0 to `tradeoff_density`, +0.5 to `downstream_impact`.
 
 ### Trigger present, no signal (W_flow = 0)
 A change adds a retry loop with exponential backoff, jitter, max retry count, timeout, and verified idempotency. Trigger present (retries). Retry Discipline evaluated. All checks pass. No signals. W_flow = 0. Silent.

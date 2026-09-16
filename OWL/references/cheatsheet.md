@@ -70,19 +70,10 @@ Multiple signals: stack by descending weight, cap at 5 lines.
 - Same error recurred 2+ times
 - Current direction no longer traceable to original request
 
-## SISPIS Integration Quick Map
+## SISPIS Integration
 
-| OWL fires | SISPIS E delta |
-|-----------|---------------|
-| `contradiction` | +4 (two signals, capped at 2 each) |
-| `intent_deviation` | +2 (downstream_impact) |
-| `approach_failed` | +2 (option_mult + tradeoff) |
-| `ambiguous_requirement` | +2 (ambiguity_of_framing) |
-| `unverified_assumption` | +1 (ambiguity_of_framing) |
-| `scope_expansion` | +1 (downstream_impact) |
-| `constraint_drift` | +2 (ambiguity + downstream) |
-
-Full table: `references/signal-schema.md` § SISPIS Entropy Mapping
+OWL emits semantic signals in the canonical envelope (`shared/signal.schema.json`).
+SISPIS owns all signal → calibration mapping (`shared/integration.md` § SISPIS Integration).
 
 ## When to Reset vs. Continue
 

@@ -43,7 +43,7 @@ Bypass (after any activation)
 
 **Thresholds:** 0-2 = LOW | 3-5 = MEDIUM | 6-10 = HIGH
 
-**External signals:** E_adj = min(E_base + Σentropy_delta, 10) · W_adj = W_base + Σintent_weight · runs before Stage 1
+**External signals:** canonical envelope → dedupe by cause_id → calibration lookup in `references/signal-calibration.yaml` (entropy deltas, intent weight, required_action floor) → run gate
 
 ## Signal Weights (sum = W)
 

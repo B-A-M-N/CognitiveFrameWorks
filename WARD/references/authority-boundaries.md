@@ -2,7 +2,7 @@
 
 ## Signal Type Registry
 
-Complete registry of all signal types, organized by principle. Each signal carries a weight and a default required action. The required action is WARD's decision on the action; the weight determines stacking priority and SISPIS entropy elevation.
+Complete registry of all signal types, organized by principle. Each signal carries a weight and a default required action. The required action is WARD's decision on the action; the weight determines stacking priority. WARD emits semantic signals; SISPIS owns calibration (shared/integration.md).
 
 ### Authority Fit
 
@@ -232,37 +232,13 @@ DOX does not evaluate security posture. It surfaces the contract; WARD evaluates
 
 ### WARD → SISPIS
 
-WARD elevates SISPIS output mode based on required action:
+WARD emits semantic signals in the canonical envelope (`shared/signal.schema.json`)
+with `required_action` (`proceed | constrain | confirm | refuse | recover`).
+WARD does not compute SISPIS entropy or intent weight; SISPIS owns the mapping
+from required action to minimum output mode (`shared/integration.md`
+§ SISPIS Integration).
 
-| WARD required action | SISPIS minimum output mode | Rationale |
-|---------------------|---------------------------|-----------|
-| `proceed` | (no forced elevation) | Action is safe; SISPIS operates normally |
-| `constrain` | (no forced elevation, but entropy elevated) | Action was modified; risk is informational |
-| `confirm` | EXPLANATION minimum | User must see the risk to consent |
-| `refuse` | EXPLANATION minimum | User must see why the action was blocked |
-| `recover` | EXPLANATION minimum | User must see that recovery is occurring |
-
-SISPIS entropy deltas from WARD signals (apply before Stage 1, cap at 2.0):
-
-| WARD signal | SISPIS signal | Delta |
-|-------------|---------------|-------|
-| `authority_exceeded` | `tradeoff_density`, `downstream_impact` | +2 each |
-| `destructive_irreversible` | `downstream_impact` | +2 |
-| `secret_exposure` | `downstream_impact` | +2 |
-| `untrusted_execution` | `downstream_impact` | +2 |
-| `boundary_crossing` | `tradeoff_density` | +1 |
-| `unscoped_external_call` | `tradeoff_density`, `downstream_impact` | +1 each |
-| `unconfirmed_mutation` | `tradeoff_density` | +1 |
-| `external_side_effect` | `downstream_impact` | +1 |
-| `supply_chain_risk` | `tradeoff_density` | +1 |
-| `policy_conflict` | `tradeoff_density` | +1 |
-| `permission_widening` | `tradeoff_density` | +1 |
-| `missing_reversibility` | `downstream_impact` | +1 |
-| `irreversible_write` | `downstream_impact` | +1 |
-| `secret_in_context` | `tradeoff_density` | +1 |
-| `broad_blast_radius` | `downstream_impact` | +0.5 |
-
-### WARD → FLOW
+## WARD → FLOW
 
 When WARD accepts a risk-laden tradeoff (user confirms a risky action, or WARD constrains but allows an action with residual risk), the accepted tradeoff is fed to FLOW:
 

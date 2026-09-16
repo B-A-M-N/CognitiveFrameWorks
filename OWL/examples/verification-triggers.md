@@ -107,12 +107,8 @@ Once those three are clear, the refactor is straightforward.
 
 OWL emitted: `missing_criteria` (1.0), `scope_expansion` (1.0), `missing_context` (0.5).
 
-SISPIS deltas:
-- `missing_criteria` → `ambiguity_of_framing` +1
-- `scope_expansion` → `downstream_impact` +1
-- `missing_context` → `ambiguity_of_framing` +0.5 (rounded to cap behavior)
+SISPIS owns calibration for the emitted canonical envelopes:
 
-E elevates moderately. The request has no explicit comparison (no comparative_intent) and low option_multiplicity from OWL alone. SISPIS would likely land in EXPLANATION mode — there's analysis to share but no "choose between A and B" decision until the user specifies what they want.
 
 ---
 

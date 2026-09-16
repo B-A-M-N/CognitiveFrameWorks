@@ -51,7 +51,7 @@ W_fuse = 1.0 < 1.5 → silent.
 The signal does not surface to the user, but it does propagate downstream:
 
 - **ANCHOR Epistemic Classification:** the claim "login feature is working" is reclassified from Verified to Inferred. The evidence supports "valid-credentials path works," not "feature works."
-- **SISPIS:** +1 to `tradeoff_density`. The output must frame the claim at its evidenced scope, not the claimed scope.
+- **`. The output must frame the claim at its evidenced scope, not the claimed scope.
 
 ---
 

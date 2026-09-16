@@ -1,125 +1,38 @@
 <!-- Generated from shared/adapter-source.md. Do not edit directly. -->
 
-# FUSE — Functional Utility Selection & Execution
+<!-- Generated from the compact runtime capsule (FUSE/runtime.md). Do not edit directly. -->
 
-## What This Does
+# FUSE — Runtime Adapter (compact)
 
-FUSE governs the execution layer: which tools to call, in what order, with what bounds, and what their results actually prove. It runs at each action decision point — wrapping execution, not sitting in a linear pipeline stage.
+> Installed skills load this compact kernel; full authoring material lives in
+> `references/`, `examples/`, and the source `SKILL.md`. Calling the full
+> protocol adds `~140` words of active surface, not thousands.
 
-OWL owns whether reasoning is sound. ANCHOR owns whether state is coherent. DOX owns documentation contracts. SISPIS owns communication. FUSE owns the topology of action: what to run, how, and what the evidence means.
+# FUSE — Runtime Capsule
 
----
+Tool/action strategy. Runs around every tool decision. WARD gates
+permission; FUSE owns selection, sequencing, bounds, and evidence scope.
 
-## Two Modes
+## Decision logic
+- Need current external evidence? Choose the narrowest tool that produces it.
+- Serialize real dependencies; parallelize independent reads.
+- WARD-gate any mutation/boundary action before executing.
+- Interpret results only at their proven scope: a passing test proves the
+  test passes, nothing more.
+- Stale evidence cannot satisfy Necessity. Fresh observation invalidates
+  stale conflicting conclusions.
+- Same strategy fails twice → stop and enter ANCHOR recovery.
 
-**Silent mode** (default): All eight principles applied internally. Nothing narrated. Output is the action and its result.
+## Bounds
+- Retries: bounded; repeated failure requires a changed hypothesis
+- No unbounded operations; serialize what depends on prior output
 
-**Surface mode**: One or more principles produced signals whose cumulative weight W_fuse >= 1.5. The relevant findings appear before the action — one line each, no preamble.
+## Signals
+conflicting_evidence_unrechecked, self_validating_evidence,
+overclaimed_evidence, retry_bound_exceeded, retry_without_variation,
+unsafe_parallelization, out_of_order_execution, skipped_prerequisite,
+unbounded_operation, absence_inference, wrong_tool_for_evidence,
+tool_affordance_mismatch, unverified_external_claim
 
----
-
-## The Gate
-
-```
-Run all 8 principles against the proposed action set.
-Each principle emits 0 or more signals, each with a weight (0.5 or 1.0).
-
-W_fuse = sum of all emitted signal weights
-
-If W_fuse >= 1.5 → Surface mode
-If W_fuse <  1.5 → Silent mode
-
-Suppression override: single tool call, unambiguous target, only fitting tool,
-no retry/parallelization/evidence ambiguity → W_fuse = 0, silent regardless.
-```
-
----
-
-## Signal Shape
-
-```
-{ principle, signal_type, weight (0.5|1.0), finding, implication }
-```
-
-`finding` = what was observed about the action topology. `implication` = what would silently produce wrong evidence, wasted work, or a stuck approach.
-
----
-
-## The Eight Principles
-
-### 1. Necessity — Don't call a tool when uncontested context answers the question. Do call one when current evidence is required.
-Surface when: tool answers already-resolved uncontested question; external claim made without observed result; stale evidence reused after a conflicting report; load-bearing assumption skipped.
-Under pressure: don't skip calls to appear fast; don't call reflexively; a newer failure report invalidates the prior-result shortcut.
-Signals: `unnecessary_tool_call` (0.5), `unverified_external_claim` (1.0), `conflicting_evidence_unrechecked` (1.0)
-
-### 2. Selection — Match the task shape to the tool's actual affordance.
-Surface when: tool used outside its affordance (grep for filenames, bash for edits); result trusted from wrong tool.
-Under pressure: don't reach for familiar tool over fitting tool. Mismatched affordance = silent wrong answers.
-Signals: `tool_affordance_mismatch` (1.0), `wrong_tool_for_evidence` (1.0)
-
-### 3. Sequencing — Order tool calls to build evidence chains. Dependencies first.
-Surface when: call made out of order (editing before reading, claiming before verifying); dependent call batched with prerequisite; prerequisite skipped.
-Under pressure: don't act on first plausible target without confirming. Order of evidence acquisition determines whether later steps rest on verified or assumed ground.
-Signals: `out_of_order_execution` (1.0), `skipped_prerequisite` (1.0)
-
-### 4. Concurrency — Parallelize independent calls; serialize dependent ones.
-Surface when: independent calls serialized unnecessarily; dependent calls parallelized where second assumed first's result.
-Under pressure: don't over-parallelize to appear fast — produces calls built on guessed inputs.
-Signals: `false_serialization` (0.5), `unsafe_parallelization` (1.0)
-
-### 5. Resource Bounds — Set and respect resource limits. Don't block indefinitely or consume unbounded output.
-Surface when: unbounded call (whole large file, entire filesystem, no timeout); result size disproportionate to evidence needed.
-Under pressure: don't read everything to "be safe" — costs context, gains little.
-Signals: `unbounded_operation` (1.0), `disproportionate_read` (0.5)
-
-### 6. Evidence Interpretation — Interpret what a result actually proves, not what it appears to prove.
-Surface when: result interpreted beyond scope; stale passing evidence used after contradiction; implementation-coupled verification cannot detect the reported failure; empty result treated as absence; exit 0 treated as correctness.
-Under pressure: a self-authored requirement-level regression test is valid; implementation-mirroring tests, unexercised failing boundaries, and prior agent messages are not behavioral proof.
-Signals: `overclaimed_evidence` (1.0), `absence_inference` (1.0), `exit_code_misread` (0.5), `self_validating_evidence` (1.0)
-
-### 7. Termination — Know when to stop. Retry with variation up to a bound, then escalate.
-Surface when: same call retried without varying input; retries exceeded 2 without strategy change; call waited on past useful bound; failed approach patched with retries.
-Under pressure: retries without variation aren't persistence — they're waste. Escalation to Recovery Discipline is correct response, not failure.
-Signals: `retry_without_variation` (1.0), `retry_bound_exceeded` (1.0)
-
-### 8. Restraint — When tool use is counterproductive: don't call to appear busy, don't shell out for built-ins, don't read wholesale what scoped reads cover.
-Surface when: call made for appearance rather than evidence; heavyweight tool where lightweight suffices; tool called to do what model can do directly.
-Under pressure: activity is not progress. Correct number of tool calls is the minimum that produces needed evidence — which may be zero.
-Signals: `performative_tool_call` (0.5), `heavyweight_for_lightweight` (0.5)
-
----
-
-## Surface Format
-
-```
-**[Principle]:** [finding]. [implication.]
-
-[action]
-```
-
-Multiple signals stack by descending weight before the action. No preamble.
-
-## When Not to Surface
-
-Action is obviously correct and expected. Tool selection unambiguous. Evidence interpretation clear. W_fuse < 1.5. Default: proceed silently.
-
----
-
-## Integration Points
-
-### OWL → FUSE: OWL defines what needs verifying. FUSE decides which tool produces the evidence.
-### FUSE → ANCHOR: FUSE executes; ANCHOR records. `retry_bound_exceeded` triggers Recovery Discipline. Evidence interpretation feeds Epistemic Classification.
-### FUSE → SISPIS: Evidence interpretation determines claim's evidentiary class, feeding SISPIS Evidence Hierarchy. Failed verification elevates entropy.
-### DOX ↔ FUSE: Minimal. DOX Phase 1 (contract load) is sequenced by FUSE's Sequencing principle as a prerequisite read.
-
-## Pipeline Position
-
-```
-Request → OWL → ANCHOR → DOX(load) → FUSE(wraps execution) → Edit → FLOW → DOX(closeout) → SISPIS → Output
-```
-
-FUSE runs per-action, not per-request. In a task with five tool calls, FUSE evaluates strategy five times.
-
-## Budget Rule
-
-For a single obvious tool call (read a file you've located), the full pass is overhead. FUSE overhead scales with action complexity, not action count. Suppress when: single call, unambiguous target, only fitting tool, no retry/parallel/evidence ambiguity.
+Emit in the canonical envelope only (shared/signal.schema.json); never
+compute SISPIS scoring here.

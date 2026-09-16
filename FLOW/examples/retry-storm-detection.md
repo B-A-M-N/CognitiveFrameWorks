@@ -73,10 +73,8 @@ W_flow = 2.0 (single signal, weight 2.0) >= 1.5 → Surface mode.
 ## SISPIS Integration
 
 `retry_storm_risk` maps to:
-- `downstream_impact` +2 (capped at 2.0)
-- `tradeoff_density` +2 (capped at 2.0)
 
-E elevates by +4 total. If base E was 2, it becomes 6 → SISPIS Stage 1 hard override → SCHEMA mode. The output must frame the retry storm as a decision, not just deliver a fix.
+SISPIS applies its own calibration to the envelopes.
 
 ---
 

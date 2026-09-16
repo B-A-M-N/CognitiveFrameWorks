@@ -315,37 +315,10 @@ If FUSE has not emitted `retry_bound_exceeded` (e.g., FUSE was not run), ANCHOR 
 
 ### FUSE → SISPIS
 
-FUSE signals map to SISPIS entropy dimensions. When FUSE runs before SISPIS, emitted signals pre-score specific SISPIS entropy signals.
-
-The SISPIS entropy signals are: `option_multiplicity`, `tradeoff_density`, `ambiguity_of_framing`, `comparative_intent`, `downstream_impact`.
-
-#### Mapping Table
-
-| FUSE signal_type | SISPIS signal affected | Delta |
-|------------------|----------------------|-------|
-| `overclaimed_evidence` | `tradeoff_density` | +1 |
-| `conflicting_evidence_unrechecked` | `ambiguity_of_framing`, `downstream_impact` | +1 each |
-| `self_validating_evidence` | `ambiguity_of_framing`, `downstream_impact` | +1 each |
-| `absence_inference` | `ambiguity_of_framing` | +1 |
-| `retry_bound_exceeded` | `option_multiplicity`, `tradeoff_density` | +1 each |
-| `unsafe_parallelization` | `ambiguity_of_framing` | +1 |
-| `tool_affordance_mismatch` | `downstream_impact` | +1 |
-| `unverified_external_claim` | `ambiguity_of_framing` | +1 |
-| `wrong_tool_for_evidence` | `downstream_impact` | +1 |
-| `out_of_order_execution` | `downstream_impact` | +0.5 |
-| `skipped_prerequisite` | `ambiguity_of_framing` | +0.5 |
-| `unbounded_operation` | `downstream_impact` | +0.5 |
-| `retry_without_variation` | `tradeoff_density` | +0.5 |
-| `unnecessary_tool_call` | `tradeoff_density` | +0.5 |
-| `false_serialization` | `downstream_impact` | +0.5 |
-| `disproportionate_read` | `downstream_impact` | +0.5 |
-| `exit_code_misread` | `ambiguity_of_framing` | +0.5 |
-| `performative_tool_call` | `tradeoff_density` | +0.5 |
-| `heavyweight_for_lightweight` | `downstream_impact` | +0.5 |
-
-#### Capping
-
-SISPIS entropy signals are scored 0-2 per signal. FUSE deltas can push a signal past 2. Cap each SISPIS signal at 2.0 after applying deltas. Overflow does not carry to adjacent signals.
+FUSE emits **semantic signals** in the canonical envelope
+(`shared/signal.schema.json`): `fuse.overclaimed_evidence`,
+`fuse.retry_bound_exceeded`, etc. FUSE does not compute SISPIS entropy or
+intent weight — SISPIS owns every signal → calibration mapping (`shared/integration.md` § SISPIS Integration).
 
 #### Pipeline Operation
 
@@ -354,13 +327,12 @@ SISPIS entropy signals are scored 0-2 per signal. FUSE deltas can push a signal 
 2. FUSE gate: if W_fuse >= 1.5, surface findings before action
 3. FUSE executes the action(s)
 4. FUSE runs Evidence Interpretation on results → may emit additional signals
-5. FUSE passes emitted signal list to ANCHOR (state transitions) and SISPIS (entropy)
-6. SISPIS applies delta table to its entropy score E
+5. FUSE passes emitted signals to ANCHOR (state transitions) and SISPIS (calibration)
+6. SISPIS owns signal → entropy / output-floor mapping
 7. SISPIS runs its gate function on the resulting E
 8. Output mode: NO_DECISION / EXPLANATION / SCHEMA
 ```
 
-FUSE can elevate E enough to cross SISPIS thresholds. A request that SISPIS would ordinarily resolve as NO_DECISION may become SCHEMA after FUSE finds `retry_bound_exceeded` (+1 to two signals, potentially pushing E from 2 to 4).
 
 ### OWL → FUSE
 
@@ -399,13 +371,10 @@ For pure reads of project files with no boundary crossing, no secret exposure, a
 Read a file at a known path. Single call, unambiguous target, only fitting tool, no retry/parallel/evidence ambiguity. Suppression condition applies. W_fuse = 0. Silent. Call proceeds.
 
 ### Single weight-1.0 signal (W_fuse = 1.0)
-`overclaimed_evidence` fires — a green test is being treated as "feature works." W_fuse = 1.0 < 1.5 → silent. SISPIS receives +1 to `tradeoff_density`. ANCHOR receives Epistemic Classification trigger (reclassify to Inferred). The claim is adjusted internally; no surface block.
 
 ### Two weight-1.0 signals (W_fuse = 2.0)
-`retry_bound_exceeded` + `overclaimed_evidence`. Surfaces. SISPIS receives +1 to `option_multiplicity`, +1 to `tradeoff_density` (from retry), +1 to `tradeoff_density` (from overclaim, capped at 2). ANCHOR receives Recovery Discipline trigger. E elevates; SISPIS likely activates SCHEMA mode.
 
 ### Single weight-1.0 + weight-0.5 (W_fuse = 1.5)
-`unsafe_parallelization` + `false_serialization`. Surfaces (1.5 >= 1.5). SISPIS receives +1 to `ambiguity_of_framing` and +0.5 to `downstream_impact`. The batch is restructured before execution.
 
 ### Evidence-only signal post-execution
 After running a test that passes, Evidence Interpretation checks the claim being made. If the claim is "the tested path works" — no signal, the evidence matches. If the claim is "the feature is bug-free" — `overclaimed_evidence` fires. FUSE's post-execution pass can surface even when the pre-execution pass was silent.

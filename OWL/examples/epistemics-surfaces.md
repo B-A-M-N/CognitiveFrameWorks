@@ -98,13 +98,8 @@ Share the login code and either a baseline measurement or a description of where
 
 ## SISPIS Integration
 
-OWL emitted four signals. Relevant SISPIS deltas:
-- `code_not_read` → `ambiguity_of_framing` +1
-- `missing_criteria` → `ambiguity_of_framing` +1
-- `multiple_interpretations` → `comparative_intent` +1, `ambiguity_of_framing` +1
-- `ambiguous_requirement` → `ambiguity_of_framing` +2 (capped at 2)
+OWL emitted four signals. SISPIS owns calibration for the emitted canonical envelopes:
 
-`ambiguity_of_framing` would cap at 2. `comparative_intent` reaches 1. `downstream_impact` not elevated here (no code change yet). Base E was likely 1-2. After OWL: E around 5-6 → SISPIS activates with possible SCHEMA or EXPLANATION mode depending on decision_space. Since the user needs to provide info before there are real options to compare, EXPLANATION is the likely output mode.
 
 ---
 

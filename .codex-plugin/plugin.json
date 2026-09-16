@@ -1,0 +1,29 @@
+{
+  "name": "cognitive-frameworks",
+  "version": "1.4.0",
+  "description": "Host-owned cognitive runtime and behavioral protocol bundle with structural action, evidence, StateWork, and completion gates.",
+  "author": {
+    "name": "B-A-M-N"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cognitive-runtime",
+    "behavioral-protocols",
+    "statework",
+    "evidence",
+    "tool-gates"
+  ],
+  "interface": {
+    "displayName": "CognitiveFrameWorks Runtime",
+    "shortDescription": "Host-owned structural behavior controls for agent tasks",
+    "longDescription": "Routes tasks through a minimal cognitive kernel and enforces trusted evidence, authority, StateWork transitions, immutable execution segments, and completion permits at the host boundary.",
+    "developerName": "B-A-M-N",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write", "Interactive"],
+    "defaultPrompt": [
+      "Start a task under the host-owned cognitive runtime.",
+      "Show the active StateWork and evidence gates.",
+      "Validate a completion claim against trusted evidence."
+    ]
+  }
+}

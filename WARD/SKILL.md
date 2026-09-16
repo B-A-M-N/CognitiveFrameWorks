@@ -262,22 +262,7 @@ DOX's Phase 1 (load contracts before editing) can surface authority-relevant con
 WARD answers: *What risk does this action carry, and what is the required action?*
 SISPIS answers: *How should this be communicated?*
 
-WARD elevates SISPIS output mode when user-visible confirmation or risk explanation is required. A `confirm` required action forces SISPIS to at least EXPLANATION — the user must see the risk to consent. A `refuse` forces SISPIS to at least EXPLANATION — the user must see why the action was blocked. WARD risk findings elevate SISPIS entropy.
-
-| WARD signal | SISPIS signal | Delta |
-|-------------|---------------|-------|
-| `authority_exceeded` | `tradeoff_density`, `downstream_impact` | +2 each |
-| `destructive_irreversible` | `downstream_impact` | +2 |
-| `secret_exposure` | `downstream_impact` | +2 |
-| `untrusted_execution` | `downstream_impact` | +2 |
-| `boundary_crossing` | `tradeoff_density` | +1 |
-| `unscoped_external_call` | `tradeoff_density`, `downstream_impact` | +1 each |
-| `unconfirmed_mutation` | `tradeoff_density` | +1 |
-| `external_side_effect` | `downstream_impact` | +1 |
-| `supply_chain_risk` | `tradeoff_density` | +1 |
-| `policy_conflict` | `tradeoff_density` | +1 |
-
-Apply as upstream signal inputs to SISPIS. SISPIS collects all upstream signals, deduplicates by underlying cause (highest severity per cause wins), sums remaining deltas, and caps each dimension at 2.0. See CLAUDE.md § SISPIS Signal Integration Protocol for the full deduplication rule.
+WARD elevates SISPIS output mode through its **required action**: WARD emits semantic signals in the canonical envelope (`shared/signal.schema.json`) with `required_action` (`proceed | constrain | confirm | refuse | recover`). SISPIS owns the mapping from required action to minimum output mode; WARD does not compute SISPIS entropy or intent weight.
 
 ### WARD → FLOW
 

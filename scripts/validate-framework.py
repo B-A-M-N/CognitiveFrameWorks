@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List
@@ -43,6 +44,362 @@ def fail(messages: List[str]) -> None:
     print("Validation passed")
 
 
+def validate_frontmatter_loadability(messages: List[str]) -> None:
+    """Every skill manifest (each */SKILL.md and cogframe/SKILL.md) must parse
+    as YAML frontmatter. A framework validator that does not validate actual
+    loadability gives false assurance (FLOW regression)."""
+    import yaml
+
+    for path in sorted(ROOT.glob("*/SKILL.md")):
+        frontmatter = _read_frontmatter(path)
+        if frontmatter is None:
+            messages.append(f"{rel(path)} has no YAML frontmatter")
+            continue
+        try:
+            data = yaml.safe_load(frontmatter)
+        except Exception as exc:
+            messages.append(f"{rel(path)} frontmatter is not valid YAML: {exc}")
+            continue
+        if not isinstance(data, dict):
+            messages.append(f"{rel(path)} frontmatter is not a mapping")
+            continue
+        if not data.get("name"):
+            messages.append(f"{rel(path)} frontmatter has no name")
+        if not data.get("description"):
+            messages.append(f"{rel(path)} frontmatter has no description")
+
+
+def _read_frontmatter(path: Path):
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    return parts[1]
+
+
+def _validate_producer_consumer_in_dag(messages: List[str], registry: dict) -> None:
+    """Every registry signal's producer and every consumer must be a stage in
+    the pipeline DAG; a signal whose producer and consumer disagree with the
+    manifest's data-flow is a contract violation (reverse check)."""
+    pipeline = ROOT / "shared" / "pipeline.yaml"
+    if not pipeline.exists():
+        return
+    import yaml
+    try:
+        data = yaml.safe_load(pipeline.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    stages = data.get("stages", []) if isinstance(data, dict) else []
+    stage_ids = {s.get("id") for s in stages if isinstance(s, dict)}
+    # aliases map owner names (e.g. anchor) to concrete stages
+    aliases = data.get("aliases", {}) or {}
+    # map stage -> signal outputs (input/output fields describe typed signals)
+    stage_outputs: Dict[str, List[str]] = {}
+    for s in stages:
+        sid = s.get("id")
+        outputs = s.get("output", [])
+        stage_outputs[sid] = [str(o) for o in outputs]
+    # producers are owners; a producer is resolvable if any alias member or
+    # any stage with that owner declares the signal as an output.
+    def owning_stages(owner):
+        return [s.get("id") for s in stages if s.get("owner") == owner] + list(aliases.get(owner, []))
+    for sig in registry.get("signals", []):
+        producer = sig.get("producer")
+        owners = owning_stages(producer)
+        if not owners:
+            messages.append(f"signal {sig.get('id')} producer {producer!r} not in pipeline DAG")
+            continue
+        declared = False
+        for sid in owners:
+            emitted = stage_outputs.get(sid, [])
+            if any(sig.get("id") in o or sig.get("id").split(".")[-1] in o for o in emitted):
+                declared = True
+        if not declared:
+            messages.append(f"signal {sig.get('id')} producer {producer} does not declare it in pipeline output")
+
+
+def validate_signal_contracts(messages: List[str]) -> None:
+    """Shared/signals.md, shared/signal-registry.json, and
+    shared/signal.schema.json must agree; the stale variant must be gone;
+    no private SISPIS delta tables in upstream skills."""
+    import jsonschema
+
+    reg_path = ROOT / "shared" / "signal-registry.json"
+    schema_path = ROOT / "shared" / "signal.schema.json"
+    signals_path = ROOT / "shared" / "signals.md"
+    registry = json.loads(reg_path.read_text(encoding="utf-8"))
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    signals = signals_path.read_text(encoding="utf-8")
+    _validate_producer_consumer_in_dag(messages, registry)
+    reg_ids = {s["id"] for s in registry["signals"]}
+    # The deprecated spelling may appear only as a pointer (e.g. "legacy
+    # spelling evidence_overclaim is not valid"), never as a registry row or
+    # a first-class table entry. Reject it only in that first-class position.
+    if re.search(r"^\| `evidence_overclaim` ", signals, re.MULTILINE):
+        messages.append("shared/signals.md still registers deprecated evidence_overclaim as a signal")
+    for sid in reg_ids:
+        if not sid.startswith(("owl.", "anchor.", "fuse.", "flow.", "ward.")):
+            messages.append(f"signal {sid} is not namespaced")
+        if f"`{sid}`" not in signals:
+            messages.append(f"shared/signals.md missing canonical id {sid}")
+    # schema source enum and pattern must match registry producers
+    for s in registry["signals"]:
+        producer = s["producer"]
+        if producer not in schema["properties"]["source"]["enum"]:
+            messages.append(f"signal {s['id']} producer {producer} not in schema enum")
+        sig_prefix = s["id"].split(".")[0]
+        if sig_prefix != producer:
+            messages.append(f"signal {s['id']} namespace {sig_prefix!r} does not match producer {producer!r}")
+        # every registry consumer must be a real stage owner in the pipeline
+        stage_ids = {st.get("id") for st in _load_pipeline_stages()}
+        owners = {st.get("owner") for st in _load_pipeline_stages()}
+        for consumer in s.get("consumers", []):
+            if consumer not in owners and consumer not in stage_ids:
+                messages.append(f"signal {s['id']} consumer {consumer!r} not in pipeline DAG")
+    # registry consumers are machine-owned (not just in the Markdown table)
+    for s in registry["signals"]:
+        if "consumers" not in s or not isinstance(s.get("consumers"), list):
+            messages.append(f"signal {s['id']} has no machine-readable consumers list")
+    # envelope example validates against schema
+    example = {
+        "schema_version": "1.1.0",
+        "signal_id": "sig-123",
+        "cause_id": "cause-42",
+        "source": "fuse",
+        "signal_type": "fuse.overclaimed_evidence",
+        "severity": "medium",
+        "scope": "artifact",
+        "evidence_refs": ["test-31", "claim-9"],
+        "required_action": "reclassify",
+    }
+    try:
+        jsonschema.validate(instance=example, schema=schema)
+    except Exception as exc:
+        messages.append(f"canonical envelope example fails schema: {exc}")
+    # shared/integration.md must carry the envelope and no upstream SISPIS math
+    integration = (ROOT / "shared" / "integration.md").read_text(encoding="utf-8")
+    for field in ["signal_id", "cause_id", "source", "signal_type", "severity", "scope", "evidence_refs", "required_action"]:
+        if field not in integration:
+            messages.append(f"shared/integration.md missing envelope field {field}")
+    if "intent_weight" in integration or "entropy_delta" in integration:
+        messages.append("shared/integration.md still contains upstream SISPIS math (intent_weight/entropy_delta)")
+
+
+def _load_pipeline_stages() -> list:
+    pipeline = ROOT / "shared" / "pipeline.yaml"
+    if not pipeline.exists():
+        return []
+    import yaml
+    try:
+        data = yaml.safe_load(pipeline.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return data.get("stages", []) if isinstance(data, dict) else []
+
+
+def validate_no_upstream_sispis_math(messages: List[str]) -> None:
+    """OWL/FUSE/FLOW/WARD/ANCHOR skills and references must not compute SISPIS
+    entropy/intent deltas; SISPIS alone owns signal → calibration."""
+    offenders = []
+    for skill in ["OWL", "ANCHOR", "DOX", "FUSE", "FLOW", "WARD"]:
+        for path in sorted((ROOT / skill).rglob("*")):
+            if not path.is_file() or not path.suffix.lower() in {".md", ".yaml", ".yml"}:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "intent_weight" in text or "entropy_delta" in text or ("SISPIS signal" in text and "Delta" in text):
+                offenders.append(rel(path))
+    if offenders:
+        messages.append("Upstream SISPIS math still present in: " + ", ".join(offenders))
+
+
+def validate_pipeline_manifest(messages: List[str]) -> None:
+    """shared/pipeline.yaml and shared/signal.schema.json exist; pipeline
+    stages carry requires/order_after/execution_mode/frequency semantics;
+    profiles resolve through aliases; hard-dependency closure holds for every
+    activation profile; order_after forms a DAG with sispis terminal."""
+    import collections
+    import yaml
+
+    schema_path = ROOT / "shared" / "signal.schema.json"
+    if not schema_path.exists():
+        messages.append("Missing shared/signal.schema.json")
+    pipeline = ROOT / "shared" / "pipeline.yaml"
+    if not pipeline.exists():
+        messages.append("Missing shared/pipeline.yaml (canonical pipeline manifest)")
+        return
+    try:
+        data = yaml.safe_load(pipeline.read_text(encoding="utf-8"))
+    except Exception as exc:
+        messages.append(f"shared/pipeline.yaml invalid: {exc}")
+        return
+    if not isinstance(data, dict) or "stages" not in data:
+        messages.append("shared/pipeline.yaml has no stages")
+        return
+    stages = data["stages"]
+    if not isinstance(stages, list) or not stages:
+        messages.append("shared/pipeline.yaml stages is empty")
+        return
+    stage_ids = [s.get("id") for s in stages if isinstance(s, dict)]
+    if len(stage_ids) != len(set(stage_ids)):
+        messages.append("pipeline.yaml has duplicate stage ids")
+
+    aliases = data.get("aliases", {}) or {}
+    for alias, members in aliases.items():
+        if not isinstance(members, list):
+            messages.append(f"pipeline alias {alias!r} is not a list")
+        for m in members:
+            if m not in stage_ids:
+                messages.append(f"pipeline alias {alias!r} references unknown stage {m!r}")
+
+    def expand(nodes):
+        out = []
+        for n in nodes:
+            if n in aliases:
+                out.extend(expand(aliases[n]))
+            else:
+                out.append(n)
+        return out
+
+    for s in stages:
+        if not isinstance(s, dict):
+            messages.append("pipeline.yaml stage is not a mapping")
+            continue
+        for field in ["id", "activation_rule", "owner", "input", "output",
+                      "requires", "order_after", "execution_mode", "frequency",
+                      "suppression_condition", "runtime_cost_class"]:
+            if field not in s:
+                messages.append(f"pipeline stage {s.get('id', '?')} missing {field}")
+        for key in ("requires", "order_after"):
+            for pred in s.get(key, []):
+                if pred not in stage_ids:
+                    messages.append(f"pipeline stage {s.get('id')} has unknown {key} stage {pred!r}")
+                if pred == s.get("id"):
+                    messages.append(f"pipeline stage {s.get('id')} lists itself in {key}")
+
+    # hard-dependency closure: every profile must satisfy all requires
+    profiles = data.get("profiles", {}) or {}
+    if not profiles:
+        messages.append("pipeline.yaml has no activation profiles")
+    for pname, profile in sorted(profiles.items()):
+        if not isinstance(profile, list):
+            messages.append(f"profile {pname!r} is not a list")
+            continue
+        active = expand(profile)
+        # required closure (transitive)
+        changed = True
+        while changed:
+            changed = False
+            for s in stages:
+                sid = s.get("id")
+                if sid not in active:
+                    continue
+                for req in s.get("requires", []):
+                    if req not in active:
+                        active.append(req)
+                        changed = True
+        missing = set()
+        for s in stages:
+            sid = s.get("id")
+            if sid not in active:
+                continue
+            for req in s.get("requires", []):
+                if req not in active:
+                    missing.add(req)
+        if missing:
+            messages.append(f"profile {pname!r} violates hard dependencies: missing {sorted(missing)}")
+
+    # order_after DAG + terminal sispis
+    indeg = {sid: 0 for sid in stage_ids}
+    edges: Dict[str, List[str]] = {sid: [] for sid in stage_ids}
+    for s in stages:
+        sid = s.get("id")
+        for pred in s.get("order_after", []):
+            if pred in stage_ids and pred != sid:
+                edges[pred].append(sid)
+                indeg[sid] += 1
+    queue = collections.deque([sid for sid, d in indeg.items() if d == 0])
+    order = []
+    while queue:
+        cur = queue.popleft()
+        order.append(cur)
+        for nxt in edges[cur]:
+            indeg[nxt] -= 1
+            if indeg[nxt] == 0:
+                queue.append(nxt)
+    if len(order) != len(stage_ids):
+        cycles = [sid for sid, d in indeg.items() if d > 0]
+        messages.append(f"pipeline order_after DAG has a cycle involving: {cycles}")
+    sispis_out = edges.get("sispis", [])
+    if sispis_out:
+        messages.append(f"pipeline DAG: sispis should be terminal but has successors {sispis_out}")
+
+
+def validate_sispis_owns_calibration(messages: List[str]) -> None:
+    import yaml
+    text = (ROOT / "SISPIS" / "SKILL.md").read_text(encoding="utf-8")
+    # SISPIS must reference shared/integration.md as canonical mapping owner
+    if "shared/integration.md" not in text:
+        messages.append("SISPIS/SKILL.md does not reference shared/integration.md as canonical mapping")
+    # SISPIS must reference its own calibration table and describe ingestion
+    if "signal-calibration.yaml" not in text:
+        messages.append("SISPIS/SKILL.md does not reference its own signal-calibration.yaml")
+    if "cause_id" not in text:
+        messages.append("SISPIS/SKILL.md missing cause_id dedup in ingestion description")
+    # Upstream protocol files must not claim to own SISPIS delta tables
+    for skill in ["OWL", "FUSE", "FLOW", "WARD", "ANCHOR"]:
+        skill_text = (ROOT / skill / "SKILL.md").read_text(encoding="utf-8", errors="replace")
+        if "SISPIS Entropy Mapping" in skill_text or "SISPIS Delta Mapping" in skill_text:
+            messages.append(f"{skill}/SKILL.md still owns a SISPIS delta table")
+
+    # Calibration table: every registry signal must have an entry; unknown
+    # signal_types would silently contribute nothing at runtime.
+    cal_path = ROOT / "SISPIS" / "references" / "signal-calibration.yaml"
+    if not cal_path.exists():
+        messages.append("Missing SISPIS/references/signal-calibration.yaml (SISPIS-owned scoring table)")
+        return
+    try:
+        calibration = yaml.safe_load(cal_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        messages.append(f"SISPIS/references/signal-calibration.yaml invalid: {exc}")
+        return
+    if not isinstance(calibration, dict) or not isinstance(calibration.get("signals"), dict):
+        messages.append("SISPIS/references/signal-calibration.yaml has no signals mapping")
+        return
+    # every signal must specify at least one calibration effect
+    for sid, entry in calibration["signals"].items():
+        if not isinstance(entry, dict):
+            messages.append(f"SISPIS calibration entry {sid} is not a mapping")
+            continue
+        if "entropy" not in entry and "intent_weight" not in entry and "minimum_mode" not in entry:
+            messages.append(f"SISPIS calibration entry {sid} has no calibration effect")
+    signal_registry = json.loads((ROOT / "shared" / "signal-registry.json").read_text(encoding="utf-8"))
+    reg_ids = {s["id"] for s in signal_registry["signals"]}
+    for sid in sorted(reg_ids):
+        if sid not in calibration["signals"]:
+            messages.append(f"signal {sid} has no SISPIS calibration entry")
+    for sid in sorted(set(calibration["signals"]) - reg_ids):
+        messages.append(f"SISPIS calibration entry {sid} is not a registered signal")
+
+    # Regression guard: the old upstream delta math must not appear anywhere
+    # outside the SISPIS-owned calibration table. The calibration entry
+    # vocabulary (intent_weight as data) is allowed; formula use is not.
+    for skill in ["OWL", "ANCHOR", "DOX", "FUSE", "FLOW", "WARD"]:
+        for path in sorted((ROOT / skill).rglob("*")):
+            if not path.is_file() or not path.suffix.lower() in {".md", ".yaml", ".yml"}:
+                continue
+            t = path.read_text(encoding="utf-8", errors="replace")
+            if "intent_weight" in t or "entropy_delta" in t or "E_adjusted" in t or "W_adjusted" in t:
+                messages.append(f"Upstream SISPIS math still present in {rel(path)}")
+    # root CLAUDE.md and README must not carry the stale protocol either
+    for doc in ["CLAUDE.md", "README.md"]:
+        t = (ROOT / doc).read_text(encoding="utf-8", errors="replace")
+        for stale in ["highest-severity delta", "severity: 1.2", "severity: 1.5", "entropy_delta", "intent_weight"]:
+            if stale in t:
+                messages.append(f"{doc} still contains stale SISPIS scoring: {stale!r}")
+
+
 def validate_json_files(messages: List[str]) -> None:
     for path in iter_files():
         if path.suffix.lower() != ".json":
@@ -67,10 +424,12 @@ def validate_integration_doc(messages: List[str]) -> None:
         messages.append("Missing shared/integration.md")
         return
     text = path.read_text(encoding="utf-8")
-    if "intent_weight" not in text:
-        messages.append("shared/integration.md does not define intent_weight mapping")
     if "DOX is not a SISPIS upstream source" not in text:
         messages.append("shared/integration.md does not exclude DOX from SISPIS upstream signals")
+    if "signal.schema.json" not in text:
+        messages.append("shared/integration.md does not reference the canonical signal envelope schema")
+    if "signal_id" not in text or "cause_id" not in text:
+        messages.append("shared/integration.md does not define the canonical signal envelope fields")
 
 
 def validate_adapter_source(messages: List[str]) -> None:
@@ -158,17 +517,18 @@ def validate_behavior_contracts(messages: List[str]) -> None:
 
 
 def validate_scenario_manifest(messages: List[str]) -> None:
-    registries = {
-        "OWL": {"user_observation_conflict": 2.0, "circular_verification": 2.0, "cohesion_risk": 2.0, "position_pressure": 1.0, "scope_expansion": 1.0},
-        "FUSE": {"conflicting_evidence_unrechecked": 1.0, "self_validating_evidence": 1.0},
-        "FLOW": {"responsibility_concentration": 2.0, "change_amplification": 1.0},
-    }
+    """Scenario manifest validation on the two-layer model:
+    expected_findings carry the LOCAL signal type + LOCAL weight, plus an
+    expected_emission in the canonical envelope (signal_type + severity) that
+    must be registered in shared/signal-registry.json. Validates both layers;
+    no hand-written duplicate registry of old numeric weights."""
+    import json as _json
     path = ROOT / "shared" / "scenarios.json"
     if not path.exists():
         messages.append("Missing shared/scenarios.json")
         return
     try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest = _json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         messages.append(f"Invalid scenario manifest {rel(path)}: {exc}")
         return
@@ -176,6 +536,12 @@ def validate_scenario_manifest(messages: List[str]) -> None:
     if not isinstance(scenarios, list) or not scenarios:
         messages.append("Scenario manifest has no scenarios")
         return
+
+    try:
+        registry = _json.loads((ROOT / "shared" / "signal-registry.json").read_text(encoding="utf-8"))
+    except Exception:
+        registry = {"signals": []}
+    reg_ids = {s["id"] for s in registry.get("signals", [])}
 
     seen_ids = set()
     expected_classes = {
@@ -205,23 +571,32 @@ def validate_scenario_manifest(messages: List[str]) -> None:
         forbidden_actions = scenario.get("forbidden_actions")
         if not isinstance(forbidden_actions, list) or not forbidden_actions:
             messages.append(f"{where} has no forbidden behavior")
-        signals = scenario.get("expected_signals", [])
-        if not isinstance(signals, list):
-            messages.append(f"{where} expected_signals is not a list")
+        findings = scenario.get("expected_findings", [])
+        if not isinstance(findings, list):
+            messages.append(f"{where} expected_findings is not a list")
             continue
-        for signal_index, signal in enumerate(signals):
-            signal_where = f"{where}.expected_signals[{signal_index}]"
-            if not isinstance(signal, dict):
-                messages.append(f"{signal_where} is not a mapping")
+        for fi, finding in enumerate(findings):
+            fw = f"{where}.expected_findings[{fi}]"
+            if not isinstance(finding, dict):
+                messages.append(f"{fw} is not a mapping")
                 continue
-            skill = signal.get("skill")
-            signal_type = signal.get("signal_type")
-            weight = signal.get("weight")
-            registry = registries.get(skill, {})
-            if signal_type not in registry:
-                messages.append(f"{signal_where} references unknown signal {skill}.{signal_type}")
-            elif weight != registry[signal_type]:
-                messages.append(f"{signal_where} weight for {skill}.{signal_type}: expected {registry[signal_type]}, found {weight}")
+            local_type = finding.get("local_type")
+            local_weight = finding.get("local_weight")
+            if not local_type or not isinstance(local_weight, (int, float)):
+                messages.append(f"{fw} missing local_type/local_weight (local layer)")
+                continue
+            emission = finding.get("emission")
+            if not isinstance(emission, dict):
+                messages.append(f"{fw} missing expected emission (canonical layer)")
+                continue
+            sig_type = emission.get("signal_type")
+            source = emission.get("source")
+            if sig_type not in reg_ids:
+                messages.append(f"{fw} emission {sig_type!r} is not a registered canonical signal")
+            if source and not str(sig_type).startswith(f"{source}."):
+                messages.append(f"{fw} emission source {source!r} does not match signal_type {sig_type!r}")
+            if emission.get("severity") not in {"low", "medium", "high"}:
+                messages.append(f"{fw} emission has invalid severity {emission.get('severity')!r}")
 
     missing_classes = expected_classes - found_classes
     if missing_classes:
@@ -288,6 +663,38 @@ def validate_adapter_generation(messages: List[str]) -> None:
             messages.append(f"Unexpected adapter file: {rel(path)}")
 
 
+def validate_statework_manifests(messages: List[str]) -> None:
+    """Optional cross-tree check: if CognitiveStateWork exists, every manifest
+    in its registry validates against the manifest schema."""
+    import yaml
+
+    cow_root = ROOT.parent / "CognitiveStateWork"
+    if not cow_root.exists():
+        return
+    schema_path = cow_root / "schemas" / "statework-manifest.schema.json"
+    registry_path = cow_root / "registry.yaml"
+    if not schema_path.exists() or not registry_path.exists():
+        messages.append("CognitiveStateWork missing schemas/statework-manifest.schema.json or registry.yaml")
+        return
+    import jsonschema
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    try:
+        registry = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        messages.append(f"CognitiveStateWork registry.yaml invalid: {exc}")
+        return
+    for name in registry.get("stateworks", []):
+        manifest_path = cow_root / name / "manifest.yaml"
+        if not manifest_path.exists():
+            messages.append(f"CognitiveStateWork {name} has no manifest.yaml")
+            continue
+        try:
+            data = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            jsonschema.validate(instance=data, schema=schema)
+        except Exception as exc:
+            messages.append(f"CognitiveStateWork {name}/manifest.yaml invalid: {exc}")
+
+
 def validate_adapter_duplicate_hashes(messages: List[str]) -> None:
     hashes: Dict[str, List[Path]] = {}
     for path in iter_files():
@@ -312,18 +719,56 @@ def validate_adapter_duplicate_hashes(messages: List[str]) -> None:
             messages.append(f"Unexpected duplicate adapter hash group: {[rel(p) for p in paths]}")
 
 
+def validate_runtime_instruction_size(messages: List[str]) -> None:
+    """Report the active runtime surface. The review's #13: compact kernels
+    matter more than activation logic. Warnings (not hard failures) for any
+    SKILL.md that regresses toward the old multi-thousand-word cores; the
+    framework can then measure how small kernels can go without behavioral
+    regression."""
+    results = []
+    for skill in EXPECTED_SKILLS + ["cogframe"]:
+        path = ROOT / skill / "SKILL.md"
+        if not path.exists():
+            continue
+        words = len(path.read_text(encoding="utf-8").split())
+        results.append((words, skill))
+    results.sort(reverse=True)
+    total = sum(w for w, _ in results)
+    report = ", ".join(f"{skill}={w}w" for w, skill in results)
+    # informational report — shrinking kernels is the goal, measured here so
+    # DigitalPsychology can empirically test smaller variants. The runtime
+    # bundle emitted by resolve-runtime.py is the actual active surface
+    # (stage activation + outputs + guard rules), not these authoring docs.
+    print(f"[runtime surface] {report} | total={total}w")
+    for words, skill in results:
+        if words > 2500:
+            print(f"  [note] {skill}/SKILL.md is {words} words — compact kernels preferred; "
+                  "move exposition to references/ (not a gate)")
+    # hard gate: nothing may regress past the former worst case (WARD 3,552 words)
+    for words, skill in results:
+        if words > 3552:
+            messages.append(f"{skill}/SKILL.md exceeds former worst-case size ({words} words)")
+
+
 def main() -> None:
     messages: List[str] = []
     validate_json_files(messages)
+    validate_frontmatter_loadability(messages)
     validate_skill_count(messages)
     validate_integration_doc(messages)
     validate_adapter_source(messages)
+    validate_signal_contracts(messages)
+    validate_no_upstream_sispis_math(messages)
+    validate_pipeline_manifest(messages)
+    validate_sispis_owns_calibration(messages)
     validate_behavior_contracts(messages)
     validate_scenario_manifest(messages)
     validate_claude_contract(messages)
     validate_ward_recover(messages)
+    validate_statework_manifests(messages)
     validate_adapter_generation(messages)
     validate_adapter_duplicate_hashes(messages)
+    validate_runtime_instruction_size(messages)
     fail(messages)
 
 

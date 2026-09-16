@@ -2,6 +2,26 @@
 
 This file is the canonical integration contract for CognitiveFrameWorks. It resolves cross-skill drift for pipeline order, skill ownership, SISPIS signal integration, DOX policy, and generated adapter maintenance.
 
+## Universal Behavioral Kernel (always-on)
+
+The compressed always-on rule set. Everything else loads dynamically; this is
+the only behavior guaranteed present in every runtime bundle:
+
+> Current external observation invalidates stale conflicting conclusions.
+> Agent/tool/action success is not outcome evidence.
+> Completion requires evidence at the claimed boundary.
+> Repeated failure requires a changed hypothesis rather than repeated retries.
+> Respect authority/ownership boundaries and do not add unrelated
+> responsibility to an already broad owner merely because it is locally
+> convenient.
+
+This kernel is what the guard resolver treats as always-on (see
+DigitalPsychology `feedback_loop.py` `GuardCompiler.always_on_ids`); the
+per-task guard pack is layered on top of it. The distinction is maximum
+**intelligence available** vs. maximum **instructions simultaneously active**
+— runtime agents should see less, not more, as the system gets more
+sophisticated.
+
 ## Canonical Pipeline
 
 When used together:
@@ -64,60 +84,89 @@ Conflict resolution: OWL Locality cannot suppress a decomposition required to pr
 | FLOW | Operational drag in the produced artifact: retry storms, backpressure, cache hygiene, startup, hot paths, I/O, workflow friction, responsibility concentration, maintenance weight | Agent tool-use strategy, authority gating, documentation contracts |
 | SISPIS | Output mode and response structure based on entropy, intent weight, suppression, and decision space | Reasoning, state persistence, tool execution, authority, operational efficiency |
 
-## Activation Budget
+## Activation Profiles
 
-Use the minimum subset that serves the task.
+Use the minimum subset that serves the task. Activation profiles are owned by
+`shared/pipeline.yaml` — this document renders them, and `resolve-runtime.py`
+reads them. `anchor` and `dox` are aliases for the concrete stages
+`anchor_open`/`anchor_closeout` and `dox_load`/`dox_closeout`.
 
-| Task type | Minimum active skills |
-|-----------|-----------------------|
-| Simple factual / explanatory answer | SISPIS; OWL if reasoning risk exists |
-| Single-turn code advice | OWL + SISPIS |
-| Multi-turn debugging | OWL + ANCHOR + FUSE + SISPIS |
-| Tool-using implementation | OWL + ANCHOR + FUSE + WARD + SISPIS |
-| Performance / operational drag review | OWL + FLOW + SISPIS |
-| File editing in a DOX-enabled project | OWL + ANCHOR + DOX + FUSE + WARD + SISPIS; FLOW only if a trigger fires |
-| Risky commands / secrets / external effects | WARD required |
+| Profile | Kernel |
+|---------|--------|
+| quick | sispis |
+| advice | owl, sispis |
+| debug | owl, anchor, fuse, sispis |
+| implement | owl, anchor, fuse, ward, sispis |
+| performance | owl, flow, sispis |
+| doc_edit | owl, anchor, dox, fuse, ward, sispis (FLOW only if a trigger fires) |
+
+Risky commands / secrets / external effects always require WARD, whatever
+else loads.
+
+## Dependency vs Ordering
+
+`shared/pipeline.yaml` separates **hard dependencies** from **ordering**:
+
+- `requires`: the stage cannot run unless these stages are active. Closure
+  over `requires` defines the minimal legal kernel (validator-enforced for
+  every profile).
+- `order_after`: if both are active, these run before it. `order_after` is
+  not a dependency — a profile may legally omit ordered stages.
+
+Lifecycle semantics are explicit in the manifest: `execution_mode`
+(preflight/wrapper/postflight/state/pre_edit/output) and `frequency`
+(per_task/per_action/per_artifact/per_edit/per_response). For example, FUSE
+and WARD wrap each action; FLOW runs once per artifact only when a trigger
+fires; DOX load runs before editing whenever an AGENTS contract applies, and
+DOX closeout runs after the edit only when durable documentation changed.
 
 Loading every skill on every request is overhead. The active subset should match the task's evidence, mutation, authority, documentation, and communication needs.
 
 ## SISPIS Integration
 
-Upstream signal sources are OWL, ANCHOR, FUSE, FLOW, and WARD. DOX is not a SISPIS upstream source. DOX surfaces contract constraints; OWL, ANCHOR, and FUSE consume those constraints according to their own rules.
+Upstream signal sources are OWL, ANCHOR, FUSE, FLOW, and WARD. DOX is not a SISPIS upstream source. DOX surfaces
+contract constraints; OWL, ANCHOR, and FUSE consume those constraints
+according to their own rules.
 
-Each upstream signal consumed by SISPIS should be represented as:
+Upstream protocols emit **semantic signals only**. They do not compute SISPIS
+entropy, intent weight, or output floors. SISPIS alone owns every mapping from
+a signal to response structure:
+
+```text
+signal → entropy
+signal → intent weighting
+signal → output floor
+```
+
+Each upstream signal crossing a skill boundary is carried in the canonical
+envelope in `shared/signal.schema.json`:
 
 ```json
 {
-  "entropy_delta": 0,
-  "intent_weight": 0.0,
-  "surface": false,
-  "description": "one sentence"
+  "signal_id": "sig-123",
+  "cause_id": "cause-42",
+  "source": "fuse",
+  "signal_type": "fuse.overclaimed_evidence",
+  "severity": "medium",
+  "scope": "artifact",
+  "evidence_refs": ["test-31", "claim-9"],
+  "required_action": "reclassify"
 }
 ```
 
-Deduplicate by underlying cause before applying deltas. Use the highest severity delta for a shared cause, then cap each SISPIS entropy dimension at 2.0.
+SISPIS deduplicates by `cause_id` before applying its own calibration — one
+cause may emit many signals, but it adjusts response structure once. The
+envelope fields are defined in `shared/signals.md`; the envelope schema is
+`shared/signal.schema.json`.
 
-### `intent_weight` Mapping
-
-| Source | Mapping rule |
-|--------|--------------|
-| OWL | `intent_weight = signal weight` (`0.5`, `1.0`, or `2.0`) |
-| FUSE | `intent_weight = signal weight` (`0.5` or `1.0`) |
-| FLOW | `intent_weight = signal weight` (`0.5`, `1.0`, or `2.0`) |
-| WARD | `proceed = 0`, `constrain = 1`, `confirm = 2`, `refuse = 2`, `recover = 2` |
-| ANCHOR | Recovery event `= 1`; checkpoint/object/completion events `= 0.5`; passive state tracking `= 0` |
-| DOX | `0`; DOX does not emit SISPIS entropy or intent weight |
-
-Entropy deltas remain defined in each skill's reference files. This file defines the canonical `intent_weight` policy and deduplication contract so SISPIS can receive a stable signal shape across skills.
-
-### Hard Output Floors
+Hard output floors are SISPIS-owned calibration, stated here only as the
+cross-skill expectation:
 
 | Event | Minimum SISPIS mode |
 |-------|---------------------|
 | WARD `confirm` | EXPLANATION |
 | WARD `refuse` | EXPLANATION |
 | WARD `recover` | EXPLANATION |
-| Any surfaced upstream signal with `surface = true` | EXPLANATION |
 | User explicitly requests options / deep dive | Gate activation |
 | User explicitly requests simple / direct answer | Suppression unless safety or hard override requires otherwise |
 
@@ -147,12 +196,32 @@ Adapter files under `*/adapters/` are generated artifacts. They are derived from
 
 Do not hand-edit generated adapter variants. Edit the canonical adapter content, then regenerate.
 
+Adapters derive their pipeline/integration summaries from the canonical
+manifest `shared/pipeline.yaml` and the canonical envelope
+`shared/signal.schema.json`. `shared/signals.md` is the canonical signal
+registry; `shared/signal-registry.json` is its machine-readable form. Keep
+these files canonical; edit derived prose, not this contract, when stages
+change.
+
 ## Validation
 
 Run:
 
 ```bash
 python3 scripts/validate-framework.py
+python3 scripts/doctor.py
+python3 scripts/resolve-runtime.py <task> <shape> <domains>
 ```
 
-The validator checks JSON syntax, expected skill count, adapter generation drift, WARD `recover` mapping, and canonical integration drift.
+`validate-framework.py` checks skill frontmatter loadability (every
+`*/SKILL.md` and `cogframe/SKILL.md` must parse as YAML), canonical signal
+envelope and registry agreement, absence of upstream SISPIS math, pipeline
+manifest shape, StateWork manifest schema conformance, WARD `recover`
+mapping, adapter generation drift, and shared integration drift.
+`doctor.py` verifies the installed runtime registry: source validity, runtime
+registration, installed/source fingerprint match, dispatcher target
+resolvability, required reference files, and schema availability.
+`resolve-runtime.py` composes the runtime bundle for a task: pinned
+framework/statework/guard versions, minimum FrameWorks kernel, best-matching
+StateWork from the registry, and the validated guard pack — with telemetry
+emitted out of band.

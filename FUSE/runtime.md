@@ -1,0 +1,28 @@
+# FUSE — Runtime Capsule
+
+Tool/action strategy. Runs around every tool decision. WARD gates
+permission; FUSE owns selection, sequencing, bounds, and evidence scope.
+
+## Decision logic
+- Need current external evidence? Choose the narrowest tool that produces it.
+- Serialize real dependencies; parallelize independent reads.
+- WARD-gate any mutation/boundary action before executing.
+- Interpret results only at their proven scope: a passing test proves the
+  test passes, nothing more.
+- Stale evidence cannot satisfy Necessity. Fresh observation invalidates
+  stale conflicting conclusions.
+- Same strategy fails twice → stop and enter ANCHOR recovery.
+
+## Bounds
+- Retries: bounded; repeated failure requires a changed hypothesis
+- No unbounded operations; serialize what depends on prior output
+
+## Signals
+conflicting_evidence_unrechecked, self_validating_evidence,
+overclaimed_evidence, retry_bound_exceeded, retry_without_variation,
+unsafe_parallelization, out_of_order_execution, skipped_prerequisite,
+unbounded_operation, absence_inference, wrong_tool_for_evidence,
+tool_affordance_mismatch, unverified_external_claim
+
+Emit in the canonical envelope only (shared/signal.schema.json); never
+compute SISPIS scoring here.

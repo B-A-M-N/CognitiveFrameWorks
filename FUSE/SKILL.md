@@ -229,17 +229,7 @@ FUSE executes; ANCHOR records. When FUSE's Termination principle hits its retry 
 FUSE answers: *What do the results prove?*
 SISPIS answers: *How should this be communicated?*
 
-FUSE's Evidence Interpretation determines the evidentiary class of each claim, feeding SISPIS's Evidence Hierarchy directly. A tool result that proves a claim makes it Level 1 (Verified). A tool result consistent with a claim but not proving it makes it Level 3 (Strong inference). A failed verification elevates SISPIS entropy — the output must frame the gap, not paper over it.
-
-| FUSE signal | SISPIS signal | Delta |
-|-------------|---------------|-------|
-| `overclaimed_evidence` | `tradeoff_density` | +1 |
-| `absence_inference` | `ambiguity_of_framing` | +1 |
-| `retry_bound_exceeded` | `option_multiplicity`, `tradeoff_density` | +1 each |
-| `unsafe_parallelization` | `ambiguity_of_framing` | +1 |
-| `tool_affordance_mismatch` | `downstream_impact` | +1 |
-
-Apply as upstream signal inputs to SISPIS. SISPIS collects all upstream signals, deduplicates by underlying cause (highest severity per cause wins), sums remaining deltas, and caps each dimension at 2.0. See CLAUDE.md § SISPIS Signal Integration Protocol for the full deduplication rule.
+FUSE's Evidence Interpretation determines the evidentiary class of each claim, feeding SISPIS's Evidence Hierarchy directly. FUSE emits **semantic signals** — `fuse.overclaimed_evidence`, `fuse.retry_bound_exceeded`, etc. — in the canonical envelope (`shared/signal.schema.json`). FUSE does not compute SISPIS entropy or intent weight; SISPIS owns every signal → calibration mapping.
 
 ### FUSE + WARD
 

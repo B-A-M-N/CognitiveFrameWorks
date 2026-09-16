@@ -68,10 +68,8 @@ W_flow = 2.0 (single signal, weight 2.0) >= 1.5 → Surface mode.
 ## SISPIS Integration
 
 `n_plus_one_query` maps to:
-- `downstream_impact` +2 (capped at 2.0)
-- `tradeoff_density` +2 (capped at 2.0)
 
-E elevates by +4 total. Likely pushes E past 6 → SISPIS Stage 1 hard override → SCHEMA mode.
+SISPIS applies its own calibration to the envelopes.
 
 ---
 

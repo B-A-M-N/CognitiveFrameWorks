@@ -102,32 +102,8 @@ Multiple signals: stack by descending weight, cap at 5 lines.
 
 ### FLOW → SISPIS
 
-| FLOW signal | SISPIS signal | Delta |
-|-------------|---------------|-------|
-| `retry_storm_risk` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `unbounded_accumulation` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `n_plus_one_query` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `cache_stampede_risk` | `downstream_impact`, `tradeoff_density` | +2 each |
-| `non_idempotent_retry` | `tradeoff_density` | +1 |
-| `missing_timeout` | `downstream_impact` | +1 |
-| `missing_flow_control` | `downstream_impact` | +1 |
-| `stale_cache_risk` | `downstream_impact` | +1 |
-| `blocking_startup` | `downstream_impact` | +1 |
-| `algorithmic_drag` | `downstream_impact` | +1 |
-| `missing_pagination` | `downstream_impact` | +1 |
-| `sync_blocking_io` | `downstream_impact` | +1 |
-| `workflow_friction` | `tradeoff_density` | +1 |
-| `coupling_burden` | `downstream_impact`, `tradeoff_density` | +1 each |
-| `responsibility_concentration` | `downstream_impact`, `tradeoff_density` | +1 each |
-| `change_amplification` | `downstream_impact` | +1 |
-| `unnecessary_caching` | `tradeoff_density` | +0.5 |
-| `eager_loading` | `downstream_impact` | +0.5 |
-| `repeated_computation` | `downstream_impact` | +0.5 |
-| `missing_batching` | `downstream_impact` | +0.5 |
-| `missing_incremental` | `tradeoff_density` | +0.5 |
-| `unnecessary_abstraction` | `tradeoff_density` | +0.5 |
-
-Apply before Stage 1. Cap each SISPIS signal at 2.0.
+FLOW emits semantic signals in the canonical envelope (`shared/signal.schema.json`).
+SISPIS owns all signal → calibration mapping (`shared/integration.md` § SISPIS Integration).
 
 ### FLOW → ANCHOR
 

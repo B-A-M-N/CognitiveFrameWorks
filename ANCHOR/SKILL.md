@@ -164,16 +164,7 @@ ANCHOR's Memory Integrity principle governs checkpointing of operational state. 
 ANCHOR answers: *What actually happened?*
 SISPIS answers: *How should this be communicated?*
 
-ANCHOR's Action Accountability principle maintains the trace of what occurred. SISPIS's gate function determines how to communicate it. ANCHOR state transitions adjust SISPIS entropy (E) and intent weight (W) before the gate runs:
-
-| ANCHOR state event | SISPIS signal affected | Delta |
-|--------------------|------------------------|-------|
-| Recovery (Failed → Recovered) | `option_multiplicity`, `tradeoff_density` | +1 each |
-| Object merge/split without evidence | `ambiguity_of_framing` | +1 |
-| Checkpoint reconstruction | `ambiguity_of_framing` | -1 (context re-established, reduces ambiguity) |
-| Completion criteria undefined at task start | `ambiguity_of_framing` | +1 |
-
-Apply these deltas as upstream signal inputs to SISPIS. SISPIS collects all upstream signals, deduplicates by underlying cause (highest severity per cause wins), sums remaining deltas, and caps each dimension at 2.0. See CLAUDE.md § SISPIS Signal Integration Protocol for the full deduplication rule.
+ANCHOR's Action Accountability principle maintains the trace of what occurred. SISPIS's gate function determines how to communicate it. ANCHOR emits **semantic state signals** — recovery events, checkpoint/object/completion events, passive state tracking — in the canonical envelope (`shared/signal.schema.json`). ANCHOR does not compute SISPIS entropy or intent weight; SISPIS owns every signal → calibration mapping.
 
 ---
 

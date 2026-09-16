@@ -85,12 +85,10 @@ Surface order: contradiction first (weight 2.0), ambiguous_requirement second (w
 
 OWL emitted: `contradiction` (weight 2.0), `ambiguous_requirement` (weight 0.5).
 
-SISPIS delta from signal-schema.md:
-- `contradiction` → `option_multiplicity` +2, `downstream_impact` +2
-- `ambiguous_requirement` → `ambiguity_of_framing` +2
+SISPIS calibration (signal-calibration.yaml) applies; OWL emits semantics only:
 
-SISPIS E before OWL: likely 2-3 (the request looks like a simple add-feature task).
-SISPIS E after OWL: 2 + 2 + 2 + 2 = 8 (capped at 10). This crosses E >= 6 → Stage 1 hard override → SCHEMA mode.
+SISPIS calibrates the emitted envelopes; OWL does not compute E.
+SISPIS calibrates the emitted envelopes; OWL does not compute E.
 
 The combination of "already exists" + "unclear what's wanted" turns a simple-seeming task into a high-entropy decision that SISPIS should structure.
 

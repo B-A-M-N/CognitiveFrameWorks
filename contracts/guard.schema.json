@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digitalpsychology.dev/schemas/guard.schema.json",
+  "title": "DigitalPsychology guard",
+  "description": "Machine schema for a behavioral guard. Documentation (instrumentation/guards.md) is derived from this file — keep them in sync.",
+  "type": "object",
+  "required": ["id", "family", "status", "target_behavior", "rule", "location", "priority", "version", "enforcement"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "family": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "key": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["candidate", "experiment", "validated", "canary", "active", "stale", "rolled_back"] },
+    "target_behavior": { "type": "string", "minLength": 1 },
+    "rule": { "type": "string", "minLength": 1 },
+    "location": { "type": ["string", "null"] },
+    "source_finding_ref": { "type": ["string", "null"] },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "domains": { "type": "array", "items": { "type": "string" } },
+        "stateworks": { "type": "array", "items": { "type": "string" } },
+        "task_shapes": { "type": "array", "items": { "type": "string" } },
+        "models": { "type": "array", "items": { "type": "string" } },
+        "harnesses": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "trigger": { "type": ["string", "null"] },
+    "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+    "conflicts_with": { "type": "array", "items": { "type": "string" } },
+    "supersedes": { "type": "array", "items": { "type": "string" } },
+    "estimated_tokens": { "type": "integer", "minimum": 0 },
+    "cost": { "type": ["number", "null"] },
+    "validation_receipt_ref": { "type": ["string", "null"] },
+    "canary_receipt_ref": { "type": ["string", "null"] },
+    "activation_receipt_ref": { "type": ["string", "null"] },
+    "rollback_receipt_ref": { "type": ["string", "null"] },
+    "status_history": { "type": "array", "items": { "type": "object" } },
+    "validation": { "type": "object" },
+    "rollout": { "type": "object" },
+    "monitoring": { "type": "object" },
+    "model": { "type": ["string", "null"] },
+    "harness": { "type": ["string", "null"] },
+    "domain": { "type": ["string", "null"] },
+    "task_shapes": { "type": "array", "items": { "type": "string" } },
+    "evaluator": { "type": ["string", "null"] },
+    "enforcement_key": { "type": ["string", "null"], "minLength": 1 },
+    "enforcement": {
+      "type": "object",
+      "required": ["mode", "handler", "handler_version", "parameters", "fallback_prompt"],
+      "properties": {
+        "mode": { "enum": ["structural", "state_transition", "tool_gate", "prompt"] },
+        "handler": { "type": ["string", "null"], "minLength": 1 },
+        "handler_version": { "type": "string", "minLength": 1 },
+        "parameters": { "type": "object" },
+        "fallback_prompt": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+  ,"allOf": [
+    {
+      "if": {"properties": {"status": {"enum": ["validated", "canary", "active"]}}},
+      "then": {"required": ["enforcement_key"]}
+    }
+  ]
+}

@@ -2,6 +2,8 @@
 
 A set of behavioral protocols for AI assistants. Seven skills: OWL, ANCHOR, DOX, FUSE, FLOW, WARD, and SISPIS. Designed to run as a pipeline, but each functions independently.
 
+Companion operational skills live separately in `~/CognitiveStateWork/`: **gitter** (Git repository truth & isolation) and **getter** (Git mutation & recovery). They are independent plug-ins composed by routing — neither belongs to the core pipeline — but the framework's Core Evidence Doctrine (see CLAUDE.md) imports their two general principles: agent action is not evidence of correctness, and operator observations invalidate stale assumptions.
+
 ---
 
 ## Why This Matters
@@ -101,9 +103,32 @@ FUSE + WARD run per-action, not per-request. FLOW runs once per artifact, only i
 
 ```bash
 python3 scripts/validate-framework.py
+python3 scripts/test-runtime.py
+python3 scripts/doctor.py --target harvardcodex
+python3 scripts/resolve-runtime.py <task> <shape> <domains>   # debugging front end
+python3 scripts/runtime.py <task> <shape> <domains>           # host adapter
 ```
 
-Checks JSON syntax, skill count, adapter generation drift, WARD `recover` mapping, canonical integration drift, and adapter duplicate hashes.
+`validate-framework.py` checks skill frontmatter loadability, canonical signal
+envelope/registry agreement (including machine-owned consumers), absence of
+upstream SISPIS math and dimension identifiers, pipeline manifest shape and
+`requires` closure, StateWork manifest schema conformance, adapter generation
+drift, and scenario emissions against the canonical registry.
+`test-runtime.py` is a source-only regression test (no install state
+required) covering lifecycle ordering, packet chain routing with cycle
+detection, guard-pack validation, and out-of-tree snapshot semantics.
+`doctor.py` inspects the explicit `--target` registry, matching the
+installers. `resolve-runtime.py` is a debugging CLI over the pure library
+`resolve()`; the host adapter `runtime.py` injects compact runtime capsules
+into the model context (`context_for(session)` measures the actual injected
+instruction words) and persists immutable per-task snapshots in
+`$XDG_RUNTIME_DIR/cognitiveframeworks/<task>/<policy-hash>.json` — never the
+source tree. Production callers should construct an immutable `TaskRequest`
+and call `resolve()` followed by `runtime.start(bundle)`. The host action
+registry classifies tools for WARD; agent-supplied `destructive` or
+`outside_scope` flags are not authority. Host telemetry is validated against
+the exact pinned DigitalPsychology behavior-event schema, and StateWork
+handoffs go through the validated CognitiveStateWork `PacketStore`.
 
 ---
 
@@ -325,10 +350,14 @@ CognitiveFrameWorks/
 ├── shared/
 │   ├── adapter-source.md
 │   ├── integration.md
-│   └── signals.md
+│   ├── signals.md
+│   ├── signal-registry.json
+│   ├── signal.schema.json
+│   └── pipeline.yaml
 ├── scripts/
 │   ├── generate-adapters.py
-│   └── validate-framework.py
+│   ├── validate-framework.py
+│   └── doctor.py
 ├── OWL/
 │   ├── SKILL.md
 │   ├── references/

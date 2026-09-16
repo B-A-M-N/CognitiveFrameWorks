@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cognitivestatework.dev/schemas/transition-contract.schema.json",
+  "type": "object",
+  "required": ["version", "initial_state", "states", "completion_states", "normal_path", "transitions"],
+  "properties": {
+    "version": { "type": "string", "minLength": 1 },
+    "initial_state": { "type": "string", "minLength": 1 },
+    "states": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "completion_states": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "normal_path": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "external_entry_states": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "transitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "trigger", "required_evidence"],
+        "properties": {
+          "from": { "type": "string", "minLength": 1 },
+          "to": { "type": "string", "minLength": 1 },
+          "trigger": { "type": "string", "minLength": 1 },
+          "required_evidence": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+          "path_class": { "enum": ["normal", "recovery", "failure", "invalidation", "external"] },
+          "framework_requirements": { "type": "array", "uniqueItems": true, "items": { "enum": ["owl", "anchor_open", "anchor_closeout", "dox_load", "dox_closeout", "fuse", "flow", "ward", "sispis"] } },
+          "evidence_freshness": {
+            "type": "object",
+            "properties": {
+              "mode": { "enum": ["after_state_entry", "any"] },
+              "max_age_seconds": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

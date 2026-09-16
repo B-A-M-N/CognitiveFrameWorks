@@ -52,11 +52,11 @@ SISPIS operates as a gated decision system. Apply the full response schema only 
 
 ## Pre-Gate Hook: External Signal Injection
 
-If upstream skills (OWL, ANCHOR, FUSE, FLOW, WARD) provide signals before gate evaluation, they adjust E and W before the gate runs. Upstream signals modify but do not replace base scoring. If an incoming signal carries `surface = true`, the response floor is EXPLANATION — the gate cannot suppress below it.
+If upstream skills (OWL, ANCHOR, FUSE, FLOW, WARD) provide signals before gate evaluation, they adjust E and W before the gate runs. Upstream signals modify but do not replace base scoring. Output floors come from SISPIS-owned calibration: a signal or `required_action` with `minimum_mode: explanation` (e.g. WARD `confirm`/`refuse`/`recover`) cannot be suppressed below EXPLANATION — the gate cannot suppress below it.
 
-Upstream signals are collected from all skills, deduplicated by underlying cause (highest severity per cause wins), then summed. See CLAUDE.md § SISPIS Signal Integration Protocol for the full deduplication rule.
+SISPIS receives canonical envelopes (`shared/signal.schema.json`; see `shared/integration.md` for the cross-skill contract), deduplicates by `cause_id` (one cause adjusts response structure once), looks up each `signal_type` in its own calibration table, applies the calibration, applies any `required_action` floor, then runs the decision gate.
 
-Canonical mappings live in `shared/integration.md`. SISPIS reads only `entropy_delta` and `intent_weight` from each signal — it does not need to know the upstream skill's internal signal type names.
+SISPIS owns every signal → calibration mapping. Upstream skills never compute entropy deltas or intent weights; they emit semantic meaning only. Mapping lives in `references/signal-calibration.yaml`, the only owner of that scoring.
 
 Full injection mechanics: `references/response-schema.md` § External Signal Injection.
 

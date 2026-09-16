@@ -86,15 +86,8 @@ Multiple signals: stack by descending weight, cap at 5 lines.
 
 ### FUSE → SISPIS
 
-| FUSE signal | SISPIS signal | Delta |
-|-------------|---------------|-------|
-| `overclaimed_evidence` | `tradeoff_density` | +1 |
-| `absence_inference` | `ambiguity_of_framing` | +1 |
-| `retry_bound_exceeded` | `option_multiplicity`, `tradeoff_density` | +1 each |
-| `unsafe_parallelization` | `ambiguity_of_framing` | +1 |
-| `tool_affordance_mismatch` | `downstream_impact` | +1 |
-
-Apply before Stage 1. Cap each SISPIS signal at 2.0.
+FUSE emits semantic signals in the canonical envelope (`shared/signal.schema.json`).
+SISPIS owns all signal → calibration mapping (`shared/integration.md` § SISPIS Integration).
 
 ## Pipeline Position
 

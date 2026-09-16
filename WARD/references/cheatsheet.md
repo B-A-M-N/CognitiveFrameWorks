@@ -136,13 +136,8 @@ DOX surfaces: forbidden actions, deployment rules, secrets policy, destructive-o
 
 ### WARD → SISPIS
 
-| Required Action | SISPIS Minimum |
-|----------------|----------------|
-| proceed | (normal) |
-| constrain | (entropy elevated) |
-| confirm | EXPLANATION |
-| refuse | EXPLANATION |
-| recover | EXPLANATION |
+WARD emits semantic signals with `required_action` (canonical envelope).
+SISPIS owns the mapping to minimum output mode (`shared/integration.md` § SISPIS Integration).
 
 ### WARD → FLOW
 

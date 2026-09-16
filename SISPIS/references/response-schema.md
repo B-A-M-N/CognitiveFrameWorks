@@ -46,75 +46,54 @@ Sum of five signals, each scored 0-2. Range: 0-10.
 
 ### External Signal Injection (Pre-Gate)
 
-Upstream skills (OWL, ANCHOR, FUSE, FLOW, WARD) may pass signal arrays before gate evaluation. Each signal carries two values SISPIS uses:
+Upstream skills (OWL, ANCHOR, FUSE, FLOW, WARD) may pass canonical signal
+envelopes (`shared/signal.schema.json`) before gate evaluation. SISPIS owns
+**every** mapping from a semantic signal to entropy/intent/output-floor
+effects. Upstream skills never compute `entropy_delta` or `intent_weight`;
+they emit meaning only.
 
-  entropy_delta   — integer, added to E_base (sum capped at 10)
-  intent_weight   — float, added to W_base
-
-SISPIS does not need to know signal_type names from upstream skills. It reads only entropy_delta and intent_weight. Canonical mappings are defined in `shared/integration.md`.
-
-Expected input shape:
 ```json
 {
-  "upstream_signals": {
-    "owl": [
-      {
-        "entropy_delta": 2,
-        "intent_weight": 2.0,
-        "surface": true,
-        "description": "one sentence — included in output if surface = true"
-      }
-    ],
-    "anchor": [
-      {
-        "entropy_delta": 1,
-        "intent_weight": 0.0,
-        "surface": false
-      }
-    ],
-    "fuse": [],
-    "flow": [
-      {
-        "entropy_delta": 2,
-        "intent_weight": 1.0,
-        "surface": true,
-        "description": "one sentence"
-      }
-    ],
-    "ward": [
-      {
-        "entropy_delta": 2,
-        "intent_weight": 2.0,
-        "surface": true,
-        "description": "one sentence"
-      }
-    ]
-  }
+  "signal_id": "sig-123",
+  "cause_id": "cause-42",
+  "source": "fuse",
+  "signal_type": "fuse.overclaimed_evidence",
+  "severity": "medium",
+  "scope": "artifact",
+  "evidence_refs": ["test-31", "claim-9"],
+  "required_action": "reclassify"
 }
 ```
 
-Keys present only when the corresponding skill was run and emitted signals. If a skill was not run or emitted no signals, its key is omitted.
+Ingestion pipeline:
 
-Application:
-```
-E_adjusted = min(E_base + sum(all s.entropy_delta across all skill arrays), 10)
-W_adjusted = W_base + sum(all s.intent_weight across all skill arrays)
-```
-
-Capping: each SISPIS entropy signal (`option_multiplicity`, `tradeoff_density`, `ambiguity_of_framing`, `comparative_intent`, `downstream_impact`) is capped at 2.0 after applying all deltas. Overflow does not carry to adjacent signals.
+1. Collect all upstream envelopes.
+2. Deduplicate by `cause_id` — one underlying cause adjusts response
+   structure once, even when several skills emitted on the same cause.
+3. Look up each envelope's `signal_type` in
+   `references/signal-calibration.yaml` (the only scoring table).
+4. Apply the calibration: add the entropy dimension deltas to `E_base`
+   (each dimension capped at 2.0, total capped at 10) and add
+   `intent_weight` to `W_base`.
+5. Apply the `required_action` floor: if the envelope's
+   `required_action` has a `minimum_mode` in the calibration, the response
+   cannot be suppressed below that mode.
+6. Run the decision gate on the adjusted values.
 
 Edge cases:
 
   E_adjusted >= 6 — Stage 1 hard override fires even if E_base was below 6.
-  This is correct behavior: a contradiction found in code (entropy_delta +2
-  twice) should force SCHEMA the same as a natively high-entropy request.
 
-  surface = true but gate suppresses — EXPLANATION mode is the floor.
-  Surfaced content appears as a prefixed note before the response body.
-  It does not receive schema structure unless SCHEMA activates normally.
+  A calibration entry with `minimum_mode: explanation` (e.g. WARD
+  `confirmation_required`, or required actions `confirm`/`refuse`/`recover`)
+  forces EXPLANATION as the floor; SCHEMA still requires normal gate
+  activation.
 
-  No upstream signals — hook does not fire. E_base and W_base used as-is.
-  SISPIS behavior is identical to the no-integration case.
+  No upstream signals — the hook does not fire. E_base and W_base are used
+  as-is; SISPIS behavior is identical to the no-integration case.
+
+  Unknown signal_type — do not guess. It contributes nothing until the
+  calibration table is extended; a validator error should flag the gap.
 
 ---
 

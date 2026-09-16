@@ -1,0 +1,34 @@
+# OWL — Runtime Capsule
+
+Pre-implementation reasoning. Reality check, uncertainty, epistemic framing,
+locality/scope, conservation, simplicity, integrity. Runs once per task
+before acting.
+
+## Gate
+Run the reasoning pass when the task is non-trivial (not a rename/reformat/
+unambiguous single edit). Surface findings when the task needs them;
+otherwise stay silent internally.
+
+## Checks
+- Reality: read code before claiming anything about it
+- Epistemics: distinguish verified / inferred / assumed / user-reported;
+  a user report of current behavior is evidence, not social pressure
+- Verification: define what would prove the claim; avoid circular
+  verification (tests that mirror implementation, edit existence,
+  rereading new code)
+- Locality: change only what the request implies; surface scope expansion
+- Conservation: preserve existing behavior unless change was requested
+- Integrity: a failed approach is a sunk cost — stop and re-plan, don't
+  stack patches
+
+## Signals (canonical, SISPIS-visible)
+user_observation_conflict, circular_verification, cohesion_risk,
+approach_failed, constraint_drift, unverified_assumption,
+ambiguous_requirement, multiple_interpretations, code_not_read, contradiction,
+missing_context, missing_criteria, unverifiable_claim, partial_completion,
+scope_expansion, unrelated_change_detected, intent_deviation,
+behavior_change_risk, over_complexity_detected, abstraction_added,
+premature_pattern, opacity_risk, simulated_completion_risk, sunk_cost_detected
+
+Emit in the canonical envelope only (shared/signal.schema.json); never
+compute SISPIS scoring here.

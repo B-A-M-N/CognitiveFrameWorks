@@ -132,59 +132,31 @@ Examples: "rename `usr` to `user` in this file", "add a blank line between these
 
 ---
 
-## SISPIS Entropy Mapping
+## SISPIS Integration
 
-OWL signals map to SISPIS entropy dimensions. When OWL runs before SISPIS, the emitted signals pre-score specific SISPIS entropy signals, adding delta values to E before SISPIS runs its own gate.
-
-The SISPIS entropy signals are: `option_multiplicity`, `tradeoff_density`, `ambiguity_of_framing`, `comparative_intent`, `downstream_impact`.
-
-### Mapping Table
-
-| OWL signal_type | SISPIS signal affected | Delta |
-|-----------------|----------------------|-------|
-| `contradiction` | `option_multiplicity`, `downstream_impact` | +2 each |
-| `user_observation_conflict` | `ambiguity_of_framing` | +1 |
-| `user_observation_conflict` | `downstream_impact` | +2 |
-| `ambiguous_requirement` | `ambiguity_of_framing` | +2 |
-| `unverified_assumption` | `ambiguity_of_framing` | +1 |
-| `multiple_interpretations` | `comparative_intent`, `ambiguity_of_framing` | +1 each |
-| `scope_expansion` | `downstream_impact` | +1 |
-| `approach_failed` | `option_multiplicity`, `tradeoff_density` | +1 each |
-| `intent_deviation` | `downstream_impact` | +2 |
-| `position_pressure` | `ambiguity_of_framing` | +1 |
-| `missing_criteria` | `ambiguity_of_framing` | +1 |
-| `constraint_drift` | `ambiguity_of_framing`, `downstream_impact` | +1 each |
-| `behavior_change_risk` | `downstream_impact` | +1 |
-| `simulated_completion_risk` | `tradeoff_density`, `downstream_impact` | +1 each |
-| `sunk_cost_detected` | `tradeoff_density` | +1 |
-| `abstraction_added` | `option_multiplicity` | +0.5 |
-| `over_complexity_detected` | `tradeoff_density` | +0.5 |
-| `opacity_risk` | `downstream_impact` | +0.5 |
-| `code_not_read` | `ambiguity_of_framing` | +1 |
-| `missing_context` | `ambiguity_of_framing` | +0.5 |
-| `unverifiable_claim` | `tradeoff_density` | +0.5 |
-| `partial_completion` | `downstream_impact` | +0.5 |
-| `circular_verification` | `tradeoff_density`, `downstream_impact` | +1 each |
-| `cohesion_risk` | `tradeoff_density`, `downstream_impact` | +1 each |
-| `premature_pattern` | `option_multiplicity` | +0.5 |
-| `unrelated_change_detected` | `downstream_impact` | +0.5 |
-
+OWL emits **semantic signals** to SISPIS in the canonical envelope
+(`shared/signal.schema.json`): `signal_id`, `cause_id`, `source`,
+`signal_type`, `severity`, `scope`, `evidence_refs`, `required_action`.
+OWL does not compute SISPIS entropy, intent weight, or output floors — SISPIS
+owns every signal → calibration mapping (see `shared/integration.md`
+§ SISPIS Integration).
 ### Capping
 
-SISPIS entropy signals are scored 0-2 per signal. OWL deltas can push a signal past 2. Cap each SISPIS signal at 2.0 after applying deltas. Overflow does not carry to adjacent signals.
 
 ### Pipeline Operation
 
 ```
-1. OWL runs reasoning pass → emits signals with weights
+1. OWL runs reasoning pass → emits semantic signals
 2. OWL gate: if W_owl >= 1.5, surface findings before output
-3. OWL passes emitted signal list to SISPIS
-4. SISPIS applies delta table to its entropy score E
-5. SISPIS runs its gate function on the resulting E
+3. OWL passes emitted signals to SISPIS in the canonical envelope
+4. SISPIS owns signal → entropy / intent / output-floor calibration
+   (SISPIS/references/signal-calibration.yaml — the only calibration table)
+5. SISPIS runs its gate function (SISPIS/runtime/calibrate.py when present)
 6. Output mode: NO_DECISION / EXPLANATION / SCHEMA
 ```
 
-OWL can elevate E enough to cross SISPIS thresholds. A request that SISPIS would ordinarily resolve as NO_DECISION may become SCHEMA after OWL finds a `contradiction` (+2 to two signals, potentially pushing E from 2 to 6).
+Whether an OWL signal changes SISPIS output structure is SISPIS's decision —
+OWL never computes SISPIS entropy or intent deltas.
 
 ---
 
@@ -194,10 +166,14 @@ OWL can elevate E enough to cross SISPIS thresholds. A request that SISPIS would
 Rename a variable. No signals. SISPIS receives E unelevated. If the request was already low-entropy, output is direct.
 
 ### Single weight-1.0 signal (W_owl = 1.0)
-`missing_criteria` fires. W_owl = 1.0 < 1.5 → silent. SISPIS receives +1 to `ambiguity_of_framing`. If E was 2, it becomes 3 — SISPIS may now activate where it wouldn't have.
+`missing_criteria` fires. W_owl = 1.0 < 1.5 → silent. The emitted envelope
+(owl-level semantics only) is passed to SISPIS; whether it changes response
+structure is SISPIS calibration's decision.
 
 ### Single weight-2.0 signal (W_owl = 2.0)
-`contradiction` fires. W_owl = 2.0 >= 1.5 → surface. SISPIS receives +4 total (two signals +2 each, capped at 2 each). E likely crosses 6 → SISPIS Stage 1 hard override → SCHEMA mode.
+`contradiction` fires. W_owl = 2.0 >= 1.5 → surface. The envelope crosses to
+SISPIS with owl semantics; SISPIS applies its own calibration.
 
 ### Two weight-1.0 signals (W_owl = 2.0)
-`unverified_assumption` + `scope_expansion`. Surfaces. SISPIS receives +1 to `ambiguity_of_framing` and +1 to `downstream_impact`. E elevates moderately; SISPIS gate depends on base E.
+`unverified_assumption` + `scope_expansion`. Surfaces. Envelopes cross to
+SISPIS; SISPIS calibrates, OWL does not.

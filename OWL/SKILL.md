@@ -178,18 +178,16 @@ When in doubt: proceed silently.
 
 ## SISPIS Integration
 
-OWL signal output is the integration point with SISPIS. Emitted signals map to SISPIS entropy dimensions. When OWL surfaces, the signal types and severity can be passed directly to SISPIS's entropy computation as pre-scored inputs. SISPIS collects all upstream signals, deduplicates by underlying cause (highest severity per cause wins), sums remaining deltas, and caps each dimension at 2.0. See CLAUDE.md § SISPIS Signal Integration Protocol for the full deduplication rule.
-
-Full mapping table and pipeline spec: `references/signal-schema.md` § SISPIS Entropy Mapping.
+OWL signal output is the integration point with SISPIS. OWL emits **semantic signals** — the canonical envelope in `shared/signal.schema.json` (`signal_id`, `cause_id`, `source`, `signal_type`, `severity`, `scope`, `evidence_refs`, `required_action`). OWL does not compute SISPIS entropy or intent weight; SISPIS owns every mapping from signal to response structure. See `shared/integration.md` § SISPIS Integration.
 
 The integration seam:
 
 ```
 Request
   → OWL (pre-implementation reasoning pass)
-      emits: structured signals with severity
+      emits: semantic signals (canonical envelope)
   → SISPIS (response structure)
-      reads: OWL signal types → SISPIS entropy delta
+      owns: signal → entropy, signal → intent weighting, signal → output floor
       decides: output mode (NO_DECISION / EXPLANATION / SCHEMA)
   → Output
 ```

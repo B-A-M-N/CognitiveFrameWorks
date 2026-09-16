@@ -29,6 +29,32 @@ DOX closeout updates documentation only when the change alters durable contracts
 
 DOX does not create a `FLOW_ISSUES.md` unless the user explicitly asks for durable issue tracking.
 
+## Canonical Contracts
+
+Cross-skill semantics are owned by machine-checkable files, not prose:
+
+- `shared/signals.md` — canonical namespaced signal registry
+- `shared/signal.schema.json` — canonical signal envelope (JSON Schema)
+- `shared/signal-registry.json` — machine-readable registry
+- `shared/pipeline.yaml` — canonical pipeline manifest (stage, activation rule, owner, input/output signal types, required predecessors, suppression, runtime cost class)
+- `shared/integration.md` — the cross-skill integration contract
+
+Upstream protocols (OWL, ANCHOR, FUSE, FLOW, WARD) emit **semantic signals
+only** in the canonical envelope. They do not compute SISPIS entropy, intent
+weight, or output floors; SISPIS alone owns signal → calibration mapping.
+Run `scripts/validate-framework.py` and `scripts/doctor.py` after changing any
+contract file or skill.
+
+## Core Evidence Doctrine
+
+Two principles imported from the CognitiveStateWork skills (gitter/getter) apply far beyond Git and bind every protocol in this framework:
+
+1. **Agent action is not evidence of correctness.** An agent saying "implemented," "fixed," or "done" cannot close an observation by itself; the result must be independently re-observed or validated. A command's exit code, a passing test that doesn't target the claim, or a prior conclusion in the session are all construction facts, not proof.
+
+2. **User/operator observations invalidate stale assumptions.** When the operator reports "no, that is still happening" or "you're looking at this wrong," treat it as a state-invalidating observation: reopen the relevant state and re-inspect. Do not defend the earlier model or explain why the earlier work ought to have worked.
+
+These are the framework-level contracts; gitter and getter (in `~/CognitiveStateWork/`) are the Git-specific procedural instantiations of them and remain independent plug-in skills, not part of the core pipeline.
+
 ## Pipeline Budget
 
 Running the full seven-skill pipeline on every request is unnecessary overhead. Apply the minimum subset that serves the task:
@@ -70,27 +96,39 @@ These ownership contracts explicitly target **self-certification / dismissal of 
 
 ## SISPIS Signal Integration Protocol
 
-Upstream skills (OWL, FUSE, WARD, FLOW, ANCHOR) emit signals that adjust SISPIS entropy dimensions before the gate runs. DOX is not an upstream signal source; it surfaces contract constraints that OWL, ANCHOR, and FUSE may consume. To prevent double-counting from multiple skills reporting the same underlying event:
+Upstream skills (OWL, FUSE, WARD, FLOW, ANCHOR) emit semantic signals in the
+canonical envelope (`shared/signal.schema.json`). They never compute SISPIS
+scoring. SISPIS alone owns every signal → calibration mapping:
 
-1. Collect all upstream signals before any delta is applied.
-2. Deduplicate signals that share the same underlying cause. Signals may share a cause even if emitted by different skills — e.g., OWL's `approach_failed`, FUSE's `retry_bound_exceeded`, and ANCHOR's `recovery_started` may describe the same failure.
-3. For each deduplicated cause, apply the highest-severity delta from among the colliding signals.
-4. Sum the remaining (non-deduplicated) deltas.
-5. Cap each SISPIS dimension at 2.0 after summation.
-6. Apply hard overrides last (e.g., WARD `refuse` forces SISPIS to at least EXPLANATION).
+```text
+canonical envelope
+  → deduplicate by cause_id (one cause adjusts response structure once)
+  → look up signal_type in SISPIS/references/signal-calibration.yaml
+  → apply SISPIS-owned calibration (entropy deltas, intent weight)
+  → apply required_action floor (minimum_mode)
+  → run decision gate
+```
 
-This prevents the same failure from being counted three times across OWL, FUSE, and ANCHOR, while still allowing independent events to compound.
+The calibration table is the only scoring table. DOX is not an upstream
+signal source; it surfaces contract constraints that OWL, ANCHOR, and FUSE
+may consume.
 
 ### Conflict Resolution
 If WARD refuses a FUSE-selected action, the following occurs:
 - FUSE logs the refusal and marks the action as blocked.
-- SISPIS receives the WARD refusal signal, forcing output to at least EXPLANATION.
+- SISPIS receives the WARD refusal signal; the `refuse` / `recover`
+  required-action floor forces output to at least EXPLANATION via its own
+  calibration.
 - ANCHOR records the veto in the session state for recovery or audit purposes.
-- The pipeline halts at the FUSE+WARD stage; no further actions (e.g., edits, tool calls) proceed.
+- The pipeline halts at the FUSE+WARD stage; no further actions (e.g., edits,
+  tool calls) proceed.
 
-### Signal Deduplication Examples
-- **Example 1**: OWL emits `approach_failed` (severity: 1.2), FUSE emits `retry_bound_exceeded` (severity: 1.5), and ANCHOR emits `recovery_started` (severity: 1.0). All three signals share the same underlying cause (a failed retry loop). The highest-severity delta (1.5 from FUSE) is applied once.
-- **Example 2**: OWL emits `ambiguity_detected` (severity: 0.8) and FUSE emits `tool_selection_uncertain` (severity: 0.6). These are independent events, so both deltas are summed (1.4 total).
+### Signal Deduplication
+Multiple skills may emit on the same underlying cause (e.g., OWL
+`approach_failed`, FUSE `retry_bound_exceeded`, ANCHOR `recovery_started`
+describing one failed retry loop). All envelopes sharing a `cause_id` are
+collapsed into a single calibration application before the gate runs.
+Independent causes compound.
 
 ## Skill Availability
 
@@ -98,4 +136,4 @@ Seven skills are defined in this repo: OWL, ANCHOR, DOX, FUSE, FLOW, WARD, and S
 
 Load the minimum subset that serves the task. Do not load the full set by default; full-skill loading is only appropriate when the task explicitly requires it. If a platform exposes a `skill` loader, use it only for the active subset. Runtime availability is separate from repo availability.
 
-Canonical integration details, including SISPIS `intent_weight` policy and adapter generation, live in `shared/integration.md` and `shared/adapter-source.md`.
+Canonical integration details and adapter generation live in `shared/integration.md` and `shared/adapter-source.md`. SISPIS's signal → calibration scoring table is `SISPIS/references/signal-calibration.yaml`.
