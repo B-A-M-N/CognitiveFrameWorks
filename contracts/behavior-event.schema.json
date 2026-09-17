@@ -49,7 +49,13 @@
         "reason": { "type": "string", "maxLength": 128 },
         "outcome": { "enum": ["good", "bad"] },
         "policy_hash": { "type": "string", "maxLength": 128 },
-        "routing_profile_hash": { "type": "string", "maxLength": 128 }
+        "routing_profile_hash": { "type": "string", "maxLength": 128 },
+        "route_decision_id": { "type": "string", "maxLength": 256 },
+        "evaluator_id": { "type": "string", "maxLength": 128 },
+        "outcome_source": { "type": "string", "maxLength": 256 },
+        "candidate_profile_hash": { "type": "string", "maxLength": 128 },
+        "candidate_adjustment_applied": { "type": "boolean" },
+        "comparison_context_hash": { "type": "string", "maxLength": 128 }
       },
       "additionalProperties": false
     }
