@@ -634,9 +634,11 @@ def main() -> int:
     check("structural gate blocks out-of-scope action",
           session.before_action({"tool_type": "deploy", "outside_scope": True}) ==
           runtime.GateDecision.BLOCK)
+    configured_state_home = Path(os.environ.get(
+        "XDG_STATE_HOME", Path.home() / ".local" / "state"))
     check("structural gate protects trusted control-plane paths",
           session.before_action({"tool_type": "write", "arguments": {
-              "target": str(Path.home() / ".local" / "state" /
+              "target": str(configured_state_home /
                              "digitalpsychology" / "compiled-guard-pack.json")}}) ==
           runtime.GateDecision.BLOCK)
     check("model confirmation and authority fields are ignored",
