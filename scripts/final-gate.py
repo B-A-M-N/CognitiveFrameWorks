@@ -32,11 +32,19 @@ def require_clean_tag(root: Path, expected_tag: str | None) -> str:
     dirty = git(root, "status", "--porcelain")
     if dirty:
         raise RuntimeError(f"checkout is dirty: {root}")
-    tag = git(root, "describe", "--exact-match", "--tags", "HEAD")
-    if not tag:
+    if expected_tag:
+        try:
+            tagged_commit = git(root, "rev-parse", "--verify",
+                                f"refs/tags/{expected_tag}^{{commit}}")
+        except RuntimeError as exc:
+            raise RuntimeError(f"{root} does not have requested tag {expected_tag!r}") from exc
+        if tagged_commit != git(root, "rev-parse", "HEAD"):
+            raise RuntimeError(f"{root} tag {expected_tag!r} does not point at HEAD")
+        return expected_tag
+    tags = [item for item in git(root, "tag", "--points-at", "HEAD").splitlines() if item]
+    if not tags:
         raise RuntimeError(f"HEAD is not exactly tagged: {root}")
-    if expected_tag and tag != expected_tag:
-        raise RuntimeError(f"{root} is tagged {tag!r}, expected {expected_tag!r}")
+    tag = sorted(tags)[0]
     return tag
 
 
