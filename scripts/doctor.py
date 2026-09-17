@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Runtime installation doctor for CognitiveFrameWorks.
 
-Validates actual runtime routability per explicit registry target
-(agents | codex | harvardcodex | all). The installers and the doctor share
-the exact same targeting policy so they can converge:
+Validates actual runtime routability per explicit registry target. Built-in
+targets cover common registries; --registry NAME=PATH supports any host. The
+installer and doctor share the same targeting policy so they can converge:
 
     source skill valid?            -> frontmatter parses
     runtime skill registered?      -> installed wrapper exists in target registry
@@ -32,6 +32,29 @@ REGISTRIES = {
     "codex": Path.home() / ".codex" / "skills",
     "harvardcodex": Path.home() / ".harvardcodex" / "skills",
 }
+
+
+def registry_specs(targets: list[str] | None, custom: list[str]) -> list[tuple[str, Path]]:
+    selected = list(REGISTRIES) if targets and "all" in targets else list(targets or [])
+    specs = [(name, REGISTRIES[name]) for name in selected]
+    for raw in custom:
+        if "=" in raw:
+            name, value = raw.split("=", 1)
+        else:
+            value = raw
+            name = Path(value).expanduser().name or "custom"
+        if not name or not value:
+            raise ValueError(f"invalid --registry {raw!r}; expected NAME=PATH")
+        specs.append((name, Path(value).expanduser()))
+    deduped: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+    for name, path in specs:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append((name, path))
+    return deduped
 
 
 def find_registry() -> Path | None:
@@ -102,7 +125,10 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
         writable = os.access(registry, os.W_OK)
     except Exception:
         pass
-    label = f"~/{registry.relative_to(Path.home())}"
+    try:
+        label = f"~/{registry.relative_to(Path.home())}"
+    except ValueError:
+        label = str(registry)
     if not writable:
         infos.append(f"[{label}] read-only registry — reporting only, not a failure source")
 
@@ -191,11 +217,17 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", nargs="+", default=["harvardcodex"],
+    parser.add_argument("--target", nargs="+", default=None,
                         choices=list(REGISTRIES) + ["all"],
-                        help="registries to inspect (matches installers)")
+                        help="built-in registries (default: agents unless --registry is used)")
+    parser.add_argument("--registry", action="append", default=[], metavar="NAME=PATH",
+                        help="arbitrary host registry; repeatable, matching the installer")
     args = parser.parse_args()
-    targets = list(REGISTRIES) if "all" in args.target else args.target
+    selected_targets = args.target if args.target is not None else ([] if args.registry else ["agents"])
+    try:
+        targets = registry_specs(selected_targets, args.registry)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     problems: list[str] = []
     infos: list[str] = []
@@ -212,12 +244,15 @@ def main() -> int:
 
     # 2-4. Inspect explicit target registries
     found_any = False
-    for target in targets:
-        reg = REGISTRIES[target]
+    for target, reg in targets:
         if not reg.is_dir():
             continue
         found_any = True
-        infos.append(f"Checking registry: ~/{reg.relative_to(Path.home())}")
+        try:
+            label = f"~/{reg.relative_to(Path.home())}"
+        except ValueError:
+            label = str(reg)
+        infos.append(f"Checking registry: {label}")
         check_registry(reg, target, problems, infos, cow)
     if not found_any:
         problems.append("No installed skill registry found for the selected target(s)")

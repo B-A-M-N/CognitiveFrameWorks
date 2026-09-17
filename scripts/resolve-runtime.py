@@ -70,7 +70,10 @@ from runtime_contract.validators import validator_registry_hash
 from runtime_contract.actions import (action_contract_hash, default_action_registry,
                                        effective_action_registry)
 from runtime_contract.compatibility import validate_compatibility
-from runtime_contract.routing import applicable_adjustments, load_routing_profile
+from runtime_contract.routing import (
+    applicable_adjustments, assign_experiment_cohort, comparison_context_hash,
+    load_routing_profiles, routing_plan_hash, validate_adaptive_adjustment,
+)
 
 
 def dp_trusted_guard_pack_path() -> Path:
@@ -1525,6 +1528,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         delegate_agent_id = request.delegate_agent_id
         delegation_id = request.delegation_id
         role = request.role
+        routing_experiment_plan = dict(request.routing_experiment_plan)
         phase = request.phase
         operation = request.operation
         trigger = request.trigger
@@ -1545,6 +1549,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         delegate_agent_id = None
         delegation_id = None
         role = None
+        routing_experiment_plan = {}
     task_id = str(task_id)
     agent_id = str(agent_id or "agent")
     effective_actions = effective_action_registry(action_registry)
@@ -1554,17 +1559,63 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     aliases = pipeline["aliases"]
     stages = pipeline["stages"]
 
-    routing_profile = load_routing_profile(routing_profile_path)
+    routing_profiles, routing_pack_hash = load_routing_profiles(routing_profile_path)
+    routing_profile = ({"routing_pack_version": "1.0.0",
+                        "semantic_hash": routing_pack_hash,
+                        "profiles": routing_profiles}
+                       if len(routing_profiles) != 1
+                       else (routing_profiles[0] if routing_profiles else None))
+    routing_plugin = _load_document(ROOT / "plugin.json", _load_json)
+    routing_pack_for_context = load_guard_pack()
     routing_context = {
         "agent_instance_id": agent_instance_id,
         "model": model, "harness": harness, "toolset": toolset,
         "task_family": shape, "task_shape": shape, "domain_tags": domains,
         "phase": phase, "environment": os.environ.get("CFW_ENVIRONMENT", "runtime"),
+        "statework_versions": "{}",
+        "framework_version": routing_plugin.get("version", "unknown"),
+        "guard_pack_hash": routing_pack_for_context.get("semantic_hash"),
     }
-    routing_adjustments = applicable_adjustments(routing_profile, routing_context)
+    routing_context["comparison_context_hash"] = comparison_context_hash(routing_context)
+    routing_adjustments = applicable_adjustments(routing_profiles, routing_context)
+    routing_experiment = None
+    routing_cohort = None
+    candidate_profile_hash = None
+    candidate_adjustment_applied = False
+    comparison_hash = comparison_context_hash(routing_context)
+    if routing_experiment_plan:
+        if routing_experiment_plan.get("plan_hash") != routing_plan_hash(routing_experiment_plan):
+            raise ValueError("routing experiment plan hash mismatch")
+        routing_cohort = assign_experiment_cohort(
+            routing_experiment_plan,
+            f"{agent_instance_id}:{task_id}:{attempt_id}")
+        candidate_profile_hash = routing_experiment_plan.get("candidate_profile_hash")
+        candidate_adjustment = dict(routing_experiment_plan.get("candidate_adjustment") or {})
+        if routing_cohort == "treatment":
+            candidate_adjustment_applied = True
+            routing_adjustments.append({
+                **candidate_adjustment,
+                "profile_id": f"experiment:{routing_experiment_plan.get('experiment_id')}",
+                "profile_hash": candidate_profile_hash,
+                "experiment_id": routing_experiment_plan.get("experiment_id"),
+                "experiment_plan_hash": routing_experiment_plan.get("plan_hash"),
+                "candidate_adjustment_applied": True,
+            })
+        routing_experiment = {
+            **routing_experiment_plan,
+            "routing_cohort": routing_cohort,
+            "candidate_profile_hash": candidate_profile_hash,
+            "candidate_adjustment_applied": candidate_adjustment_applied,
+            "comparison_context_hash": comparison_hash,
+        }
 
     if shape not in profiles:
         raise ValueError(f"unknown task shape {shape!r}; expected one of {sorted(profiles)}")
+
+    for adjustment in routing_adjustments:
+        validate_adaptive_adjustment(
+            adjustment, static_stages=stages,
+            always_on_guards=[g.get("key") or g.get("id") for g in load_guard_pack().get("always_on", [])])
 
     profile = expand(profiles[shape], aliases)
     suppressed_stage_routes = {
@@ -1590,7 +1641,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             and item.get("route") == desired.get("id")
             and item.get("disposition") == "suppress"
             for item in routing_adjustments):
-        desired = None
+        raise ValueError("adaptive routing cannot suppress a statically required StateWork")
     effective_requested_flows = dict(requested_flows or {})
     for item in routing_adjustments:
         if item.get("route_type") == "flow" and item.get("disposition") in {"prefer", "activate"}:
@@ -1638,7 +1689,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     kernel_ordered = order_kernel(merged, stages)
 
     # Guard pack (schema-validated artifact)
-    pack = load_guard_pack()
+    pack = routing_pack_for_context
     statework_registry = _load_document(cow_root / "registry.yaml", load_yaml)
     behavior_contract_path = DP_ROOT / "schemas" / "behavior-event.schema.json"
     if not behavior_contract_path.exists():
@@ -1693,6 +1744,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "cow_runtime_hash": cow_runtime_hash(cow_root),
         "runtime_behavior_hash": runtime_behavior_hash(cow_root),
         "routing_profile": routing_profile,
+        "routing_experiment": routing_experiment,
     }
     behavior_schema = policy_documents["behavior_event_schema"]
     behavior_schema_version = str(
@@ -1803,7 +1855,9 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         action_contract_hash=policy_documents["action_contract_hash"],
         cow_runtime_hash=policy_documents["cow_runtime_hash"],
         runtime_build_manifest_hash=policy_documents["runtime_build_manifest"]["manifest_hash"],
-        routing_profile_hash=(routing_profile or {}).get("profile_hash", ""),
+        routing_profile_hash=hashlib.sha256(
+            f"{routing_pack_hash}:{routing_experiment_plan.get('plan_hash', '')}:{routing_cohort or ''}".encode()
+        ).hexdigest() if routing_experiment_plan else routing_pack_hash,
     )
     frozen_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     instruction_words = sum(len(str(k["activation"] or "").split()) + sum(len(str(o).split()) for o in k["outputs"]) for k in kernel_instructions)
@@ -1879,6 +1933,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             "suppressed_guard_keys": sorted(suppressed_guard_routes),
             "routing_profile": routing_profile,
             "routing_adjustments": routing_adjustments,
+            "routing_experiment": routing_experiment,
             "structural_handlers": {
                 (g.get("key") or g["id"]): enforcement_for_guard(g)
                 for g in unique_guards

@@ -75,6 +75,12 @@ class HostSessionHandle:
     def route_outcome(self, **kwargs: Any) -> str:
         return CognitiveRuntime().route_outcome(self._session, **kwargs)
 
+    def route_decision(self, **kwargs: Any) -> str:
+        return CognitiveRuntime().route_decision(self._session, **kwargs)
+
+    def evaluate_route_outcome(self, **kwargs: Any) -> str:
+        return CognitiveRuntime().evaluate_route_outcome(self._session, **kwargs)
+
     def consume_handoff(self, packet_id: str, **kwargs: Any) -> dict[str, Any]:
         return CognitiveRuntime().consume_handoff(self._session, packet_id, **kwargs)
 
@@ -214,9 +220,25 @@ class CognitiveRuntime:
     def route_outcome(self, session: RuntimeSession, *, route: str,
                       route_type: str, outcome: str,
                       subject_ref: Optional[str] = None) -> str:
+        raise PermissionError(
+            "route outcomes must reference a host route decision and registered evaluator")
+
+    def route_decision(self, session: RuntimeSession, *, route: str,
+                       route_type: str, selection_reason: str = "host_selected") -> str:
+        return session._host_ingress().record_route_decision(
+            route=route, route_type=route_type, selection_reason=selection_reason)
+
+    def evaluate_route_outcome(self, session: RuntimeSession, *, route_decision_id: str,
+                               evaluator_id: str, evidence_refs: list[str]) -> str:
+        return session._host_ingress().evaluate_route_outcome(
+            route_decision_id=route_decision_id, evaluator_id=evaluator_id,
+            evidence_refs=evidence_refs)
+
+    def route_outcome_for_decision(self, session: RuntimeSession, *, route_decision_id: str,
+                                   evaluator_id: str, evidence_refs: list[str]) -> str:
         return session._host_ingress().record_route_outcome(
-            route=route, route_type=route_type, outcome=outcome,
-            subject_ref=subject_ref)
+            route_decision_id=route_decision_id, evaluator_id=evaluator_id,
+            evidence_refs=evidence_refs)
 
     def consume_handoff(self, session: RuntimeSession, packet_id: str, *,
                         expected_packet_type: str, expected_subject_ref: str,

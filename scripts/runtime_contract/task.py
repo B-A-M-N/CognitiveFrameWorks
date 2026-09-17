@@ -28,6 +28,9 @@ class TaskRequest:
     delegate_agent_id: Optional[str] = None
     delegation_id: Optional[str] = None
     role: Optional[str] = None
+    # Host-predeclared adaptive experiment.  This is never populated from
+    # model output; it is part of the trusted task-start request.
+    routing_experiment_plan: Mapping[str, Any] = field(default_factory=dict)
     # Host-owned action extensions are composed and hashed before resolution.
     # The model-facing request cannot mutate this mapping after construction.
     action_registry: Mapping[str, Any] = field(default_factory=dict, repr=False)
@@ -44,3 +47,5 @@ class TaskRequest:
                            MappingProxyType(dict(self.observation_context)))
         object.__setattr__(self, "action_registry",
                            MappingProxyType(dict(self.action_registry)))
+        object.__setattr__(self, "routing_experiment_plan",
+                           MappingProxyType(dict(self.routing_experiment_plan)))

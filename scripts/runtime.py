@@ -505,11 +505,25 @@ class HostIngress:
         return self._session._record_decision(
             self._capability, event_type, subject_ref, result_class)
 
-    def record_route_outcome(self, *, route: str, route_type: str, outcome: str,
+    def record_route_decision(self, *, route: str, route_type: str,
+                              selection_reason: str = "host_selected") -> str:
+        return self._session._record_route_decision(
+            self._capability, route=route, route_type=route_type,
+            selection_reason=selection_reason)
+
+    def evaluate_route_outcome(self, *, route_decision_id: str, evaluator_id: str,
+                               evidence_refs: List[str]) -> str:
+        return self._session._evaluate_route_outcome(
+            self._capability, route_decision_id=route_decision_id,
+            evaluator_id=evaluator_id, evidence_refs=evidence_refs)
+
+    def record_route_outcome(self, *, route_decision_id: str, evaluator_id: str,
+                             evidence_refs: List[str],
                              subject_ref: Optional[str] = None) -> str:
         return self._session._record_route_outcome(
-            self._capability, route=route, route_type=route_type,
-            outcome=outcome, subject_ref=subject_ref)
+            self._capability, route_decision_id=route_decision_id,
+            evaluator_id=evaluator_id, evidence_refs=evidence_refs,
+            subject_ref=subject_ref)
 
     def publish_handoff(self, packet: Dict[str, Any], *,
                         observation_context: Optional[Mapping[str, Any]] = None) -> str:
@@ -566,6 +580,7 @@ class RuntimeSession:
     _host_capability: _HostCapability = field(default_factory=_HostCapability,
                                                init=False, repr=False, compare=False)
     _ledger_token: Any = field(default_factory=object, init=False, repr=False, compare=False)
+    route_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
 
     def _host_ingress(self) -> HostIngress:
         """Return the host-only channel to the adapter implementation.
@@ -951,23 +966,76 @@ class RuntimeSession:
         if capability is not self._host_capability:
             raise PermissionError("evidence ingestion requires the host capability")
 
-    def _record_route_outcome(self, capability: _HostCapability, *, route: str,
-                              route_type: str, outcome: str,
-                              subject_ref: Optional[str] = None) -> str:
-        """Record a host-observed route result for slow-loop analysis."""
+    def _record_route_decision(self, capability: _HostCapability, *, route: str,
+                               route_type: str,
+                               selection_reason: str = "host_selected",
+                               event_type: str = "route_selected") -> str:
         self._require_host(capability)
         if not route or route_type not in {"stage", "statework", "flow", "specialist",
                                            "guard", "tool_policy", "lifecycle_stage"}:
-            raise ValueError("route outcome requires a typed route and route_type")
-        if outcome not in {"good", "bad"}:
-            raise ValueError("route outcome must be good or bad")
+            raise ValueError("route decision requires a typed route and route_type")
+        decision_id = f"route-{uuid.uuid4()}"
+        experiment = self.bundle.guard_pack.get("routing_experiment") or {}
+        self.route_decisions[decision_id] = {
+            "decision_id": decision_id, "route": route, "route_type": route_type,
+            "policy_hash": self.bundle.pinned.get("policy_hash"),
+            "selection_reason": selection_reason,
+            "candidate_profile_hash": experiment.get("candidate_profile_hash"),
+            "candidate_adjustment_applied": experiment.get("candidate_adjustment_applied", False),
+            "comparison_context_hash": experiment.get("comparison_context_hash"),
+        }
+        self._host_event({
+            "event_id": decision_id, "category": "decision", "event_type": event_type,
+            "subject": self.bundle.policy.subject_ref,
+            "payload": {"summary": route, "route": route, "route_type": route_type,
+                        "route_decision_id": decision_id, "policy_hash": self.bundle.pinned.get("policy_hash"),
+                        "reason": selection_reason}})
+        return decision_id
+
+    def _evaluate_route_outcome(self, capability: _HostCapability, *,
+                                route_decision_id: str, evaluator_id: str,
+                                evidence_refs: List[str]) -> str:
+        self._require_host(capability)
+        decision = self.route_decisions.get(route_decision_id)
+        if decision is None:
+            raise ValueError("route outcome requires a current host route decision")
+        if evaluator_id != "route-success-v1":
+            raise ValueError(f"unknown route evaluator {evaluator_id!r}")
+        resolved = self.ledger.resolve(list(evidence_refs), subject_ref=self.bundle.policy.subject_ref)
+        outcome = "bad"
+        for ref in resolved:
+            record = self.ledger.get(ref["ref"])
+            if record is None or record.kind != "validation_result":
+                continue
+            invocation = self.host_invocations.get(record.invocation_id or "", {})
+            actual = invocation.get("actual_result") or {}
+            if str(actual.get("status") or actual.get("result") or "").lower() in {"pass", "passed", "success", "ok"}:
+                outcome = "good"
+                break
         event_id = f"evt-{uuid.uuid4()}"
         self._host_event({
             "event_id": event_id, "category": "decision", "event_type": "route_outcome",
-            "subject": subject_ref or self.bundle.policy.subject_ref,
-            "payload": {"summary": route, "route": route, "route_type": route_type,
-                        "outcome": outcome, "reason": "host_observed_result"}})
+            "subject": self.bundle.policy.subject_ref,
+            "evidence_refs": list(evidence_refs),
+            "payload": {"summary": decision["route"], "route": decision["route"],
+                        "route_type": decision["route_type"], "route_decision_id": route_decision_id,
+                        "evaluator_id": evaluator_id, "outcome_source": f"evaluator:{evaluator_id}",
+                        "outcome": outcome, "policy_hash": decision["policy_hash"],
+                        "candidate_profile_hash": decision.get("candidate_profile_hash"),
+                        "candidate_adjustment_applied": decision.get("candidate_adjustment_applied", False),
+                        "comparison_context_hash": decision.get("comparison_context_hash"),
+                        "reason": "registered_host_evaluator"}})
         return event_id
+
+    def _record_route_outcome(self, capability: _HostCapability, *,
+                              route_decision_id: str, evaluator_id: str,
+                              evidence_refs: List[str],
+                              subject_ref: Optional[str] = None) -> str:
+        """Compatibility spelling for evaluator-owned route outcomes."""
+        self._require_host(capability)
+        return self._evaluate_route_outcome(
+            capability, route_decision_id=route_decision_id,
+            evaluator_id=evaluator_id, evidence_refs=evidence_refs)
 
     def _record_observation(self, capability: _HostCapability, observation_type: str,
                             subject_ref: Optional[str] = None,
@@ -1706,61 +1774,49 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                         "policy_hash": bundle.pinned.get("policy_hash"),
                         "routing_profile_hash": bundle.policy.routing_profile_hash}})
         for stage in bundle.kernel:
-            session._emit_runtime({
-                "category": "decision", "event_type": "route_selected",
-                "payload": {"summary": stage, "result_class": "framework_stage",
-                            "route": stage, "route_type": "stage",
-                            "reason": "static_task_match"}})
+            session._record_route_decision(
+                session._host_capability, route=stage, route_type="stage",
+                selection_reason="static_task_match")
         for item in bundle.stateworks:
             statework_id = item.get("id")
-            session._emit_runtime({
-                "category": "decision", "event_type": "statework_selected",
-                "payload": {"summary": str(statework_id), "result_class": "statework",
-                            "route": str(statework_id), "route_type": "statework",
-                            "reason": "state_requirement"}})
+            session._record_route_decision(
+                session._host_capability, route=str(statework_id), route_type="statework",
+                selection_reason="state_requirement", event_type="statework_selected")
             flow = item.get("selected_flow")
             if flow:
-                session._emit_runtime({
-                    "category": "decision", "event_type": "flow_selected",
-                    "payload": {"summary": str(flow[0]), "result_class": "flow",
-                                "route": Path(str(flow[0])).parent.name,
-                                "route_type": "flow", "reason": "static_task_match"}})
+                session._record_route_decision(
+                    session._host_capability, route=Path(str(flow[0])).parent.name,
+                    route_type="flow", selection_reason="static_task_match",
+                    event_type="flow_selected")
             for specialist in item.get("selected_specialists", []):
                 specialist_path = specialist[0] if isinstance(specialist, (list, tuple)) else specialist.get("path")
-                session._emit_runtime({
-                    "category": "decision", "event_type": "specialist_selected",
-                    "payload": {"summary": str(specialist_path), "result_class": "specialist",
-                                "route": str(specialist_path), "route_type": "specialist",
-                                "reason": "static_task_match"}})
+                session._record_route_decision(
+                    session._host_capability, route=str(specialist_path),
+                    route_type="specialist", selection_reason="static_task_match",
+                    event_type="specialist_selected")
         for key in bundle.guard_pack.get("assigned_guard_keys", []):
-            session._emit_runtime({
-                "category": "decision", "event_type": "guard_selected",
-                "payload": {"summary": key, "result_class": "guard",
-                            "route": key, "route_type": "guard",
-                            "reason": "static_task_match"}})
+            session._record_route_decision(
+                session._host_capability, route=key, route_type="guard",
+                selection_reason="static_task_match", event_type="guard_selected")
         for key in bundle.guard_pack.get("suppressed_guard_keys", []):
-            session._emit_runtime({
-                "category": "decision", "event_type": "route_suppressed",
-                "payload": {"summary": key, "result_class": "guard",
-                            "route": key, "route_type": "guard",
-                            "reason": "behavioral_profile_suppression"}})
+            session._record_route_decision(
+                session._host_capability, route=key, route_type="guard",
+                selection_reason="behavioral_profile_suppression", event_type="route_suppressed")
         for adjustment in bundle.guard_pack.get("routing_adjustments", []):
             route = adjustment.get("route")
             route_type = adjustment.get("route_type")
             if not route or not route_type:
                 continue
             if adjustment.get("disposition") == "suppress":
-                session._emit_runtime({
-                    "category": "decision", "event_type": "route_suppressed",
-                    "payload": {"summary": str(route), "result_class": str(route_type),
-                                "route": str(route), "route_type": str(route_type),
-                                "reason": "behavioral_profile_suppression"}})
+                session._record_route_decision(
+                    session._host_capability, route=str(route), route_type=str(route_type),
+                    selection_reason="behavioral_profile_suppression",
+                    event_type="route_suppressed")
             elif adjustment.get("disposition") in {"prefer", "activate"}:
-                session._emit_runtime({
-                    "category": "decision", "event_type": "route_preferred",
-                    "payload": {"summary": str(route), "result_class": str(route_type),
-                                "route": str(route), "route_type": str(route_type),
-                                "reason": "behavioral_profile_preference"}})
+                session._record_route_decision(
+                    session._host_capability, route=str(route), route_type=str(route_type),
+                    selection_reason="behavioral_profile_preference",
+                    event_type="route_preferred")
     if resume:
         _restore_session(session)
     resolve_runtime.write_snapshot(bundle)

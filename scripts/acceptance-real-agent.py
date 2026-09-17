@@ -17,8 +17,10 @@ explicit command it refuses to run.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import selectors
 import shlex
 import subprocess
 import sys
@@ -30,23 +32,90 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 
-def invoke(command: list[str], request: dict[str, Any], timeout: float) -> dict[str, Any]:
-    completed = subprocess.run(
-        command, input=json.dumps(request) + "\n", text=True,
-        capture_output=True, timeout=timeout, check=False)
-    if completed.returncode != 0:
-        raise RuntimeError(f"agent command failed ({completed.returncode}): {completed.stderr[-1000:]}")
-    lines = [line for line in completed.stdout.splitlines() if line.strip()]
-    if not lines:
-        raise RuntimeError("agent command returned no JSON response")
-    response = json.loads(lines[-1])
-    if not isinstance(response, dict):
-        raise ValueError("agent response must be a JSON object")
-    return response
+class PersistentAgent:
+    """One agent process owns one complete multi-turn trajectory."""
+
+    def __init__(self, command: list[str]) -> None:
+        self.process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        assert self.process.stdin is not None and self.process.stdout is not None
+        self.stdin = self.process.stdin
+        self.stdout = self.process.stdout
+        self.selector = selectors.DefaultSelector()
+        self.selector.register(self.stdout, selectors.EVENT_READ)
+
+    def request(self, request: dict[str, Any], timeout: float) -> dict[str, Any]:
+        if self.process.poll() is not None:
+            raise RuntimeError(f"agent process exited with status {self.process.returncode}")
+        self.stdin.write(json.dumps(request) + "\n")
+        self.stdin.flush()
+        if not self.selector.select(timeout):
+            raise TimeoutError("agent command did not return a JSON response before timeout")
+        line = self.stdout.readline()
+        if not line:
+            raise RuntimeError("agent command closed stdout without a JSON response")
+        response = json.loads(line)
+        if not isinstance(response, dict):
+            raise ValueError("agent response must be a JSON object")
+        return response
+
+    def close(self) -> None:
+        self.selector.close()
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+        self.stdin.close()
+        self.stdout.close()
+
+    def __enter__(self) -> "PersistentAgent":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
+
+
+def execute_fixture_action(action: dict[str, Any], workspace: Path,
+                           expected: str) -> dict[str, Any]:
+    """Execute only the registered fixture binding and derive its oracle result."""
+    binding = action.get("tool_binding_id") or action.get("tool")
+    arguments = action.get("arguments") or {}
+    raw_target = arguments.get("target")
+    if not isinstance(raw_target, str) or not raw_target:
+        return {"status": "fail", "fresh": True, "relevant": True,
+                "reason": "missing fixture target"}
+    target = Path(raw_target)
+    if not target.is_absolute():
+        target = workspace / target
+    target = target.resolve()
+    try:
+        target.relative_to(workspace.resolve())
+    except ValueError:
+        return {"status": "fail", "fresh": True, "relevant": True,
+                "reason": "fixture target outside workspace"}
+    if binding != "write":
+        return {"status": "fail", "fresh": True, "relevant": True,
+                "reason": "fixture only registers write"}
+    content = arguments.get("content")
+    if not isinstance(content, str):
+        return {"status": "fail", "fresh": True, "relevant": True,
+                "reason": "write content is not text"}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    actual = target.read_text(encoding="utf-8")
+    return {"status": "pass" if actual == expected else "fail",
+            "fresh": True, "relevant": True,
+            "target": str(target),
+            "content_digest": hashlib.sha256(actual.encode("utf-8")).hexdigest()}
 
 
 def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str,
-              profile_path: Path | None, max_turns: int, timeout: float) -> dict[str, Any]:
+              profile_path: Path | None, max_turns: int, timeout: float,
+              workspace: Path) -> dict[str, Any]:
     api = api_module.CognitiveRuntime(
         routing_profile_path=str(profile_path) if profile_path else None)
     request = resolve.TaskRequest(
@@ -57,57 +126,62 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
     session = api.begin_task(request)
     agent = api.agent_handle(session)
     host = api.host_handle(session)
+    expected = "runtime-correct\n"
+    fixture_target = workspace / "answer.txt"
+    fixture_target.write_text("initial\n", encoding="utf-8")
     previous: list[dict[str, Any]] = []
     last_invocation: str | None = None
     last_result: dict[str, Any] | None = None
     metrics = {"task_id": task_id, "turns": 0, "actions": 0,
                "blocked_actions": 0, "prompt_words": 0, "finished": False}
-    for turn in range(max_turns):
-        prompt = agent.before_model_call(tool_capable=True)
-        metrics["turns"] += 1
-        metrics["prompt_words"] += len(prompt.split())
-        # Cohort, profile status, and treatment labels are intentionally not
-        # present.  The agent sees only the real model-facing context.
-        response = invoke(command, {
-            "task": {"task_id": task_id, "subject_ref": request.subject_ref,
-                     "shape": request.shape, "domain_tags": list(request.domain_tags)},
-            "prompt": prompt, "turn": turn, "previous_results": previous,
-        }, timeout)
-        action = response.get("action")
-        if action is not None:
-            if not isinstance(action, dict):
-                raise ValueError("agent action must be a JSON object")
-            action = dict(action)
-            action.setdefault("subject_ref", request.subject_ref)
-            decision = agent.request_action(action)
-            metrics["actions"] += 1
-            if decision.value != "allow":
-                metrics["blocked_actions"] += 1
-                previous.append({"action": action, "decision": decision.value})
-            else:
-                binding = action.get("tool_binding_id") or action.get("tool")
-                invocation_id = f"agent-{task_id}-{turn}"
-                result = {"status": "pass", "tool_binding_id": binding,
-                          "target": action.get("arguments", {}).get("target", "task-output")}
-                host.after_tool(tool_type=str(binding), result_class="pass",
-                                subject_ref=request.subject_ref,
-                                invocation_id=invocation_id, actual_result=result)
-                last_invocation, last_result = invocation_id, result
-                previous.append({"action": action, "decision": decision.value,
-                                 "result": {"status": "pass"}})
-        if response.get("complete"):
-            if last_invocation is None or last_result is None:
-                previous.append({"completion": "blocked_no_host_result"})
-                continue
-            completion = host.validate_completion_boundary(
-                subject_ref=request.subject_ref, validator_id="completion-boundary-v1",
-                invocation_id=last_invocation, result=last_result)
-            if completion.value != "allow":
-                previous.append({"completion": completion.value})
-                continue
-            host.finish_task({"status": "completed", "task_id": task_id})
-            metrics["finished"] = True
-            break
+    with PersistentAgent(command) as agent_process:
+        for turn in range(max_turns):
+            prompt = agent.before_model_call(tool_capable=True)
+            metrics["turns"] += 1
+            metrics["prompt_words"] += len(prompt.split())
+            # Cohort, profile status, and treatment labels are intentionally not
+            # present.  The agent sees only the real model-facing context.
+            response = agent_process.request({
+                "task": {"task_id": task_id, "subject_ref": request.subject_ref,
+                         "shape": request.shape, "domain_tags": list(request.domain_tags),
+                         "instruction": "Write runtime-correct\n to the fixture target, then complete.",
+                         "fixture_target": str(fixture_target)},
+                "prompt": prompt, "turn": turn, "previous_results": previous,
+            }, timeout)
+            action = response.get("action")
+            if action is not None:
+                if not isinstance(action, dict):
+                    raise ValueError("agent action must be a JSON object")
+                action = dict(action)
+                action.setdefault("subject_ref", request.subject_ref)
+                decision = agent.request_action(action)
+                metrics["actions"] += 1
+                if decision.value != "allow":
+                    metrics["blocked_actions"] += 1
+                    previous.append({"action": action, "decision": decision.value})
+                else:
+                    binding = action.get("tool_binding_id") or action.get("tool")
+                    invocation_id = f"agent-{task_id}-{turn}"
+                    result = execute_fixture_action(action, workspace, expected)
+                    host.after_tool(tool_type=str(binding), result_class=result["status"],
+                                    subject_ref=request.subject_ref,
+                                    invocation_id=invocation_id, actual_result=result)
+                    last_invocation, last_result = invocation_id, result
+                    previous.append({"action": action, "decision": decision.value,
+                                     "result": {"status": result["status"]}})
+            if response.get("complete"):
+                if last_invocation is None or last_result is None:
+                    previous.append({"completion": "blocked_no_host_result"})
+                    continue
+                completion = host.validate_completion_boundary(
+                    subject_ref=request.subject_ref, validator_id="completion-boundary-v1",
+                    invocation_id=last_invocation, result=last_result)
+                if completion.value != "allow":
+                    previous.append({"completion": completion.value})
+                    continue
+                host.finish_task({"status": "completed", "task_id": task_id})
+                metrics["finished"] = True
+                break
     return metrics
 
 
@@ -144,10 +218,13 @@ def main() -> int:
         results = {"control": [], "treatment": []}
         for cohort, profile in (("control", None), ("treatment", args.treatment_profile)):
             for index in range(args.trials):
+                workspace = Path(state) / "workspaces" / cohort / str(index)
+                workspace.mkdir(parents=True, exist_ok=True)
                 results[cohort].append(run_trial(
                     api_module, resolve, command,
                     task_id=f"real-agent-{cohort}-{index}", profile_path=profile,
-                    max_turns=args.max_turns, timeout=args.timeout))
+                    max_turns=args.max_turns, timeout=args.timeout,
+                    workspace=workspace))
         print(json.dumps({"experiment": "real-agent-control-treatment",
                           "cohort_labels_hidden_from_agent": True,
                           "results": results}, indent=2))

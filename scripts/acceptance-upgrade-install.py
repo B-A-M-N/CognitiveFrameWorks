@@ -37,12 +37,34 @@ def main() -> int:
         run(installer, env)
         run(doctor, env)
         runtime = home_path / ".harvardcodex" / "skills" / "cognitiveframeworks_runtime"
+        registry = home_path / ".harvardcodex" / "skills"
+        sentinels = {
+            registry / "OWL" / "references" / "local-reference.md": "local reference",
+            registry / "OWL" / "examples" / "local-example.txt": "local example",
+            registry / "OWL" / "adapters" / "local-adapter.txt": "local adapter",
+            registry / "OWL" / "local-extension.txt": "local extension",
+            registry / "gitter" / "local-statework-extension.txt": "local statework extension",
+        }
+        for path, contents in sentinels.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(contents, encoding="utf-8")
         stale = runtime / "stale-beta-file.txt"
         stale.write_text("old beta", encoding="utf-8")
         run(installer, env)
         run(doctor, env)
         if stale.exists():
             raise RuntimeError("upgrade retained stale beta runtime content")
+        for path, contents in sentinels.items():
+            if not path.exists() or path.read_text(encoding="utf-8") != contents:
+                raise RuntimeError(f"upgrade overwrote unowned file {path}")
+        manifest = registry / ".cognitiveframeworks-managed.json"
+        if not manifest.exists():
+            raise RuntimeError("installer did not publish ownership manifest")
+        managed = __import__("json").loads(manifest.read_text(encoding="utf-8"))["managed_paths"]
+        if "OWL/SKILL.md" not in managed or "cognitiveframeworks_runtime" not in managed:
+            raise RuntimeError("ownership manifest omitted managed installation paths")
+        if any(path.relative_to(registry).as_posix() in managed for path in sentinels):
+            raise RuntimeError("ownership manifest claimed an unowned sentinel")
     print("UPGRADE_ACCEPTANCE=PASS")
     return 0
 

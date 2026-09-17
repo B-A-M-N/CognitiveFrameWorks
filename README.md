@@ -41,6 +41,15 @@ Each skill ships platform-ready adapters. Copy the adapter for your tool into yo
 
 Repeat for each skill you want active. Start with OWL alone — it's the highest-value single skill.
 
+For a host with its own skill registry, install without adding that host to
+the runtime:
+
+```bash
+python3 scripts/install-framework.py \
+  --registry my-host="$HOME/.my-host/skills"
+python3 scripts/doctor.py --registry my-host="$HOME/.my-host/skills"
+```
+
 ### Minimal active subsets
 
 You don't need all seven skills. Load only what the task needs:
@@ -104,7 +113,8 @@ FUSE + WARD run per-action, not per-request. FLOW runs once per artifact, only i
 ```bash
 python3 scripts/validate-framework.py
 python3 scripts/test-runtime.py
-python3 scripts/doctor.py --target harvardcodex
+python3 scripts/doctor.py --target agents
+python3 scripts/doctor.py --registry claude="$HOME/.claude/skills"
 python3 scripts/resolve-runtime.py <task> <shape> <domains>   # debugging front end
 python3 scripts/runtime.py <task> <shape> <domains>           # host adapter
 ```
@@ -117,8 +127,11 @@ drift, and scenario emissions against the canonical registry.
 `test-runtime.py` is a source-only regression test (no install state
 required) covering lifecycle ordering, packet chain routing with cycle
 detection, guard-pack validation, and out-of-tree snapshot semantics.
-`doctor.py` inspects the explicit `--target` registry, matching the
-installers. `resolve-runtime.py` is a debugging CLI over the pure library
+`install-framework.py` is host-neutral. Built-in `--target` values cover
+`agents`, `codex`, and `harvardcodex`; use repeatable `--registry NAME=PATH`
+for any other host registry. The installer writes an ownership manifest and
+only removes paths it previously owned; the runtime bundle itself is replaced
+transactionally. `doctor.py` accepts the same target options. `resolve-runtime.py` is a debugging CLI over the pure library
 `resolve()`; the host adapter `runtime.py` injects compact runtime capsules
 into the model context (`context_for(session)` measures the actual injected
 instruction words) and persists immutable per-task snapshots in

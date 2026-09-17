@@ -10,12 +10,117 @@
     "status": { "enum": ["candidate", "validated", "active", "stale", "rolled_back"] },
     "created_at": { "type": "string", "format": "date-time" },
     "expires_at": { "type": ["string", "null"], "format": "date-time" },
-    "subject": { "type": "object", "required": ["agent_instance_id"], "properties": { "agent_instance_id": { "type": "string", "minLength": 1 }, "model": { "type": ["string", "null"] }, "harness": { "type": ["string", "null"] } }, "additionalProperties": false },
-    "context": { "type": "object", "properties": { "task_family": { "type": ["string", "null"] }, "domain_tags": { "type": "array", "items": { "type": "string" } }, "phase": { "type": ["string", "null"] }, "environment": { "type": ["string", "null"] }, "stateworks": { "type": "array", "items": { "type": "string" } }, "toolset": { "type": ["string", "null"] } }, "additionalProperties": false },
+    "subject": {
+      "type": "object",
+      "required": ["agent_instance_id"],
+      "properties": {
+        "agent_instance_id": { "type": "string", "minLength": 1 },
+        "model": { "type": ["string", "null"] },
+        "harness": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "task_family": { "type": ["string", "null"] },
+        "task_shape": { "type": ["string", "null"] },
+        "domain_tags": { "type": "array", "items": { "type": "string" } },
+        "phase": { "type": ["string", "null"] },
+        "environment": { "type": ["string", "null"] },
+        "stateworks": { "type": "array", "items": { "type": "string" } },
+        "toolset": { "type": ["string", "null"] },
+        "experiment_id": { "type": ["string", "null"] },
+        "comparison_context_hash": { "type": ["string", "null"] },
+        "statework_versions": { "type": ["string", "null"] },
+        "framework_version": { "type": ["string", "null"] },
+        "guard_pack_hash": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
     "observations": { "type": "array", "items": { "type": "object" } },
-    "routing_adjustments": { "type": "array", "items": { "type": "object", "required": ["route_type", "route", "disposition", "condition", "evidence_refs"], "properties": { "route_type": { "enum": ["stage", "statework", "flow", "specialist", "guard", "tool_policy", "lifecycle_stage"] }, "route": { "type": "string", "minLength": 1 }, "statework_id": { "type": ["string", "null"] }, "disposition": { "enum": ["suppress", "prefer", "activate"] }, "condition": { "type": "object" }, "evidence_refs": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "confidence": { "type": "number", "minimum": 0, "maximum": 1 }, "expires_after_samples": { "type": ["integer", "null"], "minimum": 1 } }, "additionalProperties": false } },
-    "evidence": { "type": "object", "required": ["event_ids", "trajectory_ids", "source_hash"], "properties": { "event_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "trajectory_ids": { "type": "array", "items": { "type": "string" } }, "source_hash": { "type": "string", "minLength": 1 }, "receipt_ref": { "type": ["string", "null"] }, "receipt": { "type": ["object", "null"], "properties": { "receipt_id": { "type": "string", "minLength": 1 }, "kind": { "const": "routing_validation" }, "profile_candidate_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "criterion_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }, "evidence_hash": { "type": "string", "minLength": 1 }, "decision": { "const": "pass" }, "receipt_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }, "additionalProperties": false } }, "additionalProperties": false },
-    "criterion": { "type": "object", "required": ["evaluator_version", "minimum_samples", "minimum_effect"], "properties": { "evaluator_version": { "type": "string", "minLength": 1 }, "minimum_samples": { "type": "integer", "minimum": 1 }, "minimum_effect": { "type": "number", "minimum": 0 }, "confidence_rule": { "type": "string", "minLength": 1 } }, "additionalProperties": false },
+    "routing_adjustments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["route_type", "route", "disposition", "condition", "evidence_refs"],
+        "properties": {
+          "route_type": { "enum": ["stage", "statework", "flow", "specialist", "guard", "tool_policy", "lifecycle_stage"] },
+          "route": { "type": "string", "minLength": 1 },
+          "statework_id": { "type": ["string", "null"] },
+          "disposition": { "enum": ["suppress", "prefer", "activate"] },
+          "condition": { "type": "object" },
+          "evidence_refs": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "expires_after_samples": { "type": ["integer", "null"], "minimum": 1 }
+        },
+        "allOf": [
+          { "if": { "properties": { "route_type": { "const": "tool_policy" } } },
+            "then": { "properties": { "disposition": { "const": "suppress" } } } },
+          { "if": { "properties": { "route_type": { "const": "specialist" } } },
+            "then": { "properties": { "disposition": { "enum": ["suppress", "prefer"] } } } },
+          { "if": { "properties": { "route_type": { "const": "flow" } } },
+            "then": { "properties": { "disposition": { "enum": ["prefer", "suppress"] } } } }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["event_ids", "trajectory_ids", "source_hash"],
+      "properties": {
+        "event_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "trajectory_ids": { "type": "array", "items": { "type": "string" } },
+        "source_hash": { "type": "string", "minLength": 1 },
+        "experiment_id": { "type": ["string", "null"] },
+        "experiment_plan_hash": { "type": ["string", "null"] },
+        "candidate_adjustment": { "type": ["object", "null"] },
+        "receipt_ref": { "type": ["string", "null"] },
+        "experiment_receipt": { "type": ["object", "null"] },
+        "receipt": {
+          "type": ["object", "null"],
+          "properties": {
+            "receipt_id": { "type": "string", "minLength": 1 },
+            "kind": { "const": "routing_experiment" },
+            "receipt_version": { "const": "1.0.0" },
+            "experiment_id": { "type": "string", "minLength": 1 },
+            "experiment_plan_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "profile_candidate_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "source_evidence_hash": { "type": "string", "minLength": 1 },
+            "candidate_adjustment": { "type": "object" },
+            "control_trajectory_ids": { "type": "array", "items": { "type": "string" } },
+            "treatment_trajectory_ids": { "type": "array", "items": { "type": "string" } },
+            "policy_hashes": { "type": "array", "items": { "type": "string" } },
+            "comparison_context_hash": { "type": "string", "minLength": 1 },
+            "evaluator_id": { "type": "string", "minLength": 1 },
+            "evaluator_version": { "type": "string", "minLength": 1 },
+            "evaluator_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "control_bad_rate": { "type": "number" },
+            "treatment_bad_rate": { "type": "number" },
+            "effect": { "type": "number" },
+            "confidence_interval": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" } },
+            "minimum_samples": { "type": "integer", "minimum": 1 },
+            "minimum_effect": { "type": "number", "minimum": 0 },
+            "regressions": { "type": "array" },
+            "decision": { "enum": ["pass", "fail"] },
+            "receipt_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "criterion": {
+      "type": "object",
+      "required": ["evaluator_version", "minimum_samples", "minimum_effect"],
+      "properties": {
+        "evaluator_version": { "type": "string", "minLength": 1 },
+        "minimum_samples": { "type": "integer", "minimum": 1 },
+        "minimum_effect": { "type": "number", "minimum": 0 },
+        "confidence_rule": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "profile_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
   },
   "additionalProperties": false

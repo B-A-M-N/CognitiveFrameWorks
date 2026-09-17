@@ -26,11 +26,13 @@ def main() -> int:
           tempfile.TemporaryDirectory(prefix="cfw-beta-runtime-") as runtime_dir):
         env = dict(os.environ)
         env.update({"HOME": home, "XDG_RUNTIME_DIR": runtime_dir})
+        custom_registry = str(Path(home) / ".example-host" / "skills")
         run([sys.executable, str(ROOT / "scripts" / "install-framework.py"),
-             "--target", "harvardcodex", "--statework-root", str(STATEWORK),
+             "--target", "harvardcodex", "--registry", f"example-host={custom_registry}",
+             "--statework-root", str(STATEWORK),
              "--digital-psychology-root", str(DP)], env=env)
         run([sys.executable, str(ROOT / "scripts" / "doctor.py"),
-             "--target", "harvardcodex"], env=env)
+             "--target", "harvardcodex", "--registry", f"example-host={custom_registry}"], env=env)
     print("PUBLIC_BETA_GATE=PASS")
     return 0
 
