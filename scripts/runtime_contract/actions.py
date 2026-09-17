@@ -60,10 +60,12 @@ class ProtectedResourcePolicy:
         roots = {
             state_home / "digitalpsychology",
             runtime,
-            home / ".harvardcodex" / "skills" / "cognitiveframeworks_runtime",
             home / ".codex" / "skills" / "cognitiveframeworks_runtime",
             home / ".agents" / "skills" / "cognitiveframeworks_runtime",
         }
+        configured_registry = os.environ.get("COGNITIVE_RUNTIME_REGISTRY")
+        if configured_registry:
+            roots.add(Path(configured_registry).expanduser() / "cognitiveframeworks_runtime")
         configured_dp_root = os.environ.get("DIGITALPSYCHOLOGY_STATE_ROOT")
         if configured_dp_root:
             roots.add(Path(configured_dp_root))

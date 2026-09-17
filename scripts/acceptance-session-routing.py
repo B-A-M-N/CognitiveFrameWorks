@@ -43,7 +43,7 @@ def main() -> int:
         api = api_module.CognitiveRuntime()
 
         model = "model-a"
-        harness = "harvardcodex"
+        harness = "example-host"
         task_family = "performance"
         comparison_hash = comparison_context_hash({
             "agent_instance_id": "agent-a-instance", "model": model,

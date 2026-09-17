@@ -34,7 +34,6 @@ CORE_SKILLS = ["OWL", "ANCHOR", "DOX", "FUSE", "FLOW", "WARD", "SISPIS"]
 REGISTRIES = {
     "agents": Path.home() / ".agents" / "skills",
     "codex": Path.home() / ".codex" / "skills",
-    "harvardcodex": Path.home() / ".harvardcodex" / "skills",
 }
 
 MANIFEST_NAME = ".cognitiveframeworks-managed.json"
@@ -320,6 +319,7 @@ def main() -> int:
             json.dumps({"entrypoint": "cognitive_runtime:CognitiveRuntime",
                         "api": ["begin_task", "before_model_call", "before_tool_planning",
                                 "before_tool", "before_retry", "after_tool",
+                                "on_artifact",
                                 "observation", "after_validator",
                                 "operator_observation", "request_transition",
                                 "request_completion", "validate_completion_boundary",

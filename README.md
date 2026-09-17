@@ -128,8 +128,8 @@ drift, and scenario emissions against the canonical registry.
 required) covering lifecycle ordering, packet chain routing with cycle
 detection, guard-pack validation, and out-of-tree snapshot semantics.
 `install-framework.py` is host-neutral. Built-in `--target` values cover
-`agents`, `codex`, and `harvardcodex`; use repeatable `--registry NAME=PATH`
-for any other host registry. The installer writes an ownership manifest and
+`agents` and `codex`; use repeatable `--registry NAME=PATH` for any host
+registry, including hosts with their own skill directory layout. The installer writes an ownership manifest and
 only removes paths it previously owned; the runtime bundle itself is replaced
 transactionally. `doctor.py` accepts the same target options. `resolve-runtime.py` is a debugging CLI over the pure library
 `resolve()`; the host adapter `runtime.py` injects compact runtime capsules

@@ -100,19 +100,21 @@ def main() -> int:
             "DIGITALPSYCHOLOGY_STATE_ROOT": str(Path(state) / "dp"),
             "PYTHONDONTWRITEBYTECODE": "1",
         })
+        release_registry = str(home_path / ".release-host" / "skills")
         run(cfw, [sys.executable, str(cfw / "scripts" / "install-framework.py"),
-                  "--target", "harvardcodex",
+                  "--registry", f"release-host={release_registry}",
                   "--statework-root", str(args.statework_root),
                   "--digital-psychology-root", str(args.digital_psychology_root)], env)
         run(cfw, [sys.executable, str(cfw / "scripts" / "doctor.py"),
-                  "--target", "harvardcodex"], env)
-        if not (home_path / ".harvardcodex" / "skills").is_dir():
+                  "--registry", f"release-host={release_registry}"], env)
+        if not Path(release_registry).is_dir():
             raise RuntimeError("clean install did not create the selected registry")
 
         commands = [
             [sys.executable, str(cfw / "scripts" / "verify-contracts.py")],
             [sys.executable, str(args.statework_root / "scripts" / "validate-stateworks.py")],
             [sys.executable, str(cfw / "scripts" / "validate-framework.py")],
+            [sys.executable, str(cfw / "scripts" / "acceptance-public-beta.py")],
         ]
         for command in commands:
             run(cfw, command, env)

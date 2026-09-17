@@ -49,6 +49,15 @@ class HostSessionHandle:
     def after_tool(self, **kwargs: Any) -> str:
         return CognitiveRuntime().after_tool(self._session, **kwargs)
 
+    def on_artifact(self, *, flow_triggered: bool = False,
+                    durable_contract_changed: bool = False,
+                    state_changed: bool = True) -> None:
+        """Advance host-owned lifecycle activation after a produced artifact."""
+        return CognitiveRuntime().on_artifact(
+            self._session, flow_triggered=flow_triggered,
+            durable_contract_changed=durable_contract_changed,
+            state_changed=state_changed)
+
     def observation(self, observation_type: str, subject_ref: Optional[str] = None,
                     *, details: Optional[Mapping[str, Any]] = None) -> str:
         return CognitiveRuntime().observation(
@@ -150,6 +159,14 @@ class CognitiveRuntime:
             tool_type, result_class, subject_ref,
             invocation_id=invocation_id, result_digest=result_digest,
             actual_result=actual_result)
+
+    def on_artifact(self, session: RuntimeSession, *, flow_triggered: bool = False,
+                    durable_contract_changed: bool = False,
+                    state_changed: bool = True) -> None:
+        """Host lifecycle hook for a produced artifact boundary."""
+        session.on_artifact(flow_triggered=flow_triggered,
+                            durable_contract_changed=durable_contract_changed,
+                            state_changed=state_changed)
 
     def observation(self, session: RuntimeSession, observation_type: str,
                    subject_ref: Optional[str] = None,

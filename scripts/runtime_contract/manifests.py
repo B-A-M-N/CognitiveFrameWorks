@@ -49,6 +49,11 @@ def build_task_manifest(bundle: Any, *, session_id: str = "prestart",
         "model": bundle.pinned.get("model"),
         "harness": bundle.pinned.get("harness"),
         "toolset": bundle.pinned.get("toolset"),
+        # This is part of the immutable compiler context.  DP uses it when
+        # binding a learned routing profile to the exact runtime that
+        # produced the observations; omitting it makes an otherwise valid
+        # candidate impossible to verify.
+        "framework_version": bundle.pinned.get("framework_version"),
         "guard_pack_hash": bundle.pinned.get("guard_pack_hash"),
         "routing_profile_hash": bundle.policy.routing_profile_hash,
         "routing_adjustments": _thaw(bundle.guard_pack.get("routing_adjustments", [])),

@@ -22,6 +22,12 @@ def routing_plan_hash(plan: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(data).encode("utf-8")).hexdigest()
 
 
+def routing_pack_semantic_hash(pack: Mapping[str, Any]) -> str:
+    data = dict(pack)
+    data.pop("semantic_hash", None)
+    return hashlib.sha256(_canonical(data).encode("utf-8")).hexdigest()
+
+
 def assign_experiment_cohort(plan: Mapping[str, Any], trial_identity: str) -> str:
     """Deterministically assign a host-created trial to control/treatment."""
     if plan.get("assignment_algorithm") != "sha256(experiment_id + trial_identity)@v1":
@@ -94,6 +100,10 @@ def _profile_schema_path() -> Path:
     return Path(__file__).resolve().parents[2] / "contracts" / "behavioral-routing-profile.schema.json"
 
 
+def _pack_schema_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "contracts" / "behavioral-routing-pack.schema.json"
+
+
 def _validate_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
     profile = dict(profile)
     if profile.get("profile_hash") != profile_semantic_hash(profile):
@@ -155,7 +165,16 @@ def load_routing_profiles(path: Optional[Path] = None) -> tuple[list[dict[str, A
     try:
         import jsonschema
         schema = json.loads(_profile_schema_path().read_text(encoding="utf-8"))
-        raw_profiles = profile.get("profiles") if isinstance(profile, dict) and "profiles" in profile else [profile]
+        is_pack = isinstance(profile, dict) and "profiles" in profile
+        if is_pack:
+            if profile.get("routing_pack_version") != "1.0.0":
+                raise RoutingProfileError("unsupported routing pack version")
+            if profile.get("semantic_hash") != routing_pack_semantic_hash(profile):
+                raise RoutingProfileError("routing pack semantic hash mismatch")
+            if profile.get("source_revision") is not None and not isinstance(
+                    profile.get("source_revision"), str):
+                raise RoutingProfileError("routing pack source_revision must be a string or null")
+        raw_profiles = profile.get("profiles") if is_pack else [profile]
         if not isinstance(raw_profiles, list) or not raw_profiles:
             raise RoutingProfileError("routing pack must contain at least one profile")
         for item in raw_profiles:
@@ -166,11 +185,11 @@ def load_routing_profiles(path: Optional[Path] = None) -> tuple[list[dict[str, A
     except ImportError as exc:
         raise RoutingProfileError("jsonschema is required for routing profile validation") from exc
     validated = [_validate_profile(item) for item in raw_profiles]
-    pack_body = {"routing_pack_version": "1.0.0", "profiles": validated}
-    pack_hash = hashlib.sha256(_canonical(pack_body).encode("utf-8")).hexdigest()
+    pack_body = {"routing_pack_version": "1.0.0", "source_revision": None,
+                 "profiles": validated}
+    pack_hash = routing_pack_semantic_hash(pack_body)
     if isinstance(profile, dict) and "profiles" in profile:
-        if profile.get("semantic_hash") and profile.get("semantic_hash") != pack_hash:
-            raise RoutingProfileError("routing pack semantic hash mismatch")
+        pack_hash = profile["semantic_hash"]
     return validated, pack_hash
 
 

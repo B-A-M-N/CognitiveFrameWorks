@@ -54,13 +54,14 @@
           "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
           "expires_after_samples": { "type": ["integer", "null"], "minimum": 1 }
         },
-        "allOf": [
-          { "if": { "properties": { "route_type": { "const": "tool_policy" } } },
-            "then": { "properties": { "disposition": { "const": "suppress" } } } },
-          { "if": { "properties": { "route_type": { "const": "specialist" } } },
-            "then": { "properties": { "disposition": { "enum": ["suppress", "prefer"] } } } },
-          { "if": { "properties": { "route_type": { "const": "flow" } } },
-            "then": { "properties": { "disposition": { "enum": ["prefer", "suppress"] } } } }
+        "oneOf": [
+          { "properties": { "route_type": { "const": "tool_policy" }, "disposition": { "const": "suppress" } } },
+          { "properties": { "route_type": { "const": "specialist" }, "disposition": { "enum": ["suppress", "prefer"] } } },
+          { "properties": { "route_type": { "const": "flow" }, "disposition": { "enum": ["prefer", "suppress"] } } },
+          { "properties": { "route_type": { "const": "stage" }, "disposition": { "enum": ["prefer", "suppress"] } } },
+          { "properties": { "route_type": { "const": "lifecycle_stage" }, "disposition": { "enum": ["prefer", "suppress"] } } },
+          { "properties": { "route_type": { "const": "statework" }, "disposition": { "enum": ["prefer", "suppress"] } } },
+          { "properties": { "route_type": { "const": "guard" }, "disposition": { "enum": ["prefer", "suppress"] } } }
         ],
         "additionalProperties": false
       }

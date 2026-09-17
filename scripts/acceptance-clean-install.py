@@ -28,12 +28,12 @@ def main() -> int:
         env.update({"HOME": home, "XDG_RUNTIME_DIR": runtime_dir})
         custom_registry = str(Path(home) / ".example-host" / "skills")
         run([sys.executable, str(ROOT / "scripts" / "install-framework.py"),
-             "--target", "harvardcodex", "--registry", f"example-host={custom_registry}",
+             "--registry", f"example-host={custom_registry}",
              "--statework-root", str(STATEWORK),
              "--digital-psychology-root", str(DP)], env=env)
         run([sys.executable, str(ROOT / "scripts" / "doctor.py"),
-             "--target", "harvardcodex", "--registry", f"example-host={custom_registry}"], env=env)
-    print("PUBLIC_BETA_GATE=PASS")
+             "--registry", f"example-host={custom_registry}"], env=env)
+    print("INSTALLATION_GATE=PASS")
     return 0
 
 

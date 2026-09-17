@@ -21,7 +21,9 @@ PAIRS = (
     (ROOT / "contracts" / "guard.schema.json", DP / "schemas" / "guard.schema.json"),
     (ROOT / "contracts" / "guard-pack.schema.json", DP / "schemas" / "guard-pack.schema.json"),
     (ROOT / "contracts" / "statework-manifest.schema.json", COW / "schemas" / "statework-manifest.schema.json"),
-    (ROOT / "contracts" / "transition-contract.schema.json", COW / "schemas" / "transition-contract.schema.json"),
+        (ROOT / "contracts" / "transition-contract.schema.json", COW / "schemas" / "transition-contract.schema.json"),
+        (ROOT / "contracts" / "behavioral-routing-pack.schema.json",
+         DP / "schemas" / "behavioral-routing-pack.schema.json"),
 )
 
 

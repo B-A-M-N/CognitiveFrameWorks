@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digitalpsychology.dev/schemas/behavioral-routing-pack.schema.json",
+  "title": "DigitalPsychology behavioral routing pack",
+  "type": "object",
+  "required": ["routing_pack_version", "semantic_hash", "profiles"],
+  "properties": {
+    "routing_pack_version": { "const": "1.0.0" },
+    "semantic_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "source_revision": { "type": ["string", "null"] },
+    "profiles": {
+      "type": "array",
+      "items": { "$ref": "https://digitalpsychology.dev/schemas/behavioral-routing-profile.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

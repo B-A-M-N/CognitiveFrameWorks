@@ -29,15 +29,17 @@ def main() -> int:
             raise RuntimeError("upgrade HOME was not empty")
         env = dict(os.environ)
         env.update({"HOME": home, "XDG_RUNTIME_DIR": xdg})
+        custom_registry = str(home_path / ".example-host" / "skills")
         installer = [sys.executable, str(ROOT / "scripts" / "install-framework.py"),
-                     "--target", "harvardcodex", "--statework-root", str(STATEWORK),
+                     "--registry", f"example-host={custom_registry}",
+                     "--statework-root", str(STATEWORK),
                      "--digital-psychology-root", str(DP)]
         doctor = [sys.executable, str(ROOT / "scripts" / "doctor.py"),
-                  "--target", "harvardcodex"]
+                  "--registry", f"example-host={custom_registry}"]
         run(installer, env)
         run(doctor, env)
-        runtime = home_path / ".harvardcodex" / "skills" / "cognitiveframeworks_runtime"
-        registry = home_path / ".harvardcodex" / "skills"
+        runtime = home_path / ".example-host" / "skills" / "cognitiveframeworks_runtime"
+        registry = home_path / ".example-host" / "skills"
         sentinels = {
             registry / "OWL" / "references" / "local-reference.md": "local reference",
             registry / "OWL" / "examples" / "local-example.txt": "local example",

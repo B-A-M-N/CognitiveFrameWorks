@@ -30,7 +30,6 @@ STATEWORKS = ["infrae", "gitter", "getter", "tuid"]
 REGISTRIES = {
     "agents": Path.home() / ".agents" / "skills",
     "codex": Path.home() / ".codex" / "skills",
-    "harvardcodex": Path.home() / ".harvardcodex" / "skills",
 }
 
 
