@@ -1295,6 +1295,68 @@ def injected_capsules_for(kernel: Iterable[str]) -> Dict[str, str]:
     return out
 
 
+def enumerate_eligible_routes(sw: Dict[str, Any], cow_root: Path, *,
+                                operation: Optional[str] = None,
+                                trigger: Optional[str] = None,
+                                task_shape: Optional[str] = None,
+                                current_state: Optional[str] = None,
+                                domain_tags: Optional[Iterable[str]] = None,
+                                suppressed_flows: Optional[Iterable[str]] = None,
+                                suppressed_specialists: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+    """Enumerate host-computed legal routes without choosing one."""
+    import yaml
+    sid = str(sw.get("id"))
+    suppressed_flows = set(suppressed_flows or ())
+    suppressed_specialists = set(suppressed_specialists or ())
+    result: List[Dict[str, Any]] = []
+    flows_dir = cow_root / sid / "flows"
+    if flows_dir.is_dir():
+        for path in sorted(flows_dir.glob("*/flow.md")):
+            name = path.parent.name
+            if name in suppressed_flows:
+                continue
+            try:
+                meta = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1]) or {}
+            except Exception as exc:
+                raise PacketDependencyError(f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
+            operations = set(meta.get("operations") or ())
+            triggers = set(meta.get("triggers") or ())
+            shapes = set(meta.get("task_shapes") or ())
+            states = meta.get("states") or {}
+            if operation is not None and operations and operation not in operations:
+                continue
+            if trigger is not None and triggers and trigger not in triggers:
+                continue
+            if task_shape is not None and shapes and task_shape not in shapes:
+                continue
+            if current_state is not None and isinstance(states, Mapping):
+                from_states = set(states.get("from") or ())
+                if from_states and current_state not in from_states:
+                    continue
+            budget = {"low": 1, "medium": 2, "high": 3}.get(sw.get("context_budget", "medium"), 2)
+            result.append({"route_type": "flow", "route": name, "statework_id": sid,
+                           "eligibility_conditions": {"operations": sorted(operations),
+                                                       "triggers": sorted(triggers),
+                                                       "task_shapes": sorted(shapes),
+                                                       "states": dict(states)},
+                           "context_cost": {"specialist_budget": budget},
+                           "dependencies": list(meta.get("required_specialists") or ())})
+            root = path.parent
+            for specialist in list(meta.get("required_specialists") or ()) + list(meta.get("optional_specialists") or ()):
+                if specialist in suppressed_specialists:
+                    continue
+                candidate = (root / specialist).resolve()
+                if candidate.is_file():
+                    try: candidate.relative_to((cow_root / sid).resolve())
+                    except ValueError: continue
+                    result.append({"route_type": "specialist", "route": str(candidate.relative_to(cow_root)),
+                                   "statework_id": sid, "eligibility_conditions": {"flow": name},
+                                   "context_cost": {"required": specialist in (meta.get("required_specialists") or ()),
+                                                   "specialist_budget": budget},
+                                   "dependencies": [name]})
+    return result
+
+
 def select_statework_runtime(
         sw: Dict[str, Any], cow_root: Path,
         requested_flow: Optional[str] = None, *, operation: Optional[str] = None,
@@ -1729,21 +1791,10 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     eligible_routes = [{"route_type": "stage", "route": route} for route in profile]
     if pre_desired is not None:
         eligible_routes.append({"route_type": "statework", "route": pre_desired.get("id"), "statework_id": pre_desired.get("id")})
-        try:
-            selected, _capsules = select_statework_runtime(
-                pre_desired, cow_root, operation=operation, trigger=trigger,
-                task_shape=shape, current_state=(observation_context or {}).get("state"),
-                domain_tags=domains)
-            flow = selected.get("selected_flow")
-            if flow:
-                eligible_routes.append({"route_type": "flow", "route": str(Path(flow[0]).parent.name), "statework_id": pre_desired.get("id")})
-            for specialist in selected.get("selected_specialists", []):
-                path = specialist[0] if isinstance(specialist, (list, tuple)) else str(specialist)
-                eligible_routes.append({"route_type": "specialist", "route": str(path), "statework_id": pre_desired.get("id")})
-        except PacketDependencyError:
-            # A StateWork-backed task will fail closed later with its precise
-            # selector error; do not fabricate an eligible flow for DP.
-            pass
+        eligible_routes.extend(enumerate_eligible_routes(
+            pre_desired, cow_root, operation=operation, trigger=trigger,
+            task_shape=shape, current_state=(observation_context or {}).get("state"),
+            domain_tags=domains))
     for guard in routing_pack_for_context.get("always_on", []) + routing_pack_for_context.get("guards", []):
         eligible_routes.append({"route_type": "guard", "route": str(guard.get("key") or guard.get("id") or "")})
     for action_id in effective_actions:

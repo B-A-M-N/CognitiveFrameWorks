@@ -89,3 +89,11 @@ def test_legal_flow_preference_changes_selection():
         assert "ineligible" in str(exc)
     else:
         raise AssertionError("ineligible learned flow was accepted")
+
+def test_advisor_sees_alternative_eligible_flows():
+    resolve = _resolver()
+    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
+    infrae = next(item for item in resolve.load_stateworks(cow) if item["id"] == "infrae")
+    routes = resolve.enumerate_eligible_routes(infrae, cow, operation="deploy", task_shape="implement")
+    assert "change" in {route["route"] for route in routes if route["route_type"] == "flow"}
+    assert all(route["route"] != "debug" for route in routes if route["route_type"] == "flow")
