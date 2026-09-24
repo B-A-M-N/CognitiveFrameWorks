@@ -63,7 +63,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", help="required exact tag for all three trees")
     parser.add_argument("--statework-root", type=Path,
-                        default=Path(__file__).resolve().parents[2] / "CognitiveStateWork")
+                        default=(Path(__file__).resolve().parents[2] / "CognitiveStateWorks" if (Path(__file__).resolve().parents[2] / "CognitiveStateWorks").exists() else Path(__file__).resolve().parents[2] / "CognitiveStateWork"))
     parser.add_argument("--digital-psychology-root", type=Path,
                         default=Path(__file__).resolve().parents[2] / "DigitalPsychology")
     args = parser.parse_args()

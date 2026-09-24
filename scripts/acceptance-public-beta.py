@@ -44,7 +44,7 @@ def main() -> int:
                               "gates": report}, sort_keys=True))
             return result.returncode
     commits = {}
-    for repo in (ROOT, BASE / "CognitiveStateWork", BASE / "DigitalPsychology"):
+    for repo in (ROOT, BASE / "CognitiveStateWorks", BASE / "DigitalPsychology"):
         commits[repo.name] = subprocess.check_output(
             ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     print(json.dumps({"manifest_version": manifest["manifest_version"],

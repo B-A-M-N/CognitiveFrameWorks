@@ -41,7 +41,7 @@ def test_cfw_only_uses_empty_statework_capability(tmp_path):
 
 def test_explicit_ineligible_flow_is_rejected():
     resolve = _resolver()
-    cow = Path("/home/bamn/CognitiveStateWork")
+    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
     stateworks = resolve.load_stateworks(cow)
     tuid = next(item for item in stateworks if item["id"] == "tuid")
     try:
@@ -59,7 +59,7 @@ def test_advisor_receives_host_eligible_statework_flow_choices():
         def advice_for_task(self, **kwargs):
             seen.update(kwargs)
             return {"status": "ok", "adjustments": []}
-    cow = Path("/home/bamn/CognitiveStateWork")
+    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
     request = resolve.TaskRequest(task_id="flow-advice", application_id="app",
                                   shape="quick", domain_tags=("infrastructure",),
                                   operation="deploy", subject_ref="repo")
@@ -70,7 +70,7 @@ def test_advisor_receives_host_eligible_statework_flow_choices():
 
 def test_legal_flow_preference_changes_selection():
     resolve = _resolver()
-    cow = Path("/home/bamn/CognitiveStateWork")
+    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
     class Advisor:
         def __init__(self, route): self.route = route
         def advice_for_task(self, **kwargs):

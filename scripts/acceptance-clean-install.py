@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-STATEWORK = ROOT.parent / "CognitiveStateWork"
+STATEWORK = Path(os.environ.get("COGNITIVE_STATEWORK_SOURCE", "")) if os.environ.get("COGNITIVE_STATEWORK_SOURCE") else (ROOT.parent / "CognitiveStateWorks" if (ROOT.parent / "CognitiveStateWorks").exists() else ROOT.parent / "CognitiveStateWork")
 
 
 def run(command: list[str], *, env: dict[str, str]) -> None:
