@@ -105,7 +105,6 @@ def check_installed_runtime(runtime_dst: Path, label: str,
         env = dict(os.environ)
         env["XDG_RUNTIME_DIR"] = runtime_dir
         env["COGNITIVE_STATEWORK_ROOT"] = str(runtime_dst / "statework")
-        env["COGNITIVE_DIGITALPSYCHOLOGY_ROOT"] = str(runtime_dst / "digitalpsychology")
         result = subprocess.run([sys.executable, "-c", probe], cwd=str(runtime_dst),
                                 env=env, capture_output=True, text=True,
                                 timeout=20)
@@ -138,11 +137,12 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
         runtime_dst / "scripts" / "cognitive_runtime.py",
         runtime_dst / "scripts" / "runtime_contract" / "actions.py",
         runtime_dst / "host-interceptor.json",
-        runtime_dst / "statework" / "registry.yaml",
-        runtime_dst / "statework" / "scripts" / "control_plane.py",
-        runtime_dst / "statework" / "schemas" / "packet-registry.yaml",
         runtime_dst / "SISPIS" / "runtime" / "calibrate.py",
     ]
+    has_bundled_statework = (runtime_dst / "statework" / "registry.yaml").is_file()
+    if has_bundled_statework:
+        runtime_files.extend([runtime_dst / "statework" / "scripts" / "control_plane.py",
+                              runtime_dst / "statework" / "schemas" / "packet-registry.yaml"])
     for required in runtime_files:
         if not required.exists():
             problems.append(f"[{label}] Runtime host interceptor incomplete: {required.relative_to(registry)}")
@@ -179,15 +179,16 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
     elif not cf_dst.exists():
         problems.append(f"[{label}] Runtime not registered: cogframe")
 
-    if cow.is_dir():
-        reg_manifest = cow / "registry.yaml"
+    if has_bundled_statework:
+        reg_manifest = runtime_dst / "statework" / "registry.yaml"
         if not reg_manifest.exists():
-            problems.append("[cow] CognitiveStateWork registry.yaml missing")
+            # CFW-only installations intentionally carry no sibling CSW.
+            infos.append("[cow] no sibling StateWork checkout; CFW-only capability active")
             return
         data = yaml.safe_load(reg_manifest.read_text(encoding="utf-8"))
         names = data.get("stateworks", []) if isinstance(data, dict) else []
         for name in names:
-            manifest_src = cow / name / "manifest.yaml"
+            manifest_src = runtime_dst / "statework" / name / "manifest.yaml"
             wrapper = registry / name / "SKILL.md"
             if not manifest_src.exists():
                 problems.append(f"[cow] Dispatcher target not resolvable: {name} (no source manifest)")
@@ -201,7 +202,10 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
             fp = registry / name / "fingerprint"
             if fp.exists():
                 expected = fp.read_text(encoding="utf-8").strip()
-                actual = sha256(cow / name / "runtime.md") if (cow / name / "runtime.md").exists() else sha256(manifest_src)
+                source_skill = runtime_dst / "statework" / name / "SKILL.md"
+                if not source_skill.exists():
+                    source_skill = cow / name / "STATEWORK.md"
+                actual = sha256(source_skill) if source_skill.exists() else sha256(manifest_src)
                 if expected != actual:
                     problems.append(f"[{label}] Installed/source fingerprint mismatch: {name}")
                 else:

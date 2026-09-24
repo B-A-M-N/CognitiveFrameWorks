@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cognitivestatework.dev/schemas/statework-manifest.schema.json",
+  "title": "CognitiveStateWork manifest",
+  "description": "Machine-readable declaration every StateWork must carry so dispatchers can route without hard-coding domain vocabulary. version: semver of this StateWork manifest.",
+  "type": "object",
+  "required": [
+    "id",
+    "version",
+    "name",
+    "entrypoint",
+    "triggers",
+    "phase",
+    "inputs",
+    "emits",
+    "core_requirements",
+    "context_budget"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "name": {
+      "type": "string"
+    },
+    "entrypoint": {
+      "type": "string"
+    },
+    "triggers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "phase": {
+      "enum": [
+        "observation",
+        "mutation",
+        "domain_state",
+        "validation",
+        "recovery"
+      ]
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["required", "optional"],
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "optional": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "emits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "core_requirements": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "owl",
+          "anchor",
+          "dox",
+          "fuse",
+          "flow",
+          "ward",
+          "sispis"
+        ]
+      }
+    },
+    "context_budget": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "specialists": {
+          "type": "object",
+          "required": ["required", "optional"],
+          "properties": {
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "optional": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "exclusive_group": {
+      "type": "string"
+    },
+    "handoff": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    }
+  },
+  "additionalProperties": false
+}

@@ -45,15 +45,24 @@ def main() -> int:
         registry.transition("G-structural-tool-gate", "experiment")
         receipts = dp.ReceiptRegistry(default_to_trusted_state=True)
         from lib.receipts import DEFAULT_PRODUCTION_CRITERION
+        from lib.feedback_loop import TrialEvidence
         builder = dp.ReceiptBuilder(
             evaluator_version_hash="structural@1",
             guard_semantic_hash=dp.guard_semantic_hash(guard),
             criterion=DEFAULT_PRODUCTION_CRITERION)
-        outputs = {
-            **{f"b{i}": "FAIL" for i in range(10)},
-            **{f"i{i}": "PASS" for i in range(10)},
-            **{f"h{i}": "PASS" for i in range(10)},
-        }
+        outputs = {}
+        for prefix, policy, outcome in (
+                ("b", "baseline", "FAIL"), ("i", "treatment", "PASS"),
+                ("h", "holdout", "PASS")):
+            for i in range(10):
+                trial_id = f"{prefix}{i}"
+                outputs[trial_id] = TrialEvidence(
+                    trial_id=trial_id, trajectory_id=f"trajectory-{trial_id}",
+                    probe_id=f"structural-probe-{trial_id}", probe_version="1",
+                    policy_hash=policy, execution_policy_hash=policy,
+                    session_id=f"session-{trial_id}", task_id=f"task-{trial_id}",
+                    attempt_id="attempt-1", outcome=outcome,
+                    host_evidence_ref=f"host-event-{trial_id}")
         validation = builder.build(
             guard_key=guard.key, kind="validation",
             baseline_trial_ids=tuple(f"b{i}" for i in range(10)),
@@ -92,10 +101,12 @@ def main() -> int:
             }), session
 
         control_request = resolver.TaskRequest(
-            task_id="structural-control", subject_ref="task:structural",
+            task_id="structural-control", application_id="cfw-structural",
+            subject_ref="task:structural",
             shape="quick", domain_tags=("debug",))
         treatment_request = resolver.TaskRequest(
-            task_id="structural-treatment", subject_ref="task:structural",
+            task_id="structural-treatment", application_id="cfw-structural",
+            subject_ref="task:structural",
             shape="quick", domain_tags=("debug",))
         control = resolver.resolve(control_request)
         treatment = resolver.resolve(treatment_request)

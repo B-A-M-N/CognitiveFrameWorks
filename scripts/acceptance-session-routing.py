@@ -21,7 +21,7 @@ sys.path.insert(0, str(DP_ROOT))
 from lib.feedback_loop import load_events  # noqa: E402
 from lib.routing_profiles import (build_experiment_plan, build_profile,
                                   derive_profiles, promote_profile)  # noqa: E402
-from runtime_contract.routing import comparison_context_hash  # noqa: E402
+from runtime_contract.routing import comparison_context_hash, prepare_experiment_plan  # noqa: E402
 
 
 def load(name: str, path: Path):
@@ -43,14 +43,26 @@ def main() -> int:
         api = api_module.CognitiveRuntime()
 
         model = "model-a"
+        provider = "provider-a"
+        model_revision = "revision-a"
+        model_capability_hash = "capability-a"
         harness = "example-host"
+        harness_version = "harness-version-a"
+        application = "cfw-session-routing"
+        application_version = "application-version-a"
+        application_instance = "session-routing-instance"
         task_family = "performance"
         comparison_hash = comparison_context_hash({
-            "agent_instance_id": "agent-a-instance", "model": model,
-            "harness": harness, "toolset": None, "task_family": task_family,
+            "namespace_id": "test-namespace", "application_id": application,
+            "application_version": application_version,
+            "application_instance_id": application_instance, "provider_id": provider,
+            "model_id": model, "model_revision": model_revision,
+            "model_capability_hash": model_capability_hash, "harness_id": harness,
+            "harness_version": harness_version, "agent_instance_id": "agent-a-instance",
+            "model": model, "harness": harness, "toolset": None, "task_family": task_family,
             "task_shape": task_family, "domain_tags": [], "phase": None,
             "environment": "runtime",
-            "statework_versions": "{}", "framework_version": "1.4.0",
+            "statework_versions": {}, "framework_version": "1.4.0",
             "guard_pack_hash": resolve.load_guard_pack()["semantic_hash"],
         })
         adjustment = {
@@ -61,12 +73,18 @@ def main() -> int:
         }
         candidate = build_profile(
             profile_id="routing-session-flow-suppression",
-            subject={"agent_instance_id": "agent-a-instance", "model": model,
-                     "harness": harness},
+            subject={"namespace_id": "test-namespace", "application_id": application,
+                     "application_version": application_version,
+                     "application_instance_id": application_instance, "provider_id": provider,
+                     "model_id": model, "model_revision": model_revision,
+                     "model_capability_hash": model_capability_hash,
+                     "harness_id": harness, "harness_version": harness_version,
+                     "agent_instance_id": "agent-a-instance",
+                     "model": model, "harness": harness},
             context={"task_family": task_family, "task_shape": task_family,
                      "domain_tags": [], "phase": None, "environment": "runtime",
                      "toolset": None,
-                     "statework_versions": "{}", "framework_version": "1.4.0",
+                     "statework_versions": {}, "framework_version": "1.4.0",
                      "guard_pack_hash": resolve.load_guard_pack()["semantic_hash"]},
             observations=[], routing_adjustments=[adjustment],
             evidence={"event_ids": ["preexperiment"], "trajectory_ids": [],
@@ -83,17 +101,41 @@ def main() -> int:
             candidate_adjustment=adjustment,
             eligibility={"field": "task_family", "equals": task_family},
             target_evaluator="route-success-v1",
-            control_policy_identity="static-control",
-            treatment_policy_identity="candidate-treatment",
-            holdout_requirements={"regressions": []}, canary_fraction=0.5)
+            control_policy_identity="control-policy-v1",
+            treatment_policy_identity="treatment-policy-v1",
+            holdout_requirements={
+                "evaluators": ["route-success-v1@1.0.0"],
+                "minimum_samples": 10,
+                "holdout_task_ids": [f"holdout-task-{i}" for i in range(10)],
+            }, canary_fraction=0.5)
+        plan = prepare_experiment_plan(plan, {
+            "namespace_id": "test-namespace", "application_id": application,
+            "application_version": application_version,
+            "application_instance_id": application_instance, "provider_id": provider,
+            "model_id": model, "model_revision": model_revision,
+            "model_capability_hash": model_capability_hash,
+            "harness_id": harness, "harness_version": harness_version,
+            "agent_instance_id": "agent-a-instance",
+            "model": model, "harness": harness, "toolset": None, "task_family": task_family,
+            "task_shape": task_family, "domain_tags": [], "phase": None,
+                "environment": "runtime", "statework_versions": {},
+            "framework_version": "1.4.0",
+            "guard_pack_hash": resolve.load_guard_pack()["semantic_hash"],
+        })
 
         sessions = []
-        counts = {"control": 0, "treatment": 0}
+        counts = {"control": 0, "treatment": 0, "holdout": 0}
         index = 0
         while min(counts.values()) < 10:
+            task_id = (f"holdout-task-{counts['holdout']}"
+                       if counts["holdout"] < 10 else f"route-task-{index}")
             request = resolve.TaskRequest(
-                task_id=f"route-task-{index}", subject_ref=f"subject:{index}",
-                shape=task_family, model=model, harness=harness,
+                task_id=task_id, application_id=application, application_version=application_version,
+                namespace_id="test-namespace",
+                application_instance_id=application_instance, subject_ref=f"subject:{index}",
+                shape=task_family, provider_id=provider, model_id=model,
+                model_revision=model_revision, model_capability_hash=model_capability_hash,
+                harness=harness, harness_version=harness_version,
                 agent_id="agent-a", agent_instance_id="agent-a-instance",
                 routing_experiment_plan=plan)
             session = api.begin_task(request)
@@ -107,7 +149,7 @@ def main() -> int:
                             if decision["route"] == "flow" and decision["route_type"] == "stage"]
             assert decision_ids, (cohort, session.route_decisions)
             invocation_id = f"route-invocation-{index}"
-            actual = {"status": "pass" if cohort == "treatment" else "fail",
+            actual = {"status": "pass" if cohort in {"treatment", "holdout"} else "fail",
                       "fresh": True, "relevant": True,
                       "fixture": "same-task-oracle"}
             host.after_tool(tool_type="fixture-task", result_class=actual["status"],
@@ -133,11 +175,17 @@ def main() -> int:
             contexts[f"{session.session_id}:{session.bundle.task_id}:{session.attempt_id}"] = {
                 "task_id": session.bundle.task_id, "session_id": session.session_id,
                 "attempt_id": session.attempt_id, "agent_instance_id": session.agent_instance_id,
-                "model": model, "harness": harness, "task_family": task_family,
+                "namespace_id": "test-namespace", "application_id": application,
+                "application_version": application_version,
+                "application_instance_id": application_instance, "provider_id": provider,
+                "model_id": model, "model_revision": model_revision,
+                "model_capability_hash": model_capability_hash, "harness_id": harness,
+                "harness_version": harness_version, "model": model, "harness": harness,
+                "task_family": task_family,
                 "task_shape": task_family, "domain_tags": [], "phase": None,
                 "environment": "runtime", "toolset": None,
                 "policy_hash": session.bundle.pinned["policy_hash"],
-                "statework_versions": "{}", "framework_version": "1.4.0",
+                "statework_versions": {}, "framework_version": "1.4.0",
                 "guard_pack_hash": session.bundle.pinned["guard_pack_hash"],
                 "routing_experiment_plan": plan,
                 "routing_cohort": experiment["routing_cohort"],
@@ -155,9 +203,15 @@ def main() -> int:
         promoted = promote_profile(candidate, receipt)
         profile_path = raw_root / "active-routing-profile.json"
         profile_path.write_text(json.dumps(promoted, indent=2) + "\n", encoding="utf-8")
+        os.chmod(profile_path, 0o600)
         profiled = resolve.TaskRequest(
-            task_id="profiled-task", subject_ref="subject:profiled", shape=task_family,
-            model=model, harness=harness, agent_id="agent-a",
+            task_id="profiled-task", application_id=application,
+            application_version=application_version, namespace_id="test-namespace",
+            application_instance_id=application_instance,
+            subject_ref="subject:profiled", shape=task_family,
+            provider_id=provider, model_id=model, model_revision=model_revision,
+            model_capability_hash=model_capability_hash, harness=harness,
+            harness_version=harness_version, agent_id="agent-a",
             agent_instance_id="agent-a-instance")
         profiled_bundle = api_module.CognitiveRuntime(
             routing_profile_path=str(profile_path)).begin_task(profiled).bundle

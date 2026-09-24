@@ -365,3 +365,9 @@ Digital Psychology
 Together, the three systems turn agent reliability from a collection of prompt instructions into a **measurable, state-aware, closed-loop control problem**.
 
 That is the direction of the project.
+
+## FreeInference attribution
+
+This work benefited in some way from inference provided by [freeinference.org](https://freeinference.org/).
+
+These are independent developments that are not reviewed, endorsed, or sponsored by FreeInference. If you find these projects genuinely useful, please consider donating to or sponsoring FreeInference, which provides a vital inference service.

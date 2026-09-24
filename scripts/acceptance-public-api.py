@@ -15,7 +15,8 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="cfw-public-api-") as runtime_dir:
         os.environ["XDG_RUNTIME_DIR"] = runtime_dir
         runtime = CognitiveRuntime(telemetry_disabled=True)
-        request = TaskRequest(task_id="public-api", subject_ref="artifact:public",
+        request = TaskRequest(task_id="public-api", application_id="cfw-public-api",
+                              subject_ref="artifact:public",
                               shape="quick")
         session = runtime.begin_task(request)
         agent = runtime.agent_handle(session)

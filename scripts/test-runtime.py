@@ -118,10 +118,10 @@ def main() -> int:
         desired, stateworks, packet_reg,
         packet_store={"repository_truth_packet": valid_fixture},
         task_id=valid_fixture["task_id"], subject_ref=valid_fixture["subject_ref"],
-        observation_context={"repository_fingerprint":
-                             valid_fixture["payload"]["freshness"]["working_tree_fingerprint"]})
+        observation_context={"repository_freshness":
+                             valid_fixture["payload"]["freshness"]})
     check("present packet skips producer", [sw["id"] for sw in chain2] == ["getter"], str([sw["id"] for sw in chain2]))
-    freshness_context = {"repository_fingerprint": valid_fixture["payload"]["freshness"]["working_tree_fingerprint"]}
+    freshness_context = {"repository_freshness": valid_fixture["payload"]["freshness"]}
     fresh_chain = resolve.plan_statework_chain(
         desired, stateworks, packet_reg,
         packet_store={"repository_truth_packet": valid_fixture},
@@ -131,7 +131,9 @@ def main() -> int:
         desired, stateworks, packet_reg,
         packet_store={"repository_truth_packet": valid_fixture},
         task_id=valid_fixture["task_id"], subject_ref=valid_fixture["subject_ref"],
-        observation_context={"repository_fingerprint": "sha256:changed"})
+        observation_context={"repository_freshness": dict(
+            valid_fixture["payload"]["freshness"],
+            working_tree_fingerprint="sha256:changed")})
     check("freshness validator accepts current packet", [sw["id"] for sw in fresh_chain] == ["getter"])
     check("freshness validator rejects stale packet", [sw["id"] for sw in stale_chain] == ["gitter", "getter"])
     subject_chain = resolve.plan_statework_chain(
@@ -166,7 +168,7 @@ def main() -> int:
     except resolve.PacketDependencyError:
         check("ambiguous flow routing fails closed", True)
     infra_request = resolve.TaskRequest(
-        task_id="infra-mutation", subject_ref="cluster:test", shape="implement",
+        task_id="infra-mutation", application_id="cfw-test", subject_ref="cluster:test", shape="implement",
         domain_tags=("infrastructure",), operation="deploy", trigger="mutation",
         observation_context={})
     infra_bundle = resolve.resolve(infra_request)
@@ -175,7 +177,7 @@ def main() -> int:
           any(item.get("selected_flow", [""])[0].endswith("/change/flow.md")
               for item in infra_bundle.stateworks))
     quick_infra = resolve.resolve(resolve.TaskRequest(
-        task_id="infra-quick-mutation", subject_ref="cluster:test",
+        task_id="infra-quick-mutation", application_id="cfw-test", subject_ref="cluster:test",
         phase="domain_state", shape="quick", domain_tags=("infrastructure",),
         operation="deploy", trigger="mutation"))
     check("quick flow requirements are selected before kernel freeze",
@@ -246,7 +248,7 @@ def main() -> int:
               str([guard["id"] for guard in actual]))
 
     # fail-closed scope via library resolve
-    request = resolve.TaskRequest(task_id="immutable-request", subject_ref="subject:1",
+    request = resolve.TaskRequest(task_id="immutable-request", application_id="cfw-test", subject_ref="subject:1",
                                   shape="quick", domain_tags=("read-only",),
                                   observation_context={"trusted": True})
     try:
@@ -450,7 +452,7 @@ def main() -> int:
         check("final output cannot bypass completion permit", True)
 
     segment_bundle = resolve.resolve(
-        resolve.TaskRequest(task_id="segment-context", subject_ref="repo:segment",
+        resolve.TaskRequest(task_id="segment-context", application_id="cfw-test", subject_ref="repo:segment",
                             shape="implement", domain_tags=("repository",),
                             phase="mutation", operation="merge", trigger="mutation",
                             observation_context={}),
@@ -474,7 +476,7 @@ def main() -> int:
           ("GITTER" in second_context and "GETTER" not in second_context))
 
     b_transition = resolve.resolve(
-        resolve.TaskRequest(task_id="transition-runtime", subject_ref="ui:tuid",
+        resolve.TaskRequest(task_id="transition-runtime", application_id="cfw-test", subject_ref="ui:tuid",
                             shape="implement", domain_tags=("terminal interface",)),
         requested_flows={"tuid": "debug"})
     transition_session = runtime.start(b_transition, telemetry_disabled=True)

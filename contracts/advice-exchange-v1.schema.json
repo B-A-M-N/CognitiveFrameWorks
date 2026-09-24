@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cognitiveframeworks.dev/contracts/advice-exchange-v1.schema.json",
+  "title": "CFW-DP advice exchange v1",
+  "type": "object",
+  "required": ["contract_version", "context", "eligible_choices", "adjustments", "final_decision"],
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {"const": "1.0.0"},
+    "context": {
+      "type": "object",
+      "required": ["namespace_id", "application_id", "application_instance_id", "task_id", "context_identity", "static_policy_hash", "eligible_choice_hash"],
+      "additionalProperties": true,
+      "properties": {
+        "namespace_id": {"type": "string", "minLength": 1},
+        "application_id": {"type": "string", "minLength": 1},
+        "application_instance_id": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1},
+        "context_identity": {"type": "string", "minLength": 1},
+        "static_policy_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "eligible_choice_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "advice_version": {"type": "string", "minLength": 1},
+        "expires_at": {"type": ["string", "null"], "format": "date-time"},
+        "source_profile_hash": {"type": ["string", "null"]}
+      }
+    },
+    "eligible_choices": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "object", "required": ["route_type", "route"], "additionalProperties": false,
+        "properties": {"route_type": {"type": "string", "minLength": 1}, "route": {"type": "string", "minLength": 1}, "statework_id": {"type": ["string", "null"]}}}
+    },
+    "adjustments": {
+      "type": "array", "items": {"type": "object", "required": ["route_type", "route", "disposition", "reason"], "additionalProperties": false,
+        "properties": {"route_type": {"type": "string", "minLength": 1}, "route": {"type": "string", "minLength": 1}, "statework_id": {"type": ["string", "null"]}, "disposition": {"enum": ["prefer", "suppress"]}, "reason": {"type": "string", "minLength": 1}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "expected_benefit": {"type": ["string", "null"]}, "uncertainty": {"type": ["number", "null"], "minimum": 0, "maximum": 1}, "expires_at": {"type": ["string", "null"], "format": "date-time"}}}
+    },
+    "final_decision": {
+      "type": "object", "required": ["policy_hash", "selected_routes", "recorded_at"], "additionalProperties": false,
+      "properties": {"policy_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "selected_routes": {"type": "array", "items": {"type": "object", "required": ["route_type", "route", "selection_reason"], "additionalProperties": false, "properties": {"route_type": {"type": "string"}, "route": {"type": "string"}, "selection_reason": {"type": "string"}}}}, "recorded_at": {"type": "string", "format": "date-time"}}
+    }
+  }
+}

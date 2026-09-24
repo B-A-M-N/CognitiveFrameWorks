@@ -79,6 +79,8 @@ class EvidenceAttestation:
     content_digest: str
     invalidated: bool = False
     claim_digest: Optional[str] = None
+    schema: Optional[str] = None
+    validator: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,8 @@ class EvidenceRecord:
     invocation_id: Optional[str] = None
     content_digest: Optional[str] = None
     claim_digest: Optional[str] = None
+    schema: Optional[str] = None
+    validator: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,8 @@ class EvidenceLedger:
             invocation_id=attestation.invocation_id,
             content_digest=attestation.content_digest,
             claim_digest=attestation.claim_digest,
+            schema=attestation.schema,
+            validator=attestation.validator,
         )
         prior = self._records.get(attestation.evidence_id)
         if prior is not None and prior != record:
@@ -194,7 +200,11 @@ class EvidenceLedger:
             resolved.append({"kind": record.kind, "ref": record.evidence_id,
                              "subject_ref": record.subject_ref or subject_ref or "",
                              "observed_at": record.observed_at,
-                             "invalidated": record.invalidated})
+                             "invalidated": record.invalidated,
+                             "content_digest": record.content_digest or "",
+                             "issuer": record.issuer or "",
+                             "schema": record.schema or "",
+                             "validator": record.validator or ""})
         return resolved
 
     def get(self, evidence_id: str) -> Optional[EvidenceRecord]:

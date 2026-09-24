@@ -25,10 +25,24 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-STATEWORK_ROOT = Path(os.environ.get(
-    "COGNITIVE_STATEWORK_SOURCE", str(ROOT.parent / "CognitiveStateWork")))
-DIGITAL_PSYCHOLOGY_ROOT = Path(os.environ.get(
-    "COGNITIVE_DIGITALPSYCHOLOGY_SOURCE", str(ROOT.parent / "DigitalPsychology")))
+
+SHARED_INSTALLER_ROOT = ROOT / "scripts"
+if str(SHARED_INSTALLER_ROOT) not in sys.path:
+    sys.path.insert(0, str(SHARED_INSTALLER_ROOT))
+try:
+    from install_primitives import (InstallSafetyError, assert_no_symlink_components,
+                                    assert_real_directory, check_owned_overwrite,
+                                    copy_owned_file as _safe_copy_owned_file,
+                                    ensure_directory, InstallJournal)
+except ImportError:  # source-checkout fallback for older layouts
+    _sibling = ROOT.parent / "CognitiveStateWork" / "scripts"
+    sys.path.insert(0, str(_sibling))
+    from install_primitives import (InstallSafetyError, assert_no_symlink_components,
+                                    assert_real_directory, check_owned_overwrite,
+                                    copy_owned_file as _safe_copy_owned_file,
+                                    ensure_directory, InstallJournal)
+
+STATEWORK_ROOT = Path(os.environ.get("COGNITIVE_STATEWORK_SOURCE", str(ROOT.parent / "CognitiveStateWork")))
 CORE_SKILLS = ["OWL", "ANCHOR", "DOX", "FUSE", "FLOW", "WARD", "SISPIS"]
 
 REGISTRIES = {
@@ -36,8 +50,9 @@ REGISTRIES = {
     "codex": Path.home() / ".codex" / "skills",
 }
 
-MANIFEST_NAME = ".cognitiveframeworks-managed.json"
+MANIFEST_NAME = ".cognitiveframeworks-cfw-managed.json"
 MANIFEST_VERSION = 1
+_ACTIVE_JOURNALS: list[InstallJournal] = []
 
 
 def _remove_path(path: Path) -> None:
@@ -49,13 +64,16 @@ def _remove_path(path: Path) -> None:
 
 
 def _relative(registry: Path, path: Path) -> str:
-    return path.resolve().relative_to(registry.resolve()).as_posix()
+    return path.relative_to(registry).as_posix()
 
 
 def _load_owned_paths(registry: Path) -> tuple[set[str], dict[str, str]]:
     manifest = registry / MANIFEST_NAME
-    if not manifest.exists():
+    assert_real_directory(registry)
+    if not manifest.exists() and not manifest.is_symlink():
         return set(), {}
+    if manifest.is_symlink():
+        raise RuntimeError(f"refusing to read symlinked ownership manifest {manifest}")
     try:
         data = json.loads(manifest.read_text(encoding="utf-8"))
         paths = data.get("managed_paths")
@@ -66,6 +84,7 @@ def _load_owned_paths(registry: Path) -> tuple[set[str], dict[str, str]]:
             candidate = Path(str(value))
             if candidate.is_absolute() or ".." in candidate.parts:
                 raise ValueError(f"unsafe managed path {value!r}")
+            assert_no_symlink_components(registry, registry / candidate)
             owned.add(candidate.as_posix())
         digests = data.get("managed_digests", {})
         if not isinstance(digests, dict):
@@ -75,8 +94,11 @@ def _load_owned_paths(registry: Path) -> tuple[set[str], dict[str, str]]:
         raise RuntimeError(f"refusing to update registry with invalid ownership manifest {manifest}: {exc}") from exc
 
 
-def _write_owned_paths(registry: Path, paths: set[str]) -> None:
+def _write_owned_paths(registry: Path, paths: set[str],
+                       previous_digests: dict[str, str] | None = None,
+                       *, allow_replace_modified: bool = False) -> None:
     manifest = registry / MANIFEST_NAME
+    assert_no_symlink_components(registry, manifest)
     digests = {
         relative: hashlib.sha256((registry / relative).read_bytes()).hexdigest()
         for relative in paths
@@ -86,23 +108,43 @@ def _write_owned_paths(registry: Path, paths: set[str]) -> None:
                "installer": "CognitiveFrameWorks",
                "managed_paths": sorted(paths),
                "managed_digests": digests}
-    staged = registry / f".{MANIFEST_NAME}.tmp"
-    staged.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    os.replace(staged, manifest)
+    content = json.dumps(payload, indent=2) + "\n"
+    fd, staged = tempfile.mkstemp(dir=str(registry), prefix=f".{MANIFEST_NAME}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staged, manifest)
+    finally:
+        if os.path.exists(staged):
+            os.unlink(staged)
 
 
 def _copy_owned_file(source: Path, destination: Path, registry: Path,
-                     owned: set[str]) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-    owned.add(_relative(registry, destination))
+                     owned: set[str], previous_digests: dict[str, str] | None = None,
+                     *, allow_replace_modified: bool = False,
+                     journal: InstallJournal | None = None) -> None:
+    relative = _relative(registry, destination)
+    _safe_copy_owned_file(source, destination, registry, relative,
+                          previous_digests or {},
+                          allow_replace_modified=allow_replace_modified,
+                          journal=journal)
+    owned.add(relative)
 
 
 def _copy_owned_tree(source: Path, destination: Path, registry: Path,
-                     owned: set[str]) -> None:
+                     owned: set[str], previous_digests: dict[str, str] | None = None,
+                     *, allow_replace_modified: bool = False,
+                     journal: InstallJournal | None = None) -> None:
+    assert_no_symlink_components(registry, destination)
     for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise InstallSafetyError(f"source tree contains a symlink: {path}")
         if path.is_file():
-            _copy_owned_file(path, destination / path.relative_to(source), registry, owned)
+            _copy_owned_file(path, destination / path.relative_to(source), registry, owned,
+                             previous_digests, allow_replace_modified=allow_replace_modified,
+                             journal=journal)
 
 
 def _cleanup_owned_paths(registry: Path, previous: set[str], current: set[str],
@@ -169,7 +211,38 @@ def _registry_specs(targets: list[str] | None, custom: list[str]) -> list[tuple[
     return deduped
 
 
-def main() -> int:
+def _preflight_sources(statework_root: Path) -> None:
+    """Resolve every mandatory input before the first registry mutation."""
+    missing = []
+    for skill in CORE_SKILLS + ["cogframe"]:
+        for artifact in (ROOT / skill / "SKILL.md",):
+            if not artifact.is_file() or artifact.is_symlink():
+                missing.append(str(artifact))
+    registry_file = statework_root / "registry.yaml"
+    if statework_root.is_dir() and (not registry_file.is_file() or registry_file.is_symlink()):
+        missing.append(str(registry_file))
+    if registry_file.is_file():
+        statework_registry = yaml.safe_load(registry_file.read_text(encoding="utf-8")) or {}
+        for name in statework_registry.get("stateworks", []):
+            source_dir = statework_root / name
+            source_skill = source_dir / "SKILL.md"
+            if not source_skill.is_file():
+                source_skill = source_dir / "STATEWORK.md"
+            if not source_skill.is_file() or source_skill.is_symlink():
+                missing.append(str(source_skill))
+            if (source_dir / "manifest.yaml").exists() and (source_dir / "manifest.yaml").is_symlink():
+                missing.append(str(source_dir / "manifest.yaml"))
+    for artifact in (ROOT / "scripts" / "runtime.py", ROOT / "scripts" / "resolve-runtime.py",
+                     ROOT / "scripts" / "cognitive_runtime.py", ROOT / "contracts",
+                     ROOT / "shared"):
+        if not artifact.exists() or artifact.is_symlink():
+            missing.append(str(artifact))
+    if missing:
+        raise InstallSafetyError("mandatory install artifacts are missing or unsafe:\n" +
+                                 "\n".join(f"  - {item}" for item in missing))
+
+
+def _main_impl() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", nargs="+", default=None,
                         choices=list(REGISTRIES) + ["all"],
@@ -178,18 +251,18 @@ def main() -> int:
                         help="arbitrary host registry; repeatable, e.g. claude=$HOME/.claude/skills")
     parser.add_argument("--statework-root", type=Path, default=STATEWORK_ROOT,
                         help="source CognitiveStateWork tree to bundle")
-    parser.add_argument("--digital-psychology-root", type=Path,
-                        default=DIGITAL_PSYCHOLOGY_ROOT,
-                        help="source DigitalPsychology tree to bundle")
+    parser.add_argument("--replace-modified-managed-files", action="store_true",
+                        help="allow replacing managed files changed since the prior install")
     args = parser.parse_args()
     statework_root = args.statework_root.resolve()
-    digital_psychology_root = args.digital_psychology_root.resolve()
-    missing_sources = [str(path) for path in (statework_root, digital_psychology_root)
-                       if not path.is_dir()]
-    if missing_sources:
-        print("Cannot build a self-contained runtime; missing source tree(s):")
-        for path in missing_sources:
-            print(f"  - {path}")
+    statework_available = statework_root.is_dir() and (statework_root / "registry.yaml").is_file()
+    if statework_root.is_dir() and not statework_available:
+        print("Cannot build a combined runtime; StateWork source is incomplete")
+        return 1
+    try:
+        _preflight_sources(statework_root)
+    except InstallSafetyError as exc:
+        print(f"[FAIL] preflight: {exc}")
         return 1
     selected_targets = args.target if args.target is not None else ([] if args.registry else ["agents"])
     try:
@@ -203,15 +276,31 @@ def main() -> int:
             # A first install must work for a genuinely empty HOME.  Create
             # only the selected registry inside that HOME; never search for
             # or mutate an unrelated existing registry.
-            reg.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
+            assert_real_directory(reg, create=True)
+        except (OSError, InstallSafetyError) as exc:
             print(f"[SKIP] {target}: cannot create registry {reg}: {exc}")
             continue
         if not os.access(reg, os.W_OK):
             print(f"[SKIP] {target}: registry {reg} is not writable")
             continue
         print(f"Installing into {reg}")
+        manifest = reg / MANIFEST_NAME
+        if manifest.exists() and not manifest.is_symlink():
+            try:
+                owner = json.loads(manifest.read_text(encoding="utf-8")).get("installer")
+            except (OSError, json.JSONDecodeError, TypeError) as exc:
+                print(f"[FAIL] {target}: invalid ownership manifest: {exc}")
+                return 1
+            if owner not in (None, "CognitiveFrameWorks"):
+                print(f"[FAIL] {target}: registry is owned by {owner}; refusing collision")
+                return 1
         previous_owned, previous_digests = _load_owned_paths(reg)
+        journal = InstallJournal(reg)
+        _ACTIVE_JOURNALS.append(journal)
+        journal.capture(manifest)
+        journal.capture(reg / "cognitiveframeworks_runtime")
+        for relative_path in previous_owned:
+            journal.capture(reg / relative_path)
         owned: set[str] = set()
         installed = 0
         for skill in CORE_SKILLS:
@@ -220,30 +309,45 @@ def main() -> int:
                 print(f"  [SKIP] {skill}: no SKILL.md")
                 continue
             dst = reg / skill
-            dst.mkdir(parents=True, exist_ok=True)
-            _copy_owned_file(src / "SKILL.md", dst / "SKILL.md", reg, owned)
+            if dst.exists() and not any(item == skill or item.startswith(skill + "/")
+                                        for item in previous_owned):
+                raise InstallSafetyError(f"first-install collision at existing skill directory {dst}")
+            ensure_directory(reg, dst)
+            _copy_owned_file(src / "SKILL.md", dst / "SKILL.md", reg, owned,
+                             previous_digests,
+                             allow_replace_modified=args.replace_modified_managed_files,
+                             journal=journal)
             for sub in ("references", "examples", "adapters"):
                 s = src / sub
                 if s.is_dir():
-                    _copy_owned_tree(s, dst / sub, reg, owned)
+                    _copy_owned_tree(s, dst / sub, reg, owned, previous_digests,
+                                     allow_replace_modified=args.replace_modified_managed_files,
+                                     journal=journal)
             if (src / "runtime.md").exists():
-                _copy_owned_file(src / "runtime.md", dst / "runtime.md", reg, owned)
+                _copy_owned_file(src / "runtime.md", dst / "runtime.md", reg, owned,
+                                 previous_digests,
+                                 allow_replace_modified=args.replace_modified_managed_files,
+                                 journal=journal)
             installed += 1
             print(f"  [ok]   {skill}")
 
         cf_src = ROOT / "cogframe"
         if (cf_src / "SKILL.md").exists():
             dst = reg / "cogframe"
-            dst.mkdir(parents=True, exist_ok=True)
-            _copy_owned_file(cf_src / "SKILL.md", dst / "SKILL.md", reg, owned)
+            ensure_directory(reg, dst)
+            _copy_owned_file(cf_src / "SKILL.md", dst / "SKILL.md", reg, owned,
+                             previous_digests,
+                             allow_replace_modified=args.replace_modified_managed_files,
+                             journal=journal)
             print("  [ok]   cogframe")
             installed += 1
 
         # Bundle the StateWork wrappers in the same atomic installation.  A
         # runtime that resolves StateWorks but leaves their host-facing
         # capsules in a separate source checkout is not self-contained.
-        statework_registry = yaml.safe_load(
+        statework_registry = (yaml.safe_load(
             (statework_root / "registry.yaml").read_text(encoding="utf-8"))
+            if statework_available else {"stateworks": []})
         for statework_name in statework_registry.get("stateworks", []):
             source_dir = statework_root / statework_name
             source_skill = source_dir / "SKILL.md"
@@ -253,16 +357,30 @@ def main() -> int:
                 print(f"  [FAIL] {statework_name}: no SKILL.md or STATEWORK.md")
                 continue
             destination = reg / statework_name
-            destination.mkdir(parents=True, exist_ok=True)
-            _copy_owned_file(source_skill, destination / "SKILL.md", reg, owned)
+            if destination.exists() and not any(item == statework_name or
+                                                item.startswith(statework_name + "/")
+                                                for item in previous_owned):
+                raise InstallSafetyError(
+                    f"first-install collision at existing StateWork directory {destination}")
+            ensure_directory(reg, destination)
+            _copy_owned_file(source_skill, destination / "SKILL.md", reg, owned,
+                             previous_digests,
+                             allow_replace_modified=args.replace_modified_managed_files,
+                             journal=journal)
             if (source_dir / "manifest.yaml").exists():
-                _copy_owned_file(source_dir / "manifest.yaml", destination / "manifest.yaml", reg, owned)
-            capsule = source_dir / "runtime.md"
-            fingerprint_source = capsule if capsule.exists() else source_dir / "SKILL.md"
+                _copy_owned_file(source_dir / "manifest.yaml", destination / "manifest.yaml", reg, owned,
+                                 previous_digests,
+                                 allow_replace_modified=args.replace_modified_managed_files,
+                                 journal=journal)
+            fingerprint_source = source_skill
             fingerprint = destination / "fingerprint"
-            fingerprint.write_text(hashlib.sha256(fingerprint_source.read_bytes()).hexdigest() + "\n",
-                                   encoding="utf-8")
-            owned.add(_relative(reg, fingerprint))
+            relative = _relative(reg, fingerprint)
+            from install_primitives import write_owned_file
+            write_owned_file(hashlib.sha256(fingerprint_source.read_bytes()).hexdigest() + "\n",
+                             fingerprint, reg, relative, previous_digests,
+                             allow_replace_modified=args.replace_modified_managed_files,
+                             journal=journal)
+            owned.add(relative)
             print(f"  [ok]   {statework_name}")
             installed += 1
 
@@ -279,7 +397,7 @@ def main() -> int:
                         scripts_dst / "runtime_contract")
         shutil.copytree(ROOT / "contracts", runtime_dst / "contracts")
         shutil.copytree(ROOT / "shared", runtime_dst / "shared")
-        if statework_root.is_dir():
+        if statework_available:
             bundled_statework = runtime_dst / "statework"
             bundled_statework.mkdir(parents=True, exist_ok=True)
             shutil.copy2(statework_root / "registry.yaml", bundled_statework / "registry.yaml")
@@ -296,9 +414,6 @@ def main() -> int:
             ).get("stateworks", [])):
                 shutil.copytree(statework_root / statework_name,
                                 bundled_statework / statework_name)
-        if digital_psychology_root.is_dir():
-            shutil.copytree(digital_psychology_root / "schemas",
-                            runtime_dst / "digitalpsychology" / "schemas")
         (runtime_dst / "plugin.json").write_text(
             (ROOT / "plugin.json").read_text(encoding="utf-8"), encoding="utf-8")
         for skill in CORE_SKILLS:
@@ -326,17 +441,30 @@ def main() -> int:
                                 "publish_handoff", "consume_handoff", "advance_segment",
                                 "resolve_contradiction", "finish_task"],
                         "enforcement_owner": "CognitiveFrameWorks",
-                        "observation_consumer": "DigitalPsychology"}, indent=2) + "\n",
+                        "optional_observation_advice": "external-adapter"}, indent=2) + "\n",
             encoding="utf-8")
         _atomic_replace_directory(runtime_dst, runtime_target)
         _cleanup_owned_paths(reg, previous_owned, owned, previous_digests)
-        _write_owned_paths(reg, owned)
+        _write_owned_paths(reg, owned, previous_digests,
+                           allow_replace_modified=args.replace_modified_managed_files)
+        journal.commit()
+        _ACTIVE_JOURNALS.remove(journal)
         print(f"  [ok]   host interceptor registered at {runtime_target}")
         installed_any = True
         installed_any = installed_any or installed > 0
 
     print("\nRun scripts/doctor.py to verify routability.")
     return 0 if installed_any else 1
+
+
+def main() -> int:
+    try:
+        return _main_impl()
+    except BaseException:
+        for journal in reversed(_ACTIVE_JOURNALS):
+            journal.rollback()
+        _ACTIVE_JOURNALS.clear()
+        raise
 
 
 if __name__ == "__main__":

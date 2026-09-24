@@ -40,7 +40,7 @@ if str(ROOT / "scripts") not in sys.path:
 import importlib.util
 import importlib.util as _ilu
 from runtime_contract.actions import (
-    ActionDescriptor, AgentActionRequest, ConfirmationGrant, HostExecutionContext,
+    ActionDescriptor, ActionStrategy, AgentActionRequest, ConfirmationGrant, HostExecutionContext,
     ProtectedResourcePolicy, action_contract_hash, action_digest,
     default_action_registry, effective_action_registry,
 )
@@ -48,7 +48,7 @@ from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
                                         EvidenceAttestation, EvidenceLedger,
                                         EvidenceRecord, StateSegment,
                                         completion_claim_digest)
-from runtime_contract.telemetry import behavior_schema_contract
+from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema_contract
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
 from runtime_contract.stateworks import ExecutionSegment, SegmentStatus
 from runtime_contract.validators import evaluate_validator, validator_registry_hash
@@ -77,9 +77,17 @@ OPTIONAL_EVENT_FIELDS = {
     "uncertainty", "authority_source", "scope", "supersedes", "invalidates", "payload",
     "interaction_id", "parent_session_id", "delegator_agent_id",
     "delegate_agent_id", "delegation_id", "role",
+    "application_version", "provider_id", "model_id", "model_revision",
+    "model_capability_hash", "harness_id", "harness_version",
 }
 
 _BEHAVIOR_SCHEMA_VALIDATOR = None
+
+# Semantic transition authority.  These names are reserved from the generic
+# observation API and are only minted by typed host adapters.
+AUTHORITATIVE_EVIDENCE_KINDS = {
+    "repository_truth", "authority", "repository_evidence", "rollback", "rollback_plan",
+}
 
 
 class GateDecision(Enum):
@@ -206,6 +214,13 @@ class HostTelemetry:
     def __init__(self, task_id: str, store: Optional[Path] = None,
                  *, expected_schema_hash: Optional[str] = None,
                  expected_schema_version: Optional[str] = None,
+                 namespace_id: str = "default", application_id: str = "unknown-application",
+                 application_version: Optional[str] = None,
+                 application_instance_id: Optional[str] = None,
+                 provider_id: Optional[str] = None, model_id: Optional[str] = None,
+                 model_revision: Optional[str] = None,
+                 model_capability_hash: Optional[str] = None,
+                 harness_id: Optional[str] = None, harness_version: Optional[str] = None,
                  agent_id: str = "agent", agent_instance_id: Optional[str] = None,
                  session_id: str = "session-unknown", attempt_id: str = "attempt-1",
                  segment_id: str = "segment-0", interaction_id: Optional[str] = None,
@@ -214,6 +229,16 @@ class HostTelemetry:
                  delegate_agent_id: Optional[str] = None,
                  delegation_id: Optional[str] = None, role: Optional[str] = None) -> None:
         self.task_id = task_id
+        self.namespace_id = namespace_id
+        self.application_id = application_id
+        self.application_version = application_version
+        self.application_instance_id = application_instance_id or application_id
+        self.provider_id = provider_id
+        self.model_id = model_id
+        self.model_revision = model_revision
+        self.model_capability_hash = model_capability_hash
+        self.harness_id = harness_id
+        self.harness_version = harness_version
         self.agent_id = agent_id
         self.agent_instance_id = agent_instance_id or agent_id
         self.session_id = session_id
@@ -225,7 +250,7 @@ class HostTelemetry:
         self.delegate_agent_id = delegate_agent_id
         self.delegation_id = delegation_id
         self.role = role
-        schema_path = resolve_runtime.DP_ROOT / "schemas" / "behavior-event.schema.json"
+        schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
         schema, self.schema_hash, self.schema_version = behavior_schema_contract(schema_path)
         if expected_schema_hash and expected_schema_hash != self.schema_hash:
             raise ValueError(
@@ -277,6 +302,9 @@ class HostTelemetry:
             "schema_version": self.schema_version,
             "event_id": event_id or f"evt-{uuid.uuid4()}",
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "namespace_id": self.namespace_id,
+            "application_id": self.application_id,
+            "application_instance_id": self.application_instance_id,
             "task_id": self.task_id,
             "agent_id": agent_id or self.agent_id,
             "actor_id": actor_id,
@@ -288,6 +316,16 @@ class HostTelemetry:
             "category": category,
             "event_type": event_type,
         }
+        for key, value in {
+                "application_version": self.application_version,
+                "provider_id": self.provider_id,
+                "model_id": self.model_id,
+                "model_revision": self.model_revision,
+                "model_capability_hash": self.model_capability_hash,
+                "harness_id": self.harness_id,
+                "harness_version": self.harness_version}.items():
+            if value is not None:
+                event[key] = value
         if subject:
             event["subject"] = subject
         if parent_event:
@@ -332,12 +370,10 @@ class HostTelemetry:
         try:
             import jsonschema
             from jsonschema import Draft202012Validator, FormatChecker
-            schema_path = resolve_runtime.DP_ROOT / "schemas" / "behavior-event.schema.json"
-            if not schema_path.exists():
-                schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
+            schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
             if _BEHAVIOR_SCHEMA_VALIDATOR is None:
                 if not schema_path.exists():
-                    raise ValueError("DigitalPsychology behavior-event schema is unavailable")
+                    raise ValueError("behavior-event schema is unavailable")
                 schema = json.loads(schema_path.read_text(encoding="utf-8"))
                 _BEHAVIOR_SCHEMA_VALIDATOR = Draft202012Validator(
                     schema, format_checker=FormatChecker())
@@ -354,14 +390,13 @@ class HostTelemetry:
                        expected_schema_version: str) -> None:
         """Validate even custom sinks against the pinned canonical schema."""
         allowed = {"schema_version", "event_id", "category", "event_type",
+                   "namespace_id", "application_id", "application_instance_id",
                    "agent_id", "actor_id", "agent_instance_id", "session_id",
                    "attempt_id", "segment_id", "behavioral_subject", *OPTIONAL_EVENT_FIELDS}
         forbidden = set(event) - allowed
         if forbidden:
             raise ValueError(f"telemetry envelope has forbidden fields: {sorted(forbidden)}")
-        schema_path = resolve_runtime.DP_ROOT / "schemas" / "behavior-event.schema.json"
-        if not schema_path.exists():
-            schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
+        schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
         _schema, actual_hash, actual_version = behavior_schema_contract(schema_path)
         if actual_hash != expected_schema_hash or actual_version != expected_schema_version:
             raise ValueError("pinned behavior-event schema changed during the task")
@@ -371,6 +406,9 @@ class HostTelemetry:
             "schema_version": actual_version,
             "event_id": event.get("event_id") or f"evt-{uuid.uuid4()}",
             "timestamp": event.get("timestamp") or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "namespace_id": event.get("namespace_id", "default"),
+            "application_id": event.get("application_id", "unknown-application"),
+            "application_instance_id": event.get("application_instance_id", "unknown-application"),
             "task_id": task_id,
             "agent_id": event.get("agent_id", "runtime"),
             "actor_id": event.get("actor_id", "runtime"),
@@ -390,8 +428,9 @@ class HostTelemetry:
     def emit(self, event: Dict[str, Any]) -> None:
         if event.get("actor_id") in {"operator", "repository_owner", "service_owner"}:
             raise PermissionError("privileged actor identity is host-channel owned")
-        allowed = {"schema_version", "event_id", "category", "event_type", "agent_id",
-                   "actor_id", "agent_instance_id", "session_id", "attempt_id",
+        allowed = {"schema_version", "event_id", "category", "event_type",
+                   "namespace_id", "application_id", "application_instance_id",
+                   "agent_id", "actor_id", "agent_instance_id", "session_id", "attempt_id",
                    "segment_id", "behavioral_subject", *OPTIONAL_EVENT_FIELDS}
         if set(event) - allowed:
             raise ValueError(f"telemetry envelope has forbidden fields: {sorted(set(event)-allowed)}")
@@ -500,6 +539,35 @@ class HostIngress:
         return self._session._record_operator_observation(
             self._capability, subject_ref, invalidates)
 
+    def record_authorization(self, authorization: Mapping[str, Any],
+                             subject_ref: Optional[str] = None) -> str:
+        return self._session._record_authorization(
+            self._capability, authorization, subject_ref=subject_ref)
+
+    def record_repository_truth(self, packet: Mapping[str, Any],
+                                observation_context: Mapping[str, Any],
+                                subject_ref: Optional[str] = None) -> str:
+        return self._session._record_repository_truth(
+            self._capability, packet, observation_context, subject_ref=subject_ref)
+
+    def record_repository_evidence(self, packet: Mapping[str, Any],
+                                   validation: Mapping[str, Any],
+                                   subject_ref: Optional[str] = None) -> str:
+        return self._session._record_repository_evidence(
+            self._capability, packet, validation, subject_ref=subject_ref)
+
+    def record_rollback_plan(self, plan: Mapping[str, Any],
+                             subject_ref: Optional[str] = None) -> str:
+        return self._session._record_typed_authority(
+            self._capability, "rollback_plan", "host:rollback-plan",
+            "rollback-plan-v1", "rollback-plan-v1", plan, subject_ref)
+
+    def record_rollback(self, result: Mapping[str, Any],
+                        subject_ref: Optional[str] = None) -> str:
+        return self._session._record_typed_authority(
+            self._capability, "rollback", "host:rollback", "rollback-v1",
+            "rollback-record-v1", result, subject_ref)
+
     def record_decision(self, event_type: str, subject_ref: Optional[str],
                         result_class: str) -> str:
         return self._session._record_decision(
@@ -559,6 +627,7 @@ class RuntimeSession:
     lifecycle: Optional[LifecycleController] = None
     _packet_store: Any = None
     _emit: Optional[TelemetrySink] = None
+    _telemetry_exporter: Optional[DurableTelemetryExporter] = None
     host_context: HostExecutionContext = field(default_factory=HostExecutionContext)
     host_invocations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _consumed_grant_ids: set[str] = field(default_factory=set, repr=False)
@@ -601,7 +670,7 @@ class RuntimeSession:
                 "authority_revision", "session_id", "agent_instance_id", "attempt_id",
                 "interaction_id", "parent_session_id", "delegator_agent_id",
                 "delegate_agent_id", "delegation_id", "role",
-                "journal_path", "journal_db_path"}:
+                "journal_path", "journal_db_path", "_telemetry_exporter"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -616,6 +685,36 @@ class RuntimeSession:
     @property
     def completion_permit(self) -> Optional[CompletionPermit]:
         return self._completion_permit
+
+    def _action_strategy(self) -> Dict[str, Any]:
+        """Return a bounded, advisory action plan inside host-owned policy.
+
+        A learned preference may order already-authorized bindings, but this
+        object grants no permission; ``before_action`` remains authoritative.
+        """
+        preferences = []
+        for adjustment in self.bundle.guard_pack.get("routing_adjustments", ()):
+            if (adjustment.get("route_type") == "tool_policy"
+                    and adjustment.get("disposition") == "prefer"):
+                route = str(adjustment.get("route") or "")
+                if route in self.action_registry:
+                    preferences.append(route)
+        eligible = [route for route in self.action_registry if route not in preferences]
+        return ActionStrategy(
+            eligible_actions=tuple(eligible + preferences),
+            priorities={route: index for index, route in enumerate(preferences)},
+            reason="learned preference within host-authorized action set",
+            policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
+        ).to_dict()
+
+    def _action_strategy_hint(self) -> str:
+        strategy = self._action_strategy()
+        if not strategy["eligible_actions"]:
+            return ""
+        ordered = ", ".join(strategy["eligible_actions"][:12])
+        return ("\n===== ACTION STRATEGY =====\n"
+                f"Authorized candidates, in advisory priority order: {ordered}. "
+                "This ordering does not grant permission; every action still passes the host gate.")
 
     def before_model_call(self, *, tool_capable: bool = False,
                           action_hint: Optional[Mapping[str, Any]] = None) -> str:
@@ -694,6 +793,11 @@ class RuntimeSession:
     def _emit_runtime(self, event: Dict[str, Any]) -> None:
         event = dict(event)
         event.setdefault("agent_id", self.bundle.pinned.get("agent_id", "agent"))
+        for key in ("namespace_id", "application_id", "application_instance_id",
+                    "application_version", "provider_id", "model_id", "model_revision",
+                    "model_capability_hash", "harness_id", "harness_version"):
+            if key in self.bundle.pinned and self.bundle.pinned.get(key) is not None:
+                event.setdefault(key, self.bundle.pinned[key])
         event.setdefault("agent_instance_id", self.agent_instance_id)
         event.setdefault("session_id", self.session_id)
         event.setdefault("attempt_id", self.attempt_id)
@@ -712,6 +816,8 @@ class RuntimeSession:
             expected_schema_version=self.bundle.policy.behavior_event_schema_version)
         if self._emit:
             self._emit(event)
+        if self._telemetry_exporter is not None:
+            self._telemetry_exporter.flush()
 
     def _request(self, action: Mapping[str, Any] | AgentActionRequest) -> AgentActionRequest:
         return action if isinstance(action, AgentActionRequest) else AgentActionRequest.from_mapping(action)
@@ -788,10 +894,15 @@ class RuntimeSession:
         request = self._request(action)
         descriptor = self._descriptor(request)
         decision = self._decision(request)
+        strategy = self._action_strategy()
         self._emit_runtime({"category": "action", "event_type": "action_requested",
                    "subject": request.subject_ref,
                    "payload": {"summary": decision.value,
-                               "tool_type": descriptor.tool_type}})
+                               "tool_type": descriptor.tool_type,
+                               "route": request.binding_id,
+                               "route_type": "tool_policy",
+                               "advice_priority": strategy["priorities"].get(request.binding_id),
+                               "policy_hash": strategy["policy_hash"]}})
         for hook in self.tool_hooks:
             hook_decision = hook({"tool_binding_id": request.binding_id,
                                   "arguments": dict(request.arguments),
@@ -930,7 +1041,9 @@ class RuntimeSession:
     def _record_attestation(self, *, evidence_type: str, subject_ref: Optional[str],
                             issuer: str, event: Dict[str, Any],
                             invocation_id: Optional[str], content: Any,
-                            claim_digest: Optional[str] = None) -> str:
+                            claim_digest: Optional[str] = None,
+                            schema_id: Optional[str] = None,
+                            validator_id: Optional[str] = None) -> str:
         event = dict(event)
         event_id = event.setdefault("event_id", f"evt-{uuid.uuid4()}")
         self._host_event(event)
@@ -945,7 +1058,7 @@ class RuntimeSession:
             content_digest=hashlib.sha256(
                 json.dumps(content, sort_keys=True, separators=(",", ":"), default=str)
                 .encode("utf-8")).hexdigest(),
-            claim_digest=claim_digest)
+            claim_digest=claim_digest, schema=schema_id, validator=validator_id)
         evidence_id = self.ledger.record_attestation(attestation,
                                                      writer_token=self._ledger_token)
         self._journal("evidence_attested", evidence_id=evidence_id,
@@ -956,8 +1069,89 @@ class RuntimeSession:
                       observed_at=attestation.observed_at,
                       content_digest=attestation.content_digest,
                       claim_digest=attestation.claim_digest,
+                      schema=attestation.schema,
+                      validator=attestation.validator,
                       invalidated=attestation.invalidated)
         return evidence_id
+
+    def _record_typed_authority(self, capability: _HostCapability, evidence_type: str,
+                                issuer: str, validator: str, schema_id: str,
+                                content: Mapping[str, Any], subject_ref: Optional[str]) -> str:
+        self._require_host(capability)
+        if not isinstance(content, Mapping) or not content:
+            raise TypeError(f"{evidence_type} requires a non-empty typed mapping")
+        required = {
+            "rollback_plan": {"plan_id", "intended_state", "steps"},
+            "rollback": {"plan_id", "result", "restored_state"},
+        }.get(evidence_type, set())
+        if required and not required.issubset(content):
+            raise ValueError(f"{evidence_type} is missing typed fields: {sorted(required - set(content))}")
+        return self._record_attestation(
+            evidence_type=evidence_type, subject_ref=subject_ref, issuer=issuer,
+            event={"category": "validation", "event_type": f"{evidence_type}_attested",
+                   "subject": subject_ref,
+                   "payload": {"summary": evidence_type, "result_class": "validated"}},
+            invocation_id=None, content=dict(content), schema_id=schema_id,
+            validator_id=validator)
+
+    def _record_authorization(self, capability: _HostCapability,
+                              authorization: Mapping[str, Any], *,
+                              subject_ref: Optional[str] = None) -> str:
+        self._require_host(capability)
+        required = {"authorization_id", "principal", "scope", "decision", "issued_at"}
+        if not isinstance(authorization, Mapping) or not required.issubset(authorization):
+            raise ValueError("authority evidence requires an explicit host authorization record")
+        if authorization.get("decision") not in {"allow", "authorized"}:
+            raise PermissionError("authority record is not an authorization")
+        return self._record_typed_authority(
+            capability, "authority", "host:authorization", "host-authorization-v1",
+            "authority-record-v1", authorization, subject_ref)
+
+    def _record_repository_truth(self, capability: _HostCapability,
+                                 packet: Mapping[str, Any],
+                                 observation_context: Mapping[str, Any], *,
+                                 subject_ref: Optional[str] = None) -> str:
+        self._require_host(capability)
+        if not isinstance(observation_context, Mapping) or not observation_context:
+            raise ValueError("repository truth requires trusted freshness context")
+        control = _statework_transition_engines(
+            Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
+        store = control.PacketStore(
+            packet_registry_path=Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
+            "schemas" / "packet-registry.yaml")
+        if packet.get("packet_type") != "repository_truth_packet":
+            raise ValueError("repository truth adapter accepts only repository truth packets")
+        if not store.validate_current(dict(packet), observation_context=observation_context):
+            raise ValueError("repository truth packet failed trusted freshness validation")
+        subject_ref = subject_ref or packet.get("subject_ref")
+        return self._record_attestation(
+            evidence_type="repository_truth", subject_ref=subject_ref,
+            issuer="validator:repository-truth-v1",
+            event={"category": "validation", "event_type": "repository_truth_validated",
+                   "subject": subject_ref,
+                   "payload": {"summary": "trusted repository truth", "result_class": "validated"}},
+            invocation_id=None, content=dict(packet),
+            schema_id="repository-truth-packet.schema.json",
+            validator_id="repository-truth-v1")
+
+    def _record_repository_evidence(self, capability: _HostCapability,
+                                    packet: Mapping[str, Any],
+                                    validation: Mapping[str, Any], *,
+                                    subject_ref: Optional[str] = None) -> str:
+        self._require_host(capability)
+        if not isinstance(validation, Mapping) or validation.get("valid") is not True:
+            raise ValueError("repository evidence requires a passing post-mutation validation result")
+        if not isinstance(packet, Mapping) or packet.get("packet_type") != "repository_evidence_packet":
+            raise ValueError("repository evidence adapter accepts only repository evidence packets")
+        return self._record_attestation(
+            evidence_type="repository_evidence", subject_ref=subject_ref or packet.get("subject_ref"),
+            issuer="validator:repository-evidence-v1",
+            event={"category": "validation", "event_type": "repository_evidence_validated",
+                   "subject": subject_ref or packet.get("subject_ref"),
+                   "payload": {"summary": "post-mutation repository validation", "result_class": "validated"}},
+            invocation_id=None, content={"packet": dict(packet), "validation": dict(validation)},
+            schema_id="repository-evidence-packet.schema.json",
+            validator_id="repository-evidence-v1")
 
     def record_evidence(self, *_: Any, **__: Any) -> str:
         raise PermissionError("agents cannot mint evidence attestations")
@@ -983,13 +1177,25 @@ class RuntimeSession:
             "candidate_profile_hash": experiment.get("candidate_profile_hash"),
             "candidate_adjustment_applied": experiment.get("candidate_adjustment_applied", False),
             "comparison_context_hash": experiment.get("comparison_context_hash"),
+            "experiment_plan_hash": experiment.get("plan_hash"),
+            "routing_cohort": experiment.get("routing_cohort"),
+            "policy_identity": experiment.get("cohort_policy_identity"),
+            "evaluator_version": experiment.get("target_evaluator_version"),
+            "evaluator_hash": experiment.get("target_evaluator_hash"),
         }
+        route_payload = {"summary": route, "route": route, "route_type": route_type,
+                         "route_decision_id": decision_id,
+                         "policy_hash": self.bundle.pinned.get("policy_hash"),
+                         "reason": selection_reason}
+        route_payload.update({key: value for key, value in {
+            "experiment_plan_hash": experiment.get("plan_hash"),
+            "routing_cohort": experiment.get("routing_cohort"),
+            "policy_identity": experiment.get("cohort_policy_identity"),
+        }.items() if value is not None})
         self._host_event({
             "event_id": decision_id, "category": "decision", "event_type": event_type,
             "subject": self.bundle.policy.subject_ref,
-            "payload": {"summary": route, "route": route, "route_type": route_type,
-                        "route_decision_id": decision_id, "policy_hash": self.bundle.pinned.get("policy_hash"),
-                        "reason": selection_reason}})
+            "payload": route_payload})
         return decision_id
 
     def _evaluate_route_outcome(self, capability: _HostCapability, *,
@@ -999,7 +1205,9 @@ class RuntimeSession:
         decision = self.route_decisions.get(route_decision_id)
         if decision is None:
             raise ValueError("route outcome requires a current host route decision")
-        if evaluator_id != "route-success-v1":
+        experiment = self.bundle.guard_pack.get("routing_experiment") or {}
+        expected_evaluator = experiment.get("target_evaluator") or "route-success-v1"
+        if evaluator_id != expected_evaluator:
             raise ValueError(f"unknown route evaluator {evaluator_id!r}")
         resolved = self.ledger.resolve(list(evidence_refs), subject_ref=self.bundle.policy.subject_ref)
         outcome = "bad"
@@ -1013,18 +1221,28 @@ class RuntimeSession:
                 outcome = "good"
                 break
         event_id = f"evt-{uuid.uuid4()}"
+        outcome_payload = {
+            "summary": decision["route"], "route": decision["route"],
+            "route_type": decision["route_type"], "route_decision_id": route_decision_id,
+            "evaluator_id": evaluator_id, "outcome_source": f"evaluator:{evaluator_id}",
+            "outcome": outcome, "policy_hash": decision["policy_hash"],
+            "candidate_adjustment_applied": decision.get("candidate_adjustment_applied", False),
+            "reason": "registered_host_evaluator",
+        }
+        outcome_payload.update({key: value for key, value in {
+            "evaluator_version": decision.get("evaluator_version"),
+            "evaluator_hash": decision.get("evaluator_hash"),
+            "candidate_profile_hash": decision.get("candidate_profile_hash"),
+            "comparison_context_hash": decision.get("comparison_context_hash"),
+            "experiment_plan_hash": decision.get("experiment_plan_hash"),
+            "routing_cohort": decision.get("routing_cohort"),
+            "policy_identity": decision.get("policy_identity"),
+        }.items() if value is not None})
         self._host_event({
             "event_id": event_id, "category": "decision", "event_type": "route_outcome",
             "subject": self.bundle.policy.subject_ref,
             "evidence_refs": list(evidence_refs),
-            "payload": {"summary": decision["route"], "route": decision["route"],
-                        "route_type": decision["route_type"], "route_decision_id": route_decision_id,
-                        "evaluator_id": evaluator_id, "outcome_source": f"evaluator:{evaluator_id}",
-                        "outcome": outcome, "policy_hash": decision["policy_hash"],
-                        "candidate_profile_hash": decision.get("candidate_profile_hash"),
-                        "candidate_adjustment_applied": decision.get("candidate_adjustment_applied", False),
-                        "comparison_context_hash": decision.get("comparison_context_hash"),
-                        "reason": "registered_host_evaluator"}})
+            "payload": outcome_payload})
         return event_id
 
     def _record_route_outcome(self, capability: _HostCapability, *,
@@ -1046,6 +1264,9 @@ class RuntimeSession:
             raise ValueError("reserved evidence types require their dedicated host adapter")
         if observation_type in {"fresh_evidence", "fresh_reinspection", "contradiction"}:
             raise ValueError("fresh contradiction evidence requires a host tool/validator result")
+        if observation_type in AUTHORITATIVE_EVIDENCE_KINDS:
+            raise ValueError(
+                f"{observation_type} is registered transition authority; use its typed host adapter")
         return self._record_attestation(
             evidence_type=observation_type[:64],
             subject_ref=subject_ref,
@@ -1135,7 +1356,8 @@ class RuntimeSession:
             content={"validator_id": validator_id, "invocation_id": invocation_id,
                      "tool_evidence_id": invocation["evidence_id"],
                      "result": typed_result},
-            claim_digest=claim_digest)
+            claim_digest=claim_digest, schema_id=f"validator-result:{evidence_type}",
+            validator_id=validator_id)
 
     def record_state_transition(self, statework_id: str, subject_ref: str,
                                 output_state: str, *,
@@ -1175,7 +1397,9 @@ class RuntimeSession:
         contract = statework.get("transitions_contract") or {}
         if not contract:
             raise ValueError(f"StateWork {statework_id!r} has no pinned transition contract")
-        engine = control.TransitionEngine(contract)
+        evidence_registry = control.load_evidence_kind_registry()
+        engine = control.TransitionEngine(
+            contract, evidence_registry=evidence_registry, require_registered=False)
         state_key = (statework_id, subject_ref)
         current = self.statework_states.get(state_key, contract["initial_state"])
         if input_state is not None and input_state != current:
@@ -1208,7 +1432,7 @@ class RuntimeSession:
                        "subject": subject_ref,
                        "payload": {"summary": str(exc)[:512], "result_class": "blocked"}})
             return GateDecision.BLOCK
-        decision = engine.transition(origin, output_state, trigger=trigger,
+        decision = engine.transition(subject_ref, origin, output_state, trigger=trigger,
                                      evidence_refs=verified_evidence)
         self._emit_runtime({"category": "state_transition", "event_type": "transition_attempted",
                    "subject": subject_ref, "input_state": origin, "output_state": output_state,
@@ -1273,6 +1497,12 @@ class RuntimeSession:
                 packet_registry_path=Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
                 "schemas" / "packet-registry.yaml",
                 storage_path=packet_root / f"{safe_task}.json")
+        packet_meta = self._packet_store.registry.get(packet.get("packet_type"), {})
+        freshness_validator = packet_meta.get("freshness_validator")
+        if freshness_validator and observation_context is None:
+            raise ValueError("freshness validation context is mandatory for this handoff packet")
+        if not freshness_validator and packet_meta.get("freshness") != "immutable":
+            raise ValueError("packet registry must explicitly declare freshness semantics")
         if observation_context is not None and not self._packet_store.validate_current(
                 packet, observation_context=observation_context):
             raise ValueError("handoff packet is not current under the host observation")
@@ -1628,6 +1858,7 @@ class RuntimeSession:
 
 def start(bundle: resolve_runtime.RuntimeBundle, *,
           telemetry_sink: Optional[TelemetrySink] = None,
+          telemetry_exporter: Optional[DurableTelemetryExporter] = None,
           telemetry_disabled: bool = False,
           tool_hooks: Optional[List[Callable[[Dict[str, Any]], Optional[GateDecision]]]] = None,
           final_hooks: Optional[List[Callable[[Dict[str, Any]], None]]] = None,
@@ -1754,6 +1985,16 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
             bundle.task_id, store,
             expected_schema_hash=bundle.policy.behavior_event_schema_hash,
             expected_schema_version=bundle.policy.behavior_event_schema_version,
+            namespace_id=bundle.pinned.get("namespace_id", "default"),
+            application_id=bundle.pinned.get("application_id", "unknown-application"),
+            application_version=bundle.pinned.get("application_version"),
+            application_instance_id=bundle.pinned.get("application_instance_id"),
+            provider_id=bundle.pinned.get("provider_id"),
+            model_id=bundle.pinned.get("model_id", bundle.pinned.get("model")),
+            model_revision=bundle.pinned.get("model_revision"),
+            model_capability_hash=bundle.pinned.get("model_capability_hash"),
+            harness_id=bundle.pinned.get("harness"),
+            harness_version=bundle.pinned.get("harness_version"),
             agent_id=bundle.pinned.get("agent_id", "agent"),
             agent_instance_id=session.agent_instance_id,
             session_id=session.session_id, attempt_id=session.attempt_id,
@@ -1817,6 +2058,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                     session._host_capability, route=str(route), route_type=str(route_type),
                     selection_reason="behavioral_profile_preference",
                     event_type="route_preferred")
+    if telemetry_exporter is not None:
+        object.__setattr__(session, "_telemetry_exporter", telemetry_exporter)
+        telemetry_exporter.flush()
     if resume:
         _restore_session(session)
     resolve_runtime.write_snapshot(bundle)
@@ -2037,6 +2281,9 @@ def context_for(session: RuntimeSession) -> str:
         active_handoff = handoff[min(session.current_segment_index, len(handoff) - 1)]
         parts.append("\n===== ACTIVE HANDOFF =====\n" +
                      f"- {active_handoff['producer']} -> {active_handoff['packet']}")
+    action_hint = session._action_strategy_hint()
+    if action_hint:
+        parts.append(action_hint)
     return "\n".join(parts)
 
 

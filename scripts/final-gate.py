@@ -82,6 +82,7 @@ def main() -> int:
             cfw / "contracts" / "enforcement-capabilities.json"),
         "transition-contract.schema.json": file_hash(
             cfw / "contracts" / "transition-contract.schema.json"),
+        "release-gates.json": file_hash(cfw / "release-gates.json"),
     }
 
     # Both temporary directories start empty.  The installer is responsible
@@ -103,21 +104,16 @@ def main() -> int:
         release_registry = str(home_path / ".release-host" / "skills")
         run(cfw, [sys.executable, str(cfw / "scripts" / "install-framework.py"),
                   "--registry", f"release-host={release_registry}",
-                  "--statework-root", str(args.statework_root),
-                  "--digital-psychology-root", str(args.digital_psychology_root)], env)
+                  "--statework-root", str(args.statework_root)], env)
         run(cfw, [sys.executable, str(cfw / "scripts" / "doctor.py"),
                   "--registry", f"release-host={release_registry}"], env)
         if not Path(release_registry).is_dir():
             raise RuntimeError("clean install did not create the selected registry")
 
-        commands = [
-            [sys.executable, str(cfw / "scripts" / "verify-contracts.py")],
-            [sys.executable, str(args.statework_root / "scripts" / "validate-stateworks.py")],
-            [sys.executable, str(cfw / "scripts" / "validate-framework.py")],
-            [sys.executable, str(cfw / "scripts" / "acceptance-public-beta.py")],
-        ]
-        for command in commands:
-            run(cfw, command, env)
+        manifest_path = cfw / "release-gates.json"
+        if not manifest_path.is_file():
+            raise RuntimeError("authoritative release-gates.json is missing")
+        run(cfw, [sys.executable, str(cfw / "scripts" / "acceptance-public-beta.py")], env)
     for root in roots:
         if git(root, "status", "--porcelain"):
             raise RuntimeError(f"gate mutated the supposedly clean checkout: {root}")

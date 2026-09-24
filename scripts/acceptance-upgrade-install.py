@@ -11,7 +11,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATEWORK = ROOT.parent / "CognitiveStateWork"
-DP = ROOT.parent / "DigitalPsychology"
 
 
 def run(command: list[str], env: dict[str, str]) -> None:
@@ -32,8 +31,7 @@ def main() -> int:
         custom_registry = str(home_path / ".example-host" / "skills")
         installer = [sys.executable, str(ROOT / "scripts" / "install-framework.py"),
                      "--registry", f"example-host={custom_registry}",
-                     "--statework-root", str(STATEWORK),
-                     "--digital-psychology-root", str(DP)]
+                     "--statework-root", str(STATEWORK)]
         doctor = [sys.executable, str(ROOT / "scripts" / "doctor.py"),
                   "--registry", f"example-host={custom_registry}"]
         run(installer, env)
@@ -59,7 +57,7 @@ def main() -> int:
         for path, contents in sentinels.items():
             if not path.exists() or path.read_text(encoding="utf-8") != contents:
                 raise RuntimeError(f"upgrade overwrote unowned file {path}")
-        manifest = registry / ".cognitiveframeworks-managed.json"
+        manifest = registry / ".cognitiveframeworks-cfw-managed.json"
         if not manifest.exists():
             raise RuntimeError("installer did not publish ownership manifest")
         managed = __import__("json").loads(manifest.read_text(encoding="utf-8"))["managed_paths"]

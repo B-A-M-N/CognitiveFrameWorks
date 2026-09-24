@@ -15,4 +15,4 @@ packages = ["runtime_contract"]
 package-dir = {runtime_contract = "scripts/runtime_contract"}
 
 [tool.setuptools.package-data]
-runtime_contract = ["*.py"]
+runtime_contract = ["*.py", "contracts/*.json"]

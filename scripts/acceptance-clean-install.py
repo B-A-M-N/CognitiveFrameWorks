@@ -11,7 +11,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STATEWORK = ROOT.parent / "CognitiveStateWork"
-DP = ROOT.parent / "DigitalPsychology"
 
 
 def run(command: list[str], *, env: dict[str, str]) -> None:
@@ -29,8 +28,7 @@ def main() -> int:
         custom_registry = str(Path(home) / ".example-host" / "skills")
         run([sys.executable, str(ROOT / "scripts" / "install-framework.py"),
              "--registry", f"example-host={custom_registry}",
-             "--statework-root", str(STATEWORK),
-             "--digital-psychology-root", str(DP)], env=env)
+             "--statework-root", str(STATEWORK)], env=env)
         run([sys.executable, str(ROOT / "scripts" / "doctor.py"),
              "--registry", f"example-host={custom_registry}"], env=env)
     print("INSTALLATION_GATE=PASS")

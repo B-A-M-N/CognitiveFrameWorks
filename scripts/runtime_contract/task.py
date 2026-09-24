@@ -9,6 +9,10 @@ from typing import Any, Mapping, Optional, Tuple
 @dataclass(frozen=True)
 class TaskRequest:
     task_id: str
+    # Trusted host identity.  These fields are deliberately part of the
+    # request rather than model-controlled observation context: learned
+    # routing must never cross application or producer boundaries by accident.
+    application_id: str
     subject_ref: Optional[str] = None
     phase: Optional[str] = None
     shape: str = "implement"
@@ -16,9 +20,17 @@ class TaskRequest:
     operation: Optional[str] = None
     trigger: Optional[str] = None
     model: Optional[str] = None
+    model_id: Optional[str] = None
+    provider_id: Optional[str] = None
+    model_revision: Optional[str] = None
+    model_capability_hash: Optional[str] = None
     harness: Optional[str] = None
+    harness_version: Optional[str] = None
     toolset: Optional[str] = None
     observation_context: Mapping[str, Any] = field(default_factory=dict)
+    application_version: Optional[str] = None
+    application_instance_id: Optional[str] = None
+    namespace_id: str = "default"
     agent_id: str = "agent"
     agent_instance_id: Optional[str] = None
     attempt_id: str = "attempt-1"
@@ -36,6 +48,17 @@ class TaskRequest:
     action_registry: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
+        for name in ("task_id", "application_id", "namespace_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or len(value) > 256:
+                raise ValueError(f"{name} must be a non-empty bounded identifier")
+        if self.model is not None and self.model_id is not None and self.model != self.model_id:
+            raise ValueError("model and model_id must agree when both are provided")
+        canonical_model = self.model_id or self.model
+        object.__setattr__(self, "model_id", canonical_model)
+        object.__setattr__(self, "model", canonical_model)
+        object.__setattr__(self, "application_instance_id",
+                           self.application_instance_id or self.application_id)
         if not self.agent_id or len(self.agent_id) > 256:
             raise ValueError("agent_id must be a non-empty bounded identifier")
         object.__setattr__(self, "agent_instance_id",

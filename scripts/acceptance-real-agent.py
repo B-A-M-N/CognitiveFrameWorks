@@ -33,6 +33,16 @@ DP_ROOT = ROOT.parent / "DigitalPsychology"
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(DP_ROOT))
 
+QUALIFICATION_APPLICATION = "cfw-real-agent"
+QUALIFICATION_APPLICATION_VERSION = "qualification-v1"
+QUALIFICATION_APPLICATION_INSTANCE = "real-agent-qualification"
+QUALIFICATION_PROVIDER = "qualification-provider"
+QUALIFICATION_MODEL = "external-model"
+QUALIFICATION_MODEL_REVISION = "external-model-revision"
+QUALIFICATION_MODEL_CAPABILITY = "external-model-capability"
+QUALIFICATION_HARNESS = "external-agent-harness"
+QUALIFICATION_HARNESS_VERSION = "qualification-harness-v1"
+
 
 class PersistentAgent:
     """One agent process owns one complete multi-turn trajectory."""
@@ -122,8 +132,14 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
     api = api_module.CognitiveRuntime(
         routing_profile_path=str(profile_path) if profile_path else None)
     request = resolve.TaskRequest(
-        task_id=task_id, subject_ref=f"subject:{task_id}", shape="performance",
-        model="external-model", harness="external-agent-harness",
+        task_id=task_id, application_id=QUALIFICATION_APPLICATION,
+        application_version=QUALIFICATION_APPLICATION_VERSION,
+        application_instance_id=QUALIFICATION_APPLICATION_INSTANCE,
+        subject_ref=f"subject:{task_id}", shape="performance",
+        provider_id=QUALIFICATION_PROVIDER, model=QUALIFICATION_MODEL,
+        model_revision=QUALIFICATION_MODEL_REVISION,
+        model_capability_hash=QUALIFICATION_MODEL_CAPABILITY,
+        harness=QUALIFICATION_HARNESS, harness_version=QUALIFICATION_HARNESS_VERSION,
         toolset="fixture", agent_id="external-agent",
         agent_instance_id=agent_instance_id,
         routing_experiment_plan=experiment_plan or {})

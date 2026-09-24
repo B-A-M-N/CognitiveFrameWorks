@@ -47,12 +47,8 @@ if not LOCAL_CONTRACT_ROOT.exists():
     LOCAL_CONTRACT_ROOT = Path(__file__).resolve().parent / "contracts"
 _bundled_cow = ROOT / "statework"
 _sibling_cow = ROOT.parent / "CognitiveStateWork"
-_bundled_dp = ROOT / "digitalpsychology"
-_sibling_dp = ROOT.parent / "DigitalPsychology"
 COW_ROOT = Path(os.environ.get("COGNITIVE_STATEWORK_ROOT",
                                _bundled_cow if _bundled_cow.exists() else _sibling_cow))
-DP_ROOT = Path(os.environ.get("COGNITIVE_DIGITALPSYCHOLOGY_ROOT",
-                              _bundled_dp if _bundled_dp.exists() else _sibling_dp))
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -63,6 +59,7 @@ from runtime_contract.policy import freeze_contracts as _freeze_contracts
 from runtime_contract.policy import stable_hash as _stable_contract_hash
 from runtime_contract.stateworks import current_packet as _current_packet
 from runtime_contract.task import TaskRequest
+from runtime_contract.advisor import BehavioralAdvisor, bounded_adjustments
 from runtime_contract.manifests import build_task_manifest
 from runtime_contract.handlers import (enforcement_for_guard, handler_registry_hash,
                                        validate_enforcement)
@@ -72,7 +69,8 @@ from runtime_contract.actions import (action_contract_hash, default_action_regis
 from runtime_contract.compatibility import validate_compatibility
 from runtime_contract.routing import (
     applicable_adjustments, assign_experiment_cohort, comparison_context_hash,
-    load_routing_profiles, routing_plan_hash, validate_adaptive_adjustment,
+    load_routing_profiles, validate_adaptive_adjustment,
+    validate_experiment_plan,
 )
 
 
@@ -155,6 +153,8 @@ def _tree_runtime_hash(paths: Iterable[Path], *, relative_to: Optional[Path] = N
 
 def cow_runtime_hash(cow_root: Path = COW_ROOT) -> str:
     """Hash the executable StateWork engine and its policy schemas."""
+    if not (cow_root / "registry.yaml").is_file():
+        return hashlib.sha256(b"statework-capability:absent\0" + str(cow_root).encode()).hexdigest()
     paths = [cow_root / "scripts" / "control_plane.py"]
     paths.extend((cow_root / "schemas").glob("*.json"))
     paths.extend((cow_root / "schemas").glob("*.yaml"))
@@ -185,7 +185,8 @@ def runtime_behavior_hash(cow_root: Path = COW_ROOT) -> str:
              ROOT / "SISPIS" / "runtime" / "calibrate.py",
              cow_root / "scripts" / "validate-repository-truth.py"]
     paths.extend(sorted((ROOT / "scripts" / "runtime_contract").glob("*.py")))
-    paths.append(cow_root / "scripts" / "control_plane.py")
+    if (cow_root / "registry.yaml").is_file():
+        paths.append(cow_root / "scripts" / "control_plane.py")
     return _tree_runtime_hash(paths, relative_to=ROOT)
 
 
@@ -481,15 +482,11 @@ GUARD_SCHEMA_URI = "https://digitalpsychology.dev/schemas/guard.schema.json"
 
 
 def _load_guard_schemas() -> Tuple[dict, dict, Any]:
-    """Load DP's guard/guard-pack schemas with a local referencing.Registry
-    binding the schema URIs to local files (never network). Returns
+    """Load the CFW-owned guard/guard-pack interop schemas with a local
+    referencing.Registry binding the schema URIs to local files (never network). Returns
     (pack_schema, guard_schema, registry)."""
-    pack_schema_path = DP_ROOT / "schemas" / "guard-pack.schema.json"
-    guard_schema_path = DP_ROOT / "schemas" / "guard.schema.json"
-    if not pack_schema_path.exists():
-        pack_schema_path = LOCAL_CONTRACT_ROOT / "guard-pack.schema.json"
-    if not guard_schema_path.exists():
-        guard_schema_path = LOCAL_CONTRACT_ROOT / "guard.schema.json"
+    pack_schema_path = LOCAL_CONTRACT_ROOT / "guard-pack.schema.json"
+    guard_schema_path = LOCAL_CONTRACT_ROOT / "guard.schema.json"
     if not pack_schema_path.exists() or not guard_schema_path.exists():
         raise GuardPackIntegrityError(
             "guard artifact exists but no trusted local guard schemas are installed")
@@ -747,7 +744,8 @@ def compile_task_guards(guards: List[Dict[str, Any]], domains: Iterable[str],
                         harness: Optional[str], trigger: Optional[str],
                         task_id: Optional[str], token_budget: int = 200,
                         mandatory_ids: Optional[Iterable[str]] = None,
-                        stateworks: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
+                        stateworks: Optional[Iterable[str]] = None,
+                        routing_adjustments: Optional[Iterable[Mapping[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Apply DP-compatible supersession, conflict, priority and budget rules."""
     def guard_cost(g: Dict[str, Any]) -> int:
         declared = max(int(g.get("estimated_tokens", 10) or 10), 1)
@@ -773,6 +771,10 @@ def compile_task_guards(guards: List[Dict[str, Any]], domains: Iterable[str],
         if g.get("trigger") is not None and g.get("trigger") != trigger:
             continue
         scoped.append(g)
+
+    preferred_guards = {str(item.get("route")) for item in (routing_adjustments or ()) if item.get("route_type") == "guard" and item.get("disposition") == "prefer"}
+    if preferred_guards:
+        scoped = [dict(item, _routing_preferred=True) if (item.get("key") or item.get("id")) in preferred_guards or item.get("id") in preferred_guards else item for item in scoped]
 
     # A family is one semantic intervention.  Different versions may be
     # present in the artifact, but task composition must never activate two
@@ -851,7 +853,8 @@ def compile_task_guards(guards: List[Dict[str, Any]], domains: Iterable[str],
 
     def rank(g:Dict[str,Any]):
         p=str(g.get("priority","P3"))
-        return (int(p[1:]) if p.startswith("P") and p[1:].isdigit() else 3,g.get("key") or g["id"])
+        preferred = 0 if g.get("_routing_preferred") else 1
+        return (preferred, int(p[1:]) if p.startswith("P") and p[1:].isdigit() else 3, g.get("key") or g["id"])
     mandatory_g=[g for g in remaining if g["id"] in mandatory]
     optional_g=sorted((g for g in remaining if g["id"] not in mandatory),key=rank)
     mandatory_g.sort(key=rank)
@@ -879,8 +882,17 @@ class PolicySnapshot:
     framework_version: str
     framework_hash: str
     model: Optional[str]
+    model_id: Optional[str]
+    provider_id: Optional[str]
+    model_revision: Optional[str]
+    model_capability_hash: Optional[str]
     harness: Optional[str]
+    harness_version: Optional[str]
     toolset: Optional[str]
+    namespace_id: str
+    application_id: str
+    application_version: Optional[str]
+    application_instance_id: str
     frozen_at: str
     policy_hash: str = ""
     subject_ref: Optional[str] = None
@@ -914,8 +926,17 @@ class PolicySnapshot:
             "framework_version": self.framework_version,
             "framework_hash": self.framework_hash,
             "model": self.model,
+            "model_id": self.model_id,
+            "provider_id": self.provider_id,
+            "model_revision": self.model_revision,
+            "model_capability_hash": self.model_capability_hash,
             "harness": self.harness,
+            "harness_version": self.harness_version,
             "toolset": self.toolset,
+            "namespace_id": self.namespace_id,
+            "application_id": self.application_id,
+            "application_version": self.application_version,
+            "application_instance_id": self.application_instance_id,
             "frozen_at": self.frozen_at,
             "policy_hash": self.policy_hash,
             "subject_ref": self.subject_ref,
@@ -1013,8 +1034,17 @@ class EffectivePolicy:
     stateworks: Tuple[StateWorkPin, ...]
     guards: Tuple[GuardPin, ...]
     model: Optional[str]
+    model_id: Optional[str]
+    provider_id: Optional[str]
+    model_revision: Optional[str]
+    model_capability_hash: Optional[str]
     harness: Optional[str]
+    harness_version: Optional[str]
     toolset: Optional[str]
+    namespace_id: str
+    application_id: str
+    application_version: Optional[str]
+    application_instance_id: str
     trigger: Optional[str]
     pipeline_hash: str
     runtime_kernel_hash: str
@@ -1041,8 +1071,17 @@ class EffectivePolicy:
             "stateworks": [pin.to_dict() for pin in self.stateworks],
             "guards": [pin.to_dict() for pin in self.guards],
             "model": self.model,
+            "model_id": self.model_id,
+            "provider_id": self.provider_id,
+            "model_revision": self.model_revision,
+            "model_capability_hash": self.model_capability_hash,
             "harness": self.harness,
+            "harness_version": self.harness_version,
             "toolset": self.toolset,
+            "namespace_id": self.namespace_id,
+            "application_id": self.application_id,
+            "application_version": self.application_version,
+            "application_instance_id": self.application_instance_id,
             "trigger": self.trigger,
             "pipeline_hash": self.pipeline_hash,
             "runtime_kernel_hash": self.runtime_kernel_hash,
@@ -1262,7 +1301,9 @@ def select_statework_runtime(
         trigger: Optional[str] = None, task_shape: Optional[str] = None,
         current_state: Optional[str] = None,
         domain_tags: Optional[Iterable[str]] = None,
-        suppressed_specialists: Optional[Iterable[str]] = None) -> Tuple[Dict[str, Any], Dict[str, Tuple[str, str]]]:
+        suppressed_specialists: Optional[Iterable[str]] = None,
+        preferred_specialists: Optional[Iterable[str]] = None,
+        suppressed_flows: Optional[Iterable[str]] = None) -> Tuple[Dict[str, Any], Dict[str, Tuple[str, str]]]:
     """Select and pin the StateWork's active hierarchical runtime bytes.
 
     Selection contract: exactly one flow when flows exist; all required
@@ -1290,64 +1331,71 @@ def select_statework_runtime(
     selected_flow_name = None
     specialists: list[Tuple[Path, str]] = []
     suppressed_specialists = set(suppressed_specialists or ())
+    preferred_specialists = set(preferred_specialists or ())
+    suppressed_flows = set(suppressed_flows or ())
     if flow_paths:
         named: Dict[str, Path] = {
             path.parent.name: path for path in flow_paths
         }
+        import yaml
+        selectors: Dict[str, Dict[str, Any]] = {}
+        for name, path in named.items():
+            if name in suppressed_flows:
+                continue
+            pieces = path.read_text(encoding="utf-8").split("---", 2)
+            if len(pieces) < 3:
+                raise PacketDependencyError(
+                    f"StateWork {sid!r} flow {name!r} is missing machine-readable frontmatter")
+            try:
+                meta = yaml.safe_load(pieces[1]) or {}
+            except Exception as exc:
+                raise PacketDependencyError(
+                    f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
+            if not isinstance(meta, dict):
+                raise PacketDependencyError(f"StateWork {sid!r} flow {name!r} frontmatter must be a mapping")
+            selectors[name] = meta
+        tags = set(domain_tags or ())
+        scored: List[Tuple[int, str]] = []
+        for name, meta in selectors.items():
+            score = 0
+            operations = set(meta.get("operations") or [])
+            triggers = set(meta.get("triggers") or [])
+            shapes = set(meta.get("task_shapes") or [])
+            flow_tags = set(meta.get("domain_tags") or [])
+            states = meta.get("states") or {}
+            if operation is not None:
+                if operations and operation not in operations:
+                    continue
+                score += int(operation in operations)
+            if trigger is not None:
+                if triggers and trigger not in triggers:
+                    continue
+                score += int(trigger in triggers)
+            if task_shape is not None:
+                if shapes and task_shape not in shapes:
+                    continue
+                score += int(task_shape in shapes)
+            if current_state is not None:
+                state_from = set(states.get("from") or []) if isinstance(states, dict) else set()
+                if state_from and current_state not in state_from:
+                    continue
+                score += int(current_state in state_from)
+            if tags and flow_tags:
+                score += len(tags & flow_tags)
+            scored.append((score, name))
         if requested_flow:
-            if requested_flow not in named:
+            eligible_names = {name for _score, name in scored}
+            if requested_flow not in eligible_names:
                 raise PacketDependencyError(
-                    f"StateWork {sid!r} has no requested flow {requested_flow!r}")
+                    f"StateWork {sid!r} requested flow {requested_flow!r} is not eligible "
+                    f"for operation={operation!r}, trigger={trigger!r}, "
+                    f"shape={task_shape!r}, state={current_state!r}")
             selected_flow_path = named[requested_flow]
+        elif not scored:
+            raise PacketDependencyError(
+                f"StateWork {sid!r} has no flow matching operation={operation!r}, "
+                f"trigger={trigger!r}, shape={task_shape!r}, state={current_state!r}")
         else:
-            import yaml
-            selectors: Dict[str, Dict[str, Any]] = {}
-            for name, path in named.items():
-                pieces = path.read_text(encoding="utf-8").split("---", 2)
-                if len(pieces) < 3:
-                    raise PacketDependencyError(
-                        f"StateWork {sid!r} flow {name!r} is missing machine-readable frontmatter")
-                try:
-                    meta = yaml.safe_load(pieces[1]) or {}
-                except Exception as exc:
-                    raise PacketDependencyError(
-                        f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
-                if not isinstance(meta, dict):
-                    raise PacketDependencyError(f"StateWork {sid!r} flow {name!r} frontmatter must be a mapping")
-                selectors[name] = meta
-            tags = set(domain_tags or ())
-            scored: List[Tuple[int, str]] = []
-            for name, meta in selectors.items():
-                score = 0
-                operations = set(meta.get("operations") or [])
-                triggers = set(meta.get("triggers") or [])
-                shapes = set(meta.get("task_shapes") or [])
-                flow_tags = set(meta.get("domain_tags") or [])
-                states = meta.get("states") or {}
-                if operation is not None:
-                    if operations and operation not in operations:
-                        continue
-                    score += int(operation in operations)
-                if trigger is not None:
-                    if triggers and trigger not in triggers:
-                        continue
-                    score += int(trigger in triggers)
-                if task_shape is not None:
-                    if shapes and task_shape not in shapes:
-                        continue
-                    score += int(task_shape in shapes)
-                if current_state is not None:
-                    state_from = set(states.get("from") or []) if isinstance(states, dict) else set()
-                    if state_from and current_state not in state_from:
-                        continue
-                    score += int(current_state in state_from)
-                if tags and flow_tags:
-                    score += len(tags & flow_tags)
-                scored.append((score, name))
-            if not scored:
-                raise PacketDependencyError(
-                    f"StateWork {sid!r} has no flow matching operation={operation!r}, "
-                    f"trigger={trigger!r}, shape={task_shape!r}, state={current_state!r}")
             scored.sort(key=lambda pair: (-pair[0], pair[1]))
             if len(scored) > 1 and scored[0][0] == scored[1][0]:
                 raise PacketDependencyError(
@@ -1395,7 +1443,8 @@ def select_statework_runtime(
             owner_root = (cow_root / sid).resolve()
             candidates: list[Tuple[str, bool]] = [
                 (str(path), True) for path in required
-            ] + [(str(path), False) for path in optional]
+            ] + sorted(((str(path), False) for path in optional),
+                       key=lambda item: (item[0] not in preferred_specialists, item[0]))
             for relative, is_required in candidates:
                 if relative in suppressed_specialists or Path(relative).name in suppressed_specialists:
                     if is_required:
@@ -1453,17 +1502,25 @@ def _statework_runtime_pins(
     capsules: Dict[str, Tuple[str, str]] = {}
     requested_flows = requested_flows or {}
     suppressed_by_statework: Dict[str, set[str]] = {}
+    preferred_by_statework: Dict[str, set[str]] = {}
+    suppressed_flows_by_statework: Dict[str, set[str]] = {}
     for adjustment in routing_adjustments or ():
-        if (adjustment.get("route_type") == "specialist"
-                and adjustment.get("disposition") == "suppress"):
-            owner = str(adjustment.get("statework_id") or "")
-            suppressed_by_statework.setdefault(owner, set()).add(str(adjustment.get("route")))
+        owner = str(adjustment.get("statework_id") or "")
+        if adjustment.get("route_type") == "specialist":
+            if adjustment.get("disposition") == "suppress":
+                suppressed_by_statework.setdefault(owner, set()).add(str(adjustment.get("route")))
+            elif adjustment.get("disposition") == "prefer":
+                preferred_by_statework.setdefault(owner, set()).add(str(adjustment.get("route")))
+        if adjustment.get("route_type") == "flow" and adjustment.get("disposition") == "suppress":
+            suppressed_flows_by_statework.setdefault(owner, set()).add(str(adjustment.get("route")))
     for sw in chain:
         item, selected = select_statework_runtime(
             sw, cow_root, requested_flows.get(str(sw.get("id"))), operation=operation,
             trigger=trigger, task_shape=task_shape, current_state=current_state,
             domain_tags=domain_tags,
-            suppressed_specialists=suppressed_by_statework.get(str(sw.get("id")), ()))
+            suppressed_specialists=suppressed_by_statework.get(str(sw.get("id")), ()),
+            preferred_specialists=preferred_by_statework.get(str(sw.get("id")), ()),
+            suppressed_flows=suppressed_flows_by_statework.get(str(sw.get("id")), ()))
         transition_path = cow_root / str(sw.get("id")) / "transitions.yaml"
         if transition_path.exists():
             item["transitions_hash"] = sha256(transition_path)
@@ -1509,13 +1566,27 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             operation: Optional[str] = None,
             observation_context: Optional[Mapping[str, Any]] = None,
             agent_id: str = "agent",
+            application_id: str = "cognitiveframeworks-runtime",
+            application_version: Optional[str] = None,
+            application_instance_id: Optional[str] = None,
+            provider_id: Optional[str] = None,
+            model_id: Optional[str] = None,
+            model_revision: Optional[str] = None,
+            model_capability_hash: Optional[str] = None,
+            harness_version: Optional[str] = None,
+            namespace_id: str = "default",
             action_registry: Optional[Mapping[str, Any]] = None,
-            routing_profile_path: Optional[Path] = None) -> RuntimeBundle:
+            routing_profile_path: Optional[Path] = None,
+            behavioral_advisor: Optional[BehavioralAdvisor] = None) -> RuntimeBundle:
     """Pure library entry point: TaskRequest -> RuntimeBundle. No source-tree
     writes (the CLI snapshot writer is separate and out-of-tree)."""
     if isinstance(task_id, TaskRequest):
         request = task_id
         task_id = request.task_id
+        application_id = request.application_id
+        application_version = request.application_version
+        application_instance_id = request.application_instance_id
+        namespace_id = request.namespace_id
         shape = request.shape
         domains = list(request.domain_tags)
         subject_ref = request.subject_ref
@@ -1533,7 +1604,12 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         operation = request.operation
         trigger = request.trigger
         model = request.model
+        model_id = request.model_id
+        provider_id = request.provider_id
+        model_revision = request.model_revision
+        model_capability_hash = request.model_capability_hash
         harness = request.harness
+        harness_version = request.harness_version
         toolset = request.toolset
         observation_context = dict(request.observation_context)
         if action_registry is None:
@@ -1550,6 +1626,17 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         delegation_id = None
         role = None
         routing_experiment_plan = {}
+        application_instance_id = application_instance_id or application_id
+        model_id = model_id or model
+    application_id = str(application_id or "")
+    namespace_id = str(namespace_id or "")
+    application_instance_id = str(application_instance_id or "")
+    if not application_id or not namespace_id or not application_instance_id:
+        raise ValueError("application_id, namespace_id, and application_instance_id are required")
+    if model is not None and model_id is not None and model != model_id:
+        raise ValueError("model and model_id must agree when both are provided")
+    model_id = model_id or model
+    model = model_id
     task_id = str(task_id)
     agent_id = str(agent_id or "agent")
     effective_actions = effective_action_registry(action_registry)
@@ -1568,27 +1655,37 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     routing_plugin = _load_document(ROOT / "plugin.json", _load_json)
     routing_pack_for_context = load_guard_pack()
     routing_context = {
+        "task_id": task_id,
+        "session_id": None,
+        "attempt_id": attempt_id,
         "agent_instance_id": agent_instance_id,
-        "model": model, "harness": harness, "toolset": toolset,
+        "namespace_id": namespace_id, "application_id": application_id,
+        "application_version": application_version,
+        "application_instance_id": application_instance_id,
+        "provider_id": provider_id, "model_id": model_id,
+        "model_revision": model_revision,
+        "model_capability_hash": model_capability_hash,
+        "model": model, "harness": harness, "harness_id": harness,
+        "harness_version": harness_version, "toolset": toolset,
         "task_family": shape, "task_shape": shape, "domain_tags": domains,
         "phase": phase, "environment": os.environ.get("CFW_ENVIRONMENT", "runtime"),
-        "statework_versions": "{}",
+        "statework_versions": {},
         "framework_version": routing_plugin.get("version", "unknown"),
         "guard_pack_hash": routing_pack_for_context.get("semantic_hash"),
     }
     routing_context["comparison_context_hash"] = comparison_context_hash(routing_context)
     routing_adjustments = applicable_adjustments(routing_profiles, routing_context)
+    advice_receipt: Optional[Dict[str, Any]] = None
     routing_experiment = None
     routing_cohort = None
     candidate_profile_hash = None
     candidate_adjustment_applied = False
     comparison_hash = comparison_context_hash(routing_context)
     if routing_experiment_plan:
-        if routing_experiment_plan.get("plan_hash") != routing_plan_hash(routing_experiment_plan):
-            raise ValueError("routing experiment plan hash mismatch")
+        routing_experiment_plan = validate_experiment_plan(routing_experiment_plan)
         routing_cohort = assign_experiment_cohort(
             routing_experiment_plan,
-            f"{agent_instance_id}:{task_id}:{attempt_id}")
+            f"{agent_instance_id}:{task_id}:{attempt_id}", routing_context)
         candidate_profile_hash = routing_experiment_plan.get("candidate_profile_hash")
         candidate_adjustment = dict(routing_experiment_plan.get("candidate_adjustment") or {})
         if routing_cohort == "treatment":
@@ -1604,6 +1701,12 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         routing_experiment = {
             **routing_experiment_plan,
             "routing_cohort": routing_cohort,
+            "eligible": routing_cohort is not None,
+            "cohort_policy_identity": (
+                routing_experiment_plan.get("treatment_policy_identity")
+                if routing_cohort == "treatment"
+                else routing_experiment_plan.get("control_policy_identity")
+                if routing_cohort in {"control", "holdout"} else None),
             "candidate_profile_hash": candidate_profile_hash,
             "candidate_adjustment_applied": candidate_adjustment_applied,
             "comparison_context_hash": comparison_hash,
@@ -1612,12 +1715,85 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     if shape not in profiles:
         raise ValueError(f"unknown task shape {shape!r}; expected one of {sorted(profiles)}")
 
-    for adjustment in routing_adjustments:
-        validate_adaptive_adjustment(
-            adjustment, static_stages=stages,
-            always_on_guards=[g.get("key") or g.get("id") for g in load_guard_pack().get("always_on", [])])
-
     profile = expand(profiles[shape], aliases)
+    # Build the host-computed eligibility snapshot before asking DP.  DP may
+    # express preferences over these choices, but it never supplies them.
+    pre_stateworks = load_stateworks(cow_root)
+    pre_desired, pre_ambiguous = match_statework(pre_stateworks, domains, phase=phase)
+    if pre_ambiguous:
+        raise ValueError(f"ambiguous StateWork match for domain(s) {domains}; candidates: {sorted(pre_ambiguous)}")
+    eligible_routes = [{"route_type": "stage", "route": route} for route in profile]
+    if pre_desired is not None:
+        eligible_routes.append({"route_type": "statework", "route": pre_desired.get("id"), "statework_id": pre_desired.get("id")})
+        try:
+            selected, _capsules = select_statework_runtime(
+                pre_desired, cow_root, operation=operation, trigger=trigger,
+                task_shape=shape, current_state=(observation_context or {}).get("state"),
+                domain_tags=domains)
+            flow = selected.get("selected_flow")
+            if flow:
+                eligible_routes.append({"route_type": "flow", "route": str(Path(flow[0]).parent.name), "statework_id": pre_desired.get("id")})
+            for specialist in selected.get("selected_specialists", []):
+                path = specialist[0] if isinstance(specialist, (list, tuple)) else str(specialist)
+                eligible_routes.append({"route_type": "specialist", "route": str(path), "statework_id": pre_desired.get("id")})
+        except PacketDependencyError:
+            # A StateWork-backed task will fail closed later with its precise
+            # selector error; do not fabricate an eligible flow for DP.
+            pass
+    for guard in routing_pack_for_context.get("always_on", []) + routing_pack_for_context.get("guards", []):
+        eligible_routes.append({"route_type": "guard", "route": str(guard.get("key") or guard.get("id") or "")})
+    static_policy_hash = hashlib.sha256(_stable_json({
+        "profile": profile, "aliases": aliases, "stages": stages,
+    }).encode("utf-8")).hexdigest()
+    eligible_choice_hash = hashlib.sha256(_stable_json(eligible_routes).encode("utf-8")).hexdigest()
+    if behavioral_advisor is not None:
+        advice = behavioral_advisor.advice_for_task(
+            context=routing_context,
+            eligible_routes=eligible_routes,
+            static_policy={
+                "profile": shape,
+                "framework_version": routing_context["framework_version"],
+                "static_policy_hash": static_policy_hash,
+                "eligible_choice_hash": eligible_choice_hash,
+                "context_identity": comparison_context_hash(routing_context),
+            })
+        # An advisor response is a candidate mutation, not trusted policy.
+        # Validate the complete combined set after every source has spoken.
+        raw_adjustments = list(advice.get("adjustments", [])) if isinstance(advice, Mapping) else []
+        bounded = bounded_adjustments(advice, eligible_routes)
+        if len(bounded) != len(raw_adjustments):
+            raise ValueError("behavioral advisor returned ineligible or malformed adjustments")
+        proposed = routing_adjustments + bounded
+        # If advice was returned, it must be entirely legal; malformed or
+        # authority-crossing items are quarantined rather than partially
+        # applied.
+        if advice.get("status") not in {"ok", "unavailable"} and advice.get("adjustments"):
+            raise ValueError("behavioral advisor returned an invalid response")
+        for adjustment in proposed:
+            validate_adaptive_adjustment(
+                adjustment, static_stages=stages,
+                always_on_guards=[g.get("key") or g.get("id") for g in load_guard_pack().get("always_on", [])])
+        routing_adjustments = proposed
+    else:
+        for adjustment in routing_adjustments:
+            validate_adaptive_adjustment(
+                adjustment, static_stages=stages,
+                always_on_guards=[g.get("key") or g.get("id") for g in load_guard_pack().get("always_on", [])])
+    routing_context["statework_versions"] = {}
+    routing_context["comparison_context_hash"] = comparison_context_hash(routing_context)
+    if behavioral_advisor is not None:
+        advice_receipt = {
+            "contract_version": "1.0.0",
+            "context": {**routing_context, "context_identity": comparison_context_hash(routing_context),
+                        "static_policy_hash": static_policy_hash,
+                        "eligible_choice_hash": eligible_choice_hash,
+                        "advice_version": str(advice.get("advice_id") or advice.get("semantic_hash") or "unversioned"),
+                        "expires_at": advice.get("expires_at"),
+                        "source_profile_hash": advice.get("profile_pack_hash")},
+            "eligible_choices": list(eligible_routes),
+            "adjustments": [dict(item) for item in bounded],
+            "final_decision": {"policy_hash": "", "selected_routes": [], "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")},
+        }
     suppressed_stage_routes = {
         str(item.get("route")) for item in routing_adjustments
         if item.get("route_type") in {"stage", "lifecycle_stage"}
@@ -1630,10 +1806,15 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     profile = requires_closure(profile, stages)
     kernel_stages = order_kernel(profile, stages)
 
-    # StateWork chain (0-1 primary per profile, plus packet prerequisites)
-    stateworks = load_stateworks(cow_root)
+    # StateWork is a capability, not a hard source-tree dependency.  Missing
+    # capability is fatal only when the task actually requires domain state.
+    stateworks = pre_stateworks
+    statework_available = bool(stateworks)
+    if not statework_available and (domains or phase is not None or subject_ref is not None
+                                    or requested_flows):
+        raise ValueError("StateWork capability is required by this task but no registry is installed")
     packet_registry = parse_packet_registry(cow_root)
-    desired, ambiguous = match_statework(stateworks, domains, phase=phase)
+    desired, ambiguous = pre_desired, pre_ambiguous
     if ambiguous:
         raise ValueError(f"ambiguous StateWork match for domain(s) {domains}; candidates: {sorted(ambiguous)}")
     if desired is not None and any(
@@ -1643,10 +1824,14 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             for item in routing_adjustments):
         raise ValueError("adaptive routing cannot suppress a statically required StateWork")
     effective_requested_flows = dict(requested_flows or {})
+    suppressed_flows = {(str(item.get("statework_id") or ""), str(item.get("route") or "")) for item in routing_adjustments if item.get("route_type") == "flow" and item.get("disposition") == "suppress"}
+    for (statework_id, flow) in list(effective_requested_flows.items()):
+        if (statework_id, flow) in suppressed_flows:
+            effective_requested_flows.pop(statework_id, None)
     for item in routing_adjustments:
         if item.get("route_type") == "flow" and item.get("disposition") in {"prefer", "activate"}:
             statework_id = item.get("statework_id")
-            if statework_id:
+            if statework_id and (str(statework_id), str(item.get("route") or "")) not in suppressed_flows:
                 effective_requested_flows[str(statework_id)] = str(item.get("route"))
     chain = plan_statework_chain(desired, stateworks, packet_registry,
                                  packet_store=packet_store,
@@ -1677,6 +1862,10 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             for concrete in expand([req], aliases):
                 if concrete not in merged:
                     merged.append(concrete)
+        for req in sw.get("framework_enhancements", []):
+            for concrete in expand([req], aliases):
+                if concrete not in merged:
+                    merged.append(concrete)
         for req in sw.get("flow_requirements", []):
             for concrete in expand([req], aliases):
                 if concrete not in merged:
@@ -1690,17 +1879,18 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
 
     # Guard pack (schema-validated artifact)
     pack = routing_pack_for_context
-    statework_registry = _load_document(cow_root / "registry.yaml", load_yaml)
-    behavior_contract_path = DP_ROOT / "schemas" / "behavior-event.schema.json"
-    if not behavior_contract_path.exists():
-        behavior_contract_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
+    statework_registry = ({"version": "1.0.0", "stateworks": []}
+                          if not statework_available else
+                          _load_document(cow_root / "registry.yaml", load_yaml))
+    behavior_contract_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
     behavior_contract = _load_document(behavior_contract_path, _load_json)
     behavior_contract_version = str(
         behavior_contract.get("properties", {}).get("schema_version", {}).get("const", ""))
-    validate_compatibility(
-        statework_registry_version=statework_registry.get("version"),
-        behavior_event_version=behavior_contract_version,
-        guard_pack_version=pack.get("pack_version"))
+    if statework_available:
+        validate_compatibility(
+            statework_registry_version=statework_registry.get("version"),
+            behavior_event_version=behavior_contract_version,
+            guard_pack_version=pack.get("pack_version"))
     statework_ids = [sw.get("id") for sw in enriched_stateworks]
     suppressed_guard_routes = {
         str(item.get("route")) for item in routing_adjustments
@@ -1730,9 +1920,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     sispis_calibration_hash = sha256(cal_path) if cal_path.exists() else ""
     signal_schema_path = ROOT / "shared" / "signal.schema.json"
     signal_registry_path = ROOT / "shared" / "signal-registry.json"
-    behavior_event_schema_path = DP_ROOT / "schemas" / "behavior-event.schema.json"
-    if not behavior_event_schema_path.exists():
-        behavior_event_schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
+    behavior_event_schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
     policy_documents: Dict[str, Any] = {
         "sispis_calibration": _load_document(cal_path, load_yaml),
         "signal_schema": _load_document(signal_schema_path, _load_json),
@@ -1777,7 +1965,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         token_budget=max(200, sum(max(int(g.get("estimated_tokens", 10) or 10), 1)
                                   for g in pack["always_on"])),
         stateworks=statework_ids,
-        mandatory_ids=[g.get("id") for g in pack["always_on"]])
+        mandatory_ids=[g.get("id") for g in pack["always_on"]],
+        routing_adjustments=routing_adjustments)
 
     def guard_scope_matches(guard: Dict[str, Any]) -> bool:
         scope = nested_guard_scope(guard)
@@ -1808,9 +1997,11 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             guard_assignments[key] = "treatment"
     assigned_guard_keys = [g.get("key") or g["id"] for g in unique_guards]
 
+    preferred_stages = {str(item.get("route")) for item in routing_adjustments if item.get("route_type") == "stage" and item.get("disposition") == "prefer"}
     kernel_instructions = [
         {
             "stage": sid,
+            "routing_preference": "preferred" if sid in preferred_stages else "default",
             "activation": stages[sid].get("activation_rule"),
             "outputs": stages[sid].get("output", []),
             "execution_mode": stages[sid].get("execution_mode"),
@@ -1840,8 +2031,14 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     )
     effective_policy = EffectivePolicy(
         profile=shape, kernel=tuple(kernel_ordered), capsules=capsule_pins,
-        stateworks=statework_pins, guards=guard_pins, model=model, harness=harness,
-        toolset=toolset, trigger=trigger, pipeline_hash=pipeline_hash,
+        stateworks=statework_pins, guards=guard_pins, model=model, model_id=model_id,
+        provider_id=provider_id, model_revision=model_revision,
+        model_capability_hash=model_capability_hash, harness=harness,
+        harness_version=harness_version, toolset=toolset,
+        namespace_id=namespace_id, application_id=application_id,
+        application_version=application_version,
+        application_instance_id=application_instance_id,
+        trigger=trigger, pipeline_hash=pipeline_hash,
         runtime_kernel_hash=kernel_hash,
         calibration_hash=sispis_calibration_hash,
         subject_ref=subject_ref,
@@ -1883,6 +2080,13 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         execution_plan = ({"segment_id": "segment-0", "index": 0,
                            "statework_id": None, "subject_ref": subject_ref,
                            "input_packet": None, "output_packet": None},)
+    if advice_receipt is not None:
+        selected_routes = [{"route_type": "stage", "route": str(stage), "selection_reason": "effective_kernel"} for stage in kernel_ordered]
+        selected_routes.extend({"route_type": "statework", "route": str(item.get("id")), "selection_reason": "effective_statework"} for item in enriched_stateworks)
+        for item in enriched_stateworks:
+            if item.get("selected_flow"):
+                selected_routes.append({"route_type": "flow", "route": str(Path(item["selected_flow"][0]).parent.name), "selection_reason": "effective_flow"})
+        advice_receipt["final_decision"] = {"policy_hash": compute_policy_hash(effective_policy), "selected_routes": selected_routes, "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     snapshot = PolicySnapshot(
         task_id=task_id,
         kernel=tuple(kernel_ordered),
@@ -1892,8 +2096,17 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         framework_version=framework_version,
         framework_hash=sha256(ROOT / "plugin.json"),
         model=model,
+        model_id=model_id,
+        provider_id=provider_id,
+        model_revision=model_revision,
+        model_capability_hash=model_capability_hash,
         harness=harness,
+        harness_version=harness_version,
         toolset=toolset,
+        namespace_id=namespace_id,
+        application_id=application_id,
+        application_version=application_version,
+        application_instance_id=application_instance_id,
         frozen_at=frozen_at,
         policy_hash=policy_hash,
         subject_ref=subject_ref,
@@ -1933,6 +2146,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             "suppressed_guard_keys": sorted(suppressed_guard_routes),
             "routing_profile": routing_profile,
             "routing_adjustments": routing_adjustments,
+            "advice_exchange": advice_receipt,
             "routing_experiment": routing_experiment,
             "structural_handlers": {
                 (g.get("key") or g["id"]): enforcement_for_guard(g)

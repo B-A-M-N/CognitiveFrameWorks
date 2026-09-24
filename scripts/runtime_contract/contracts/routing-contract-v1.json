@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contract_version": "1.0.0",
+  "canonicalization": "json.dumps(sort_keys=true,separators=(',',':'),default=str)",
+  "hashes": {
+    "plan": "sha256(canonical plan without plan_hash)",
+    "profile": "sha256(canonical profile without profile_hash, created_at, lifecycle fields)",
+    "pack": "sha256(canonical pack without semantic_hash)"
+  },
+  "condition_semantics": {"equals": "scalar equality", "contains": "membership", "all": "every", "any": "some"},
+  "golden_vectors": {
+    "condition_equals": {"canonical": "{\"equals\":\"performance\",\"field\":\"task_family\"}", "sha256": "e07e474c80a7a9a64c73962d92319d0abf218674f66a5b305d012a1b6a5d850b"},
+    "condition_all": {"canonical": "{\"all\":[{\"equals\":\"performance\",\"field\":\"task_family\"},{\"contains\":\"repository\",\"field\":\"domain_tags\"}]}", "sha256": "2ac2aa8f790f67154d1d9c41b0a994b9f9fa8ce3b1198e8181ffa243ee61683a"},
+    "profile_candidate": {"profile_hash": "d230181ab7970bc11f0f693024d258e97a4baa30ae1b64d3c646236c2618217b"},
+    "profile_promoted": {"profile_hash": "4d1c74deca3c7702b5cd7169b3329d9219600647dfdb59b4bb5e2b46c4b086c1"},
+    "routing_plan": {"plan_hash": "1a60315dea1a1b855e4154bb9ab178b687197a75a6cbbc25309eeaeb4cc81d4d"},
+    "routing_pack": {"pack_hash": "85c9b33ea150ea7f6c94645dc4d3e1411fb94b15aa871c2022605cdc27898872"},
+    "expiry": {"expires_after_samples": 10, "observed_unique_trajectories": 10, "expected_status": "stale"}
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "manifest_version": "1.0.0",
+  "mandatory": true,
+  "gates": [
+    {"name": "dp_self_test", "cwd": "DigitalPsychology", "command": ["scripts/self-test.py"]},
+    {"name": "dp_guard_conformance", "cwd": "DigitalPsychology", "command": ["scripts/validate-guard-conformance.py"]},
+    {"name": "dp_routing_learning", "cwd": "DigitalPsychology", "command": ["scripts/test-routing-learning.py"]},
+    {"name": "dp_cross_system", "cwd": "DigitalPsychology", "command": ["scripts/acceptance-cross-system.py"]},
+    {"name": "dp_three_system", "cwd": "DigitalPsychology", "command": ["scripts/acceptance-three-system.py"]},
+    {"name": "dp_dynamic_improvement", "cwd": "DigitalPsychology", "command": ["scripts/acceptance-dynamic-improvement.py"]},
+    {"name": "csw_validate_stateworks", "cwd": "CognitiveStateWork", "command": ["scripts/validate-stateworks.py"]},
+    {"name": "csw_control_plane", "cwd": "CognitiveStateWork", "command": ["scripts/test-control-plane.py"]},
+    {"name": "csw_repository_truth_limits", "cwd": "CognitiveStateWork", "command": ["scripts/test-repository-truth-limits.py"]},
+    {"name": "csw_concurrent_state", "cwd": "CognitiveStateWork", "command": ["scripts/test-concurrent-state.py"]},
+    {"name": "cfw_runtime", "cwd": "CognitiveFrameWorks", "command": ["scripts/test-runtime.py"]},
+    {"name": "cfw_public_api", "cwd": "CognitiveFrameWorks", "command": ["scripts/acceptance-public-api.py"]},
+    {"name": "cfw_structural", "cwd": "CognitiveFrameWorks", "command": ["scripts/acceptance-structural.py"]},
+    {"name": "cfw_session_routing", "cwd": "CognitiveFrameWorks", "command": ["scripts/acceptance-session-routing.py"]},
+    {"name": "cfw_clean_install", "cwd": "CognitiveFrameWorks", "command": ["scripts/acceptance-clean-install.py"]},
+    {"name": "cfw_upgrade_install", "cwd": "CognitiveFrameWorks", "command": ["scripts/acceptance-upgrade-install.py"]},
+    {"name": "cfw_hostile_install", "cwd": "CognitiveFrameWorks", "command": ["scripts/test-install-security.py"]},
+    {"name": "package_resources", "cwd": "CognitiveFrameWorks", "command": ["scripts/test-package-resources.py"]}
+  ]
+}

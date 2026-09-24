@@ -75,8 +75,7 @@ class ProtectedResourcePolicy:
         bundled_cow = module_root / "statework"
         cow_root = bundled_cow if bundled_cow.exists() else module_root.parent / "CognitiveStateWork"
         roots.update({module_root / "contracts", module_root / "scripts" / "runtime_contract",
-                      cow_root, cow_root / "schemas",
-                      module_root.parent / "DigitalPsychology" / "schemas"})
+                      cow_root, cow_root / "schemas"})
         return cls(tuple(sorted(str(path) for path in roots)),
                    (str(Path.cwd()), "/tmp"))
 
@@ -247,6 +246,31 @@ class AgentActionRequest:
     @property
     def digest(self) -> str:
         return action_digest(self.binding_id, self.arguments, self.subject_ref)
+
+
+@dataclass(frozen=True)
+class ActionStrategy:
+    """Host-owned bounded recommendation over already-authorized actions."""
+    eligible_actions: tuple[str, ...]
+    priorities: Mapping[str, int]
+    reason: str
+    policy_hash: str
+
+    def __post_init__(self) -> None:
+        if not self.eligible_actions or len(set(self.eligible_actions)) != len(self.eligible_actions):
+            raise ValueError("action strategy requires a unique non-empty eligible action set")
+        if any(not isinstance(action, str) or not action for action in self.eligible_actions):
+            raise ValueError("action strategy actions must be non-empty strings")
+        if any(action not in self.eligible_actions or int(priority) < 0
+               for action, priority in self.priorities.items()):
+            raise ValueError("action strategy priorities must reference eligible actions")
+        if not self.reason or not self.policy_hash:
+            raise ValueError("action strategy requires a reason and policy hash")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"eligible_actions": list(self.eligible_actions),
+                "priorities": dict(sorted(self.priorities.items())),
+                "reason": self.reason, "policy_hash": self.policy_hash}
 
 
 @dataclass(frozen=True)
