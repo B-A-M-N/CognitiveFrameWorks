@@ -1673,6 +1673,9 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
                                 for item in load_stateworks(cow_root)},
         "framework_version": routing_plugin.get("version", "unknown"),
         "guard_pack_hash": routing_pack_for_context.get("semantic_hash"),
+        "role": role,
+        "interaction_id": interaction_id,
+        "delegation_id": delegation_id,
     }
     routing_context["comparison_context_hash"] = comparison_context_hash(routing_context)
     routing_adjustments = applicable_adjustments(routing_profiles, routing_context)

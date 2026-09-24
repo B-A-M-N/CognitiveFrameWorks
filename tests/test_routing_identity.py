@@ -49,3 +49,11 @@ def test_missing_identity_is_not_a_wildcard() -> None:
     missing = _context()
     missing.pop("application_instance_id")
     assert applicable_adjustments(profile, missing) == []
+
+def test_routing_profile_role_is_exact() -> None:
+    profile = _profile()
+    profile["context"] = {**profile["context"], "role": "delegate"}
+    delegate = {**_context(), "role": "delegate"}
+    delegator = {**_context(), "role": "delegator"}
+    assert applicable_adjustments(profile, delegate)
+    assert applicable_adjustments(profile, delegator) == []

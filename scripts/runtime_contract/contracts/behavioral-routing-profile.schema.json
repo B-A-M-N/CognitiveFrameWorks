@@ -60,7 +60,10 @@
         "comparison_context_hash": { "type": ["string", "null"] },
         "statework_versions": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
         "framework_version": { "type": ["string", "null"] },
-        "guard_pack_hash": { "type": ["string", "null"] }
+        "guard_pack_hash": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "interaction_id": { "type": ["string", "null"] },
+        "delegation_id": { "type": ["string", "null"] }
       },
       "additionalProperties": false
     },
