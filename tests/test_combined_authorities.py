@@ -62,8 +62,8 @@ def test_action_preference_orders_but_does_not_authorize(tmp_path, monkeypatch):
     resolve.runtime_state_dir = lambda: tmp_path / "runtime"
 
     class Advisor:
-        def advice_for_task(self, **kwargs):
-            return {"status": "ok", "adjustments": [{
+        def advice_for_task(self, *, static_policy, **kwargs):
+            return {**static_policy, "status": "ok", "adjustments": [{
                 "route_type": "tool_policy", "route": "read", "disposition": "prefer"
             }]}
 
@@ -76,3 +76,52 @@ def test_action_preference_orders_but_does_not_authorize(tmp_path, monkeypatch):
     assert "ACTION STRATEGY" in prompt
     assert session.before_action({"tool_binding_id": "read", "arguments": {}}) == runtime.GateDecision.ALLOW
     assert session.before_action({"tool_binding_id": "shell", "arguments": {}}) != runtime.GateDecision.ALLOW
+
+
+def test_combined_enforcing_requires_shared_authority():
+    resolve, runtime = _runtime_modules()
+    request = resolve.TaskRequest(
+        task_id="requires-authority", namespace_id="ns", application_id="app",
+        application_instance_id="app-instance", subject_ref="repo:shared",
+        shape="quick", domain_tags=("terminal interface",),
+    )
+    bundle = resolve.resolve(request, cow_root=COW, requested_flows={"tuid": "discover"})
+    with pytest.raises(ValueError, match="injected shared StateAuthority"):
+        runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing")
+
+
+def test_shared_authority_identity_uses_task_origin(tmp_path):
+    resolve, runtime = _runtime_modules()
+    request = resolve.TaskRequest(
+        task_id="origin-bound", namespace_id="tenant-a", application_id="app-a",
+        application_instance_id="instance-a", subject_ref="repo:shared",
+        shape="quick", domain_tags=("terminal interface",),
+    )
+    bundle = resolve.resolve(request, cow_root=COW, requested_flows={"tuid": "discover"})
+    authority = runtime.CSWStateAuthority(
+        COW, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
+    session = runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing", state_authority=authority)
+    snapshot = authority.inspect(
+        statework_id="tuid", subject_ref="repo:shared",
+        contract_hash=__import__("hashlib").sha256(__import__("json").dumps(
+            __import__("yaml").safe_load((COW / "tuid" / "transitions.yaml").read_text()),
+            sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest())
+    assert snapshot["state"] == "UNKNOWN"
+    assert authority.namespace_id == "tenant-a"
+    assert authority.application_id == "app-a"
+    assert authority.application_instance_id == "instance-a"
+    assert session.runtime_mode == "combined_enforcing"
+
+
+def test_authority_unavailable_blocks_consequential_action(tmp_path):
+    resolve, runtime = _runtime_modules()
+    request = resolve.TaskRequest(
+        task_id="authority-loss", namespace_id="ns", application_id="app",
+        application_instance_id="instance", subject_ref="repo:shared",
+        shape="quick", domain_tags=("terminal interface",),
+    )
+    bundle = resolve.resolve(request, cow_root=COW, requested_flows={"tuid": "discover"})
+    authority = runtime.CSWStateAuthority(COW, state_path=tmp_path / "s.json", evidence_path=tmp_path / "e.json")
+    session = runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing", state_authority=authority)
+    authority.inspect = lambda **_: (_ for _ in ()).throw(RuntimeError("offline"))
+    assert session.before_action({"tool_binding_id": "read", "arguments": {}, "subject_ref": "repo:shared"}) == runtime.GateDecision.BLOCK

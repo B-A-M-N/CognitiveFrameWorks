@@ -59,7 +59,7 @@ from runtime_contract.policy import freeze_contracts as _freeze_contracts
 from runtime_contract.policy import stable_hash as _stable_contract_hash
 from runtime_contract.stateworks import current_packet as _current_packet
 from runtime_contract.task import TaskRequest
-from runtime_contract.advisor import BehavioralAdvisor, bounded_adjustments
+from runtime_contract.advisor import BehavioralAdvisor, bounded_adjustments, validate_advice_transaction
 from runtime_contract.manifests import build_task_manifest
 from runtime_contract.handlers import (enforcement_for_guard, handler_registry_hash,
                                        validate_enforcement)
@@ -1814,6 +1814,13 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
                 "eligible_choice_hash": eligible_choice_hash,
                 "context_identity": comparison_context_hash(routing_context),
             })
+        # Bind the complete transaction to the original host request before
+        # examining or applying any returned preference.
+        validate_advice_transaction(advice, static_policy={
+            "static_policy_hash": static_policy_hash,
+            "eligible_choice_hash": eligible_choice_hash,
+            "context_identity": comparison_context_hash(routing_context),
+        })
         # An advisor response is a candidate mutation, not trusted policy.
         # Validate the complete combined set after every source has spoken.
         raw_adjustments = list(advice.get("adjustments", [])) if isinstance(advice, Mapping) else []

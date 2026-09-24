@@ -57,3 +57,27 @@ def test_routing_profile_role_is_exact() -> None:
     delegator = {**_context(), "role": "delegator"}
     assert applicable_adjustments(profile, delegate)
     assert applicable_adjustments(profile, delegator) == []
+
+
+def test_advice_transaction_rejects_stale_or_mismatched_response() -> None:
+    from datetime import datetime, timedelta, timezone
+    from runtime_contract.advisor import validate_advice_transaction
+    request = {"static_policy_hash": "a" * 64, "eligible_choice_hash": "b" * 64, "context_identity": "c" * 64}
+    valid = {**request, "status": "ok", "adjustments": [{"route": "x"}],
+             "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()}
+    validate_advice_transaction(valid, static_policy=request)
+    for field in request:
+        bad = {**valid, field: "d" * 64}
+        try:
+            validate_advice_transaction(bad, static_policy=request)
+        except ValueError as exc:
+            assert field in str(exc)
+        else:
+            raise AssertionError(f"mismatched {field} accepted")
+    expired = {**valid, "expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()}
+    try:
+        validate_advice_transaction(expired, static_policy=request)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expired advice accepted")

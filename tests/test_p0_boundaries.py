@@ -19,8 +19,8 @@ def _resolver():
 
 
 class WardSuppressor:
-    def advice_for_task(self, **kwargs):
-        return {"status": "ok", "adjustments": [{"route_type": "stage", "route": "ward",
+    def advice_for_task(self, *, static_policy, **kwargs):
+        return {**static_policy, "status": "ok", "adjustments": [{"route_type": "stage", "route": "ward",
                                  "disposition": "suppress"}]}
 
 
@@ -56,9 +56,9 @@ def test_advisor_receives_host_eligible_statework_flow_choices():
     resolve = _resolver()
     seen = {}
     class Advisor:
-        def advice_for_task(self, **kwargs):
-            seen.update(kwargs)
-            return {"status": "ok", "adjustments": []}
+        def advice_for_task(self, *, static_policy, **kwargs):
+            seen.update({**kwargs, "static_policy": static_policy})
+            return {**static_policy, "status": "ok", "adjustments": []}
     cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
     request = resolve.TaskRequest(task_id="flow-advice", application_id="app",
                                   shape="quick", domain_tags=("infrastructure",),
@@ -73,8 +73,8 @@ def test_legal_flow_preference_changes_selection():
     cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
     class Advisor:
         def __init__(self, route): self.route = route
-        def advice_for_task(self, **kwargs):
-            return {"status": "ok", "adjustments": [{
+        def advice_for_task(self, *, static_policy, **kwargs):
+            return {**static_policy, "status": "ok", "adjustments": [{
                 "route_type": "flow", "route": self.route,
                 "statework_id": "infrae", "disposition": "prefer",
             }]}

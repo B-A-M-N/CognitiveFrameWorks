@@ -90,6 +90,9 @@ AUTHORITATIVE_EVIDENCE_KINDS = {
 }
 
 
+RUNTIME_MODES = {"standalone_advisory", "standalone_enforcing", "combined_enforcing"}
+
+
 class GateDecision(Enum):
     ALLOW = "allow"
     BLOCK = "block"
@@ -612,13 +615,18 @@ class StateAuthority:
 class CSWStateAuthority(StateAuthority):
     """Concrete combined-mode adapter owned by CSW, injected into CFW."""
     def __init__(self, root: Path, *, state_path: Optional[Path] = None,
-                 evidence_path: Optional[Path] = None) -> None:
+                 evidence_path: Optional[Path] = None,
+                 namespace_id: str = "default", application_id: str = "cognitiveframeworks-runtime",
+                 application_instance_id: str = "cognitiveframeworks-runtime") -> None:
         self.root = Path(root)
         self.control = _statework_transition_engines(self.root)
         self.state_store = self.control.SubjectStateStore(
             Path(state_path) if state_path else self.root / "state" / "subjects.json")
         self.evidence_store = self.control.EvidenceStore()
         self.evidence_path = Path(evidence_path) if evidence_path else self.root / "state" / "evidence.json"
+        self.namespace_id = str(namespace_id)
+        self.application_id = str(application_id)
+        self.application_instance_id = str(application_instance_id)
         self._controllers: Dict[str, Any] = {}
         self._load_evidence()
 
@@ -629,8 +637,8 @@ class CSWStateAuthority(StateAuthority):
             records = json.loads(self.evidence_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError("CSW evidence authority is unreadable") from exc
-        for record in records if isinstance(records, list) else []:
-            self.evidence_store.put(record)
+        if isinstance(records, list):
+            self.evidence_store = self.control.EvidenceStore.load_attested(records)
 
     def _contract(self, statework_id: str, contract_hash: str) -> tuple[Dict[str, Any], str]:
         import yaml
@@ -644,7 +652,8 @@ class CSWStateAuthority(StateAuthority):
         return contract, actual
 
     def _identity(self, *, statework_id: str, subject_ref: str, contract: Mapping[str, Any]) -> Dict[str, Any]:
-        return {"namespace_id": "cfw", "application_id": "combined-runtime",
+        return {"namespace_id": self.namespace_id, "application_id": self.application_id,
+                "application_instance_id": self.application_instance_id,
                 "subject_ref": subject_ref, "statework_id": statework_id,
                 "contract_version": str(contract.get("version") or "1.0.0")}
 
@@ -670,7 +679,7 @@ class CSWStateAuthority(StateAuthority):
             self.inspect(statework_id=statework_id, subject_ref=subject_ref, contract_hash=contract_hash)
             controller = self._controllers[key]
         for record in (evidence_records or []):
-            self.evidence_store.put(dict(record))
+            self.evidence_store.create(dict(record))
         decision = controller.request_transition(
             to_state=output_state, trigger=trigger, evidence_refs=evidence_refs,
             expected_revision=expected_revision)
@@ -710,6 +719,7 @@ class RuntimeSession:
     _emit: Optional[TelemetrySink] = None
     _telemetry_exporter: Optional[DurableTelemetryExporter] = None
     state_authority: Optional[StateAuthority] = None
+    runtime_mode: str = "standalone_enforcing"
     host_context: HostExecutionContext = field(default_factory=HostExecutionContext)
     host_invocations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _consumed_grant_ids: set[str] = field(default_factory=set, repr=False)
@@ -752,7 +762,8 @@ class RuntimeSession:
                 "authority_revision", "session_id", "agent_instance_id", "attempt_id",
                 "interaction_id", "parent_session_id", "delegator_agent_id",
                 "delegate_agent_id", "delegation_id", "role",
-                "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority"}:
+                "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
+                "runtime_mode"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -971,9 +982,40 @@ class RuntimeSession:
         }
         return left if rank[left] >= rank[right] else right
 
+    def _authoritative_state_ready(self) -> bool:
+        if self.runtime_mode != "combined_enforcing":
+            return True
+        if self.state_authority is None or not self.bundle.stateworks:
+            return False
+        try:
+            for statework in self.bundle.stateworks:
+                statework_id = str(statework.get("id") or "")
+                contract = statework.get("transitions_contract") or {}
+                subject = self.bundle.policy.subject_ref
+                contract_hash = hashlib.sha256(json.dumps(
+                    contract, sort_keys=True, separators=(",", ":"), default=str
+                ).encode("utf-8")).hexdigest()
+                snapshot = self.state_authority.inspect(
+                    statework_id=statework_id, subject_ref=subject,
+                    contract_hash=contract_hash)
+                key = (statework_id, subject)
+                current = str(snapshot.get("state") or contract.get("initial_state") or "")
+                self.statework_states[key] = current
+                self.statework_entry_times[key] = str(snapshot.get("updated_at") or "")
+                self.authority_revision = max(
+                    self.authority_revision, int(snapshot.get("revision", 0) or 0))
+            return True
+        except Exception as exc:
+            self._emit_runtime({"category": "blocker", "event_type": "state_authority_unavailable",
+                                "subject": self.bundle.policy.subject_ref,
+                                "payload": {"summary": str(exc)[:512], "result_class": "blocked"}})
+            return False
+
     def before_action(self, action: Dict[str, Any] | AgentActionRequest) -> GateDecision:
         """Structural WARD gate; host executors run only ALLOW decisions."""
         request = self._request(action)
+        if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
+            return GateDecision.BLOCK
         descriptor = self._descriptor(request)
         decision = self._decision(request)
         strategy = self._action_strategy()
@@ -1573,6 +1615,8 @@ class RuntimeSession:
         if not expected_subject or packet.get("subject_ref") != expected_subject:
             raise ValueError("handoff packet subject is not the authoritative task subject")
         active_producer = self.current_segment.statework_id
+        if not self._authoritative_state_ready():
+            raise PermissionError("shared StateWork authority is unavailable for handoff")
         if packet.get("producer") != active_producer:
             raise ValueError("handoff producer is not the active StateWork segment")
         expected_packet = self.current_segment.output_packet
@@ -1916,6 +1960,8 @@ class RuntimeSession:
         permit = permit or self.completion_permit
         if permit is None:
             raise PermissionError("task finalization requires a validated completion permit")
+        if not self._authoritative_state_ready():
+            raise PermissionError("shared StateWork authority is unavailable for completion")
         if (permit.task_id != self.bundle.task_id
                 or permit.policy_hash != self.bundle.pinned["policy_hash"]
                 or permit.session_nonce != self.session_nonce
@@ -1952,6 +1998,10 @@ class RuntimeSession:
             if not completion_states:
                 continue
             state = self.statework_states.get((statework_id, permit.subject_ref))
+            if self.runtime_mode == "combined_enforcing":
+                if not self._authoritative_state_ready():
+                    raise PermissionError("shared StateWork authority is unavailable for completion")
+                state = self.statework_states.get((statework_id, permit.subject_ref))
             if state not in completion_states:
                 raise PermissionError(
                     f"cannot finalize before StateWork {statework_id!r} reaches a terminal state")
@@ -1964,6 +2014,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
           telemetry_sink: Optional[TelemetrySink] = None,
           telemetry_exporter: Optional[DurableTelemetryExporter] = None,
           state_authority: Optional[StateAuthority] = None,
+          runtime_mode: str = "standalone_enforcing",
           telemetry_disabled: bool = False,
           tool_hooks: Optional[List[Callable[[Dict[str, Any]], Optional[GateDecision]]]] = None,
           final_hooks: Optional[List[Callable[[Dict[str, Any]], None]]] = None,
@@ -1975,6 +2026,8 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     """Inject selected runtime bytes, attach default host telemetry, and
     persist the immutable snapshot. Only tests may explicitly disable the
     sink; ordinary callers cannot silently turn it off."""
+    if runtime_mode not in RUNTIME_MODES:
+        raise ValueError(f"unknown runtime mode {runtime_mode!r}")
     supplied_context = host_context or HostExecutionContext()
     pinned_contracts = bundle.pinned.get("contracts", {})
     pinned_runtime_hash = pinned_contracts.get("runtime_behavior_hash")
@@ -2056,7 +2109,21 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
        role=bundle.pinned.get("role"))
     session._ledger_token = object()
     session.ledger = EvidenceLedger(bundle.task_id, writer_token=session._ledger_token)
+    if runtime_mode == "combined_enforcing":
+        if state_authority is None:
+            raise ValueError("combined_enforcing requires an injected shared StateAuthority")
+        if not bundle.stateworks:
+            raise ValueError("combined_enforcing requires at least one StateWork-backed task")
+        if isinstance(state_authority, CSWStateAuthority):
+            state_authority.namespace_id = bundle.pinned["namespace_id"]
+            state_authority.application_id = bundle.pinned["application_id"]
+            state_authority.application_instance_id = bundle.pinned["application_instance_id"]
+    if runtime_mode == "standalone_advisory" and state_authority is not None:
+        raise ValueError("standalone_advisory cannot combine with shared StateWork authority")
     session.state_authority = state_authority
+    session.runtime_mode = runtime_mode
+    if runtime_mode == "combined_enforcing" and not session._authoritative_state_ready():
+        raise ValueError("shared StateWork authority could not resolve initial state")
     session._segment_status = {
         item.segment_id: (SegmentStatus.ACTIVE if index == 0 else SegmentStatus.PENDING)
         for index, item in enumerate(session.execution_segments)

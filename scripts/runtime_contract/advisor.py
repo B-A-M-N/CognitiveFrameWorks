@@ -6,6 +6,7 @@ the host still owns route eligibility and validates every adjustment.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol
 
 
@@ -47,6 +48,31 @@ class MCPBehavioralAdvisor:
         if not isinstance(response, Mapping):
             return {"status": "unavailable", "reason": "malformed advice", "adjustments": []}
         return response
+
+
+def validate_advice_transaction(advice: Mapping[str, Any], *,
+                                 static_policy: Mapping[str, Any]) -> None:
+    """Reject stale or cross-request advice as one atomic transaction."""
+    if not isinstance(advice, Mapping):
+        raise ValueError("behavioral advice response is not an object")
+    if advice.get("status") == "unavailable" and not advice.get("adjustments"):
+        return
+    mismatches = []
+    for field in ("static_policy_hash", "eligible_choice_hash", "context_identity"):
+        if advice.get(field) != static_policy.get(field):
+            mismatches.append(field)
+    expires_at = advice.get("expires_at")
+    if expires_at is not None:
+        try:
+            expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("behavioral advice has invalid expires_at") from exc
+        if expiry.tzinfo is None:
+            raise ValueError("behavioral advice expiry must include a timezone")
+        if expiry <= datetime.now(timezone.utc):
+            mismatches.append("expires_at")
+    if mismatches:
+        raise ValueError("behavioral advice transaction rejected: " + ", ".join(mismatches))
 
 
 def bounded_adjustments(advice: Mapping[str, Any],
