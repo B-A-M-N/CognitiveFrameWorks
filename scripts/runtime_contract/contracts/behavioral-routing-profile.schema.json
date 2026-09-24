@@ -136,6 +136,8 @@
             "holdout_evaluations": { "type": "array" },
             "holdout_evaluators": { "type": "array", "items": { "type": "string" } },
             "holdout_max_not_applicable_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+            "control_max_not_applicable_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+            "treatment_max_not_applicable_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
             "decision": { "enum": ["pass", "fail"] },
             "receipt_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
           },
