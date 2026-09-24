@@ -24,14 +24,14 @@ CognitiveFrameWorks is one of three complementary systems:
 | System | Primary question | Role |
 | --- | --- | --- |
 | **CognitiveFrameWorks** | **How should the agent behave?** | Reasoning policy, execution discipline, authority, evidence, recovery, communication |
-| **CognitiveStateWork** | **What behavior and transitions are appropriate now?** | Domain state, workflow legality, transition requirements, handoffs, recovery |
-| **Digital Psychology** | **Why is the agent behaving this way under these conditions?** | Behavioral observation, trajectory analysis, experimentation, longitudinal learning |
+| **CognitiveStateWorks** | **What behavior and transitions are appropriate now?** | Domain state, workflow legality, transition requirements, handoffs, recovery |
+| **DigitalPsychology** | **Why is the agent behaving this way under these conditions?** | Behavioral observation, trajectory analysis, experimentation, longitudinal learning |
 
 Together they form a **closed-loop cognitive-behavioral control architecture**:
 
 ```text
                            ┌──────────────────────────────┐
-                           │     Digital Psychology       │
+                           │     DigitalPsychology       │
                            │                              │
                            │ observe → characterize       │
                            │ compare → experiment         │
@@ -43,7 +43,7 @@ Together they form a **closed-loop cognitive-behavioral control architecture**:
                        ┌──────────────────┴──────────────────┐
                        │                                     │
                        ▼                                     ▼
-             CognitiveFrameWorks                    CognitiveStateWork
+             CognitiveFrameWorks                    CognitiveStateWorks
              behavioral policy                      operational state
              reasoning & action                     legal transitions
              evidence & authority                   evidence requirements
@@ -83,11 +83,11 @@ It governs things such as:
 
 CFW does **not** try to encode every domain workflow.
 
-That belongs to CognitiveStateWork.
+That belongs to CognitiveStateWorks.
 
 CFW also does not decide that a behavioral tendency exists merely because an agent or operator says so.
 
-That belongs to Digital Psychology.
+That belongs to DigitalPsychology.
 
 ## The behavioral framework
 
@@ -132,7 +132,7 @@ TaskRequest
             │
             ▼
  Optional validated behavioral routing
-        from Digital Psychology
+        from DigitalPsychology
             │
             ▼
       EffectivePolicy
@@ -152,7 +152,7 @@ A key invariant is:
 
 > **Behavioral learning may refine legal choices. It must not make an illegal choice legal.**
 
-Digital Psychology may eventually provide evidence that a particular flow, specialist, stage, or optional intervention is counterproductive in a particular context.
+DigitalPsychology may eventually provide evidence that a particular flow, specialist, stage, or optional intervention is counterproductive in a particular context.
 
 CFW can use that evidence to prefer or suppress an eligible route.
 
@@ -164,7 +164,7 @@ The architecture deliberately separates two timescales.
 
 ### Fast loop — current work
 
-CFW and CognitiveStateWork govern the running task:
+CFW and CognitiveStateWorks govern the running task:
 
 ```text
 observe
@@ -179,7 +179,7 @@ Current-task policy is frozen so that execution remains reproducible and causal 
 
 ### Slow loop — learning across work
 
-Digital Psychology observes many real sessions:
+DigitalPsychology observes many real sessions:
 
 ```text
 telemetry
@@ -196,7 +196,7 @@ That allows the system to improve future behavior **without continuously rewriti
 
 ## Session-aware telemetry
 
-CFW emits structured behavioral telemetry without requiring Digital Psychology itself to be loaded into the agent.
+CFW emits structured behavioral telemetry without requiring DigitalPsychology itself to be loaded into the agent.
 
 Runtime identity distinguishes:
 
@@ -215,11 +215,11 @@ This prevents unrelated sessions from being accidentally collapsed into one beha
 
 The runtime's security-sensitive authority identities remain separate from analytics identities.
 
-## CognitiveStateWork integration
+## CognitiveStateWorks integration
 
 CFW determines **which StateWork is applicable and how it is composed**.
 
-CognitiveStateWork determines **which domain states and transitions are legal**.
+CognitiveStateWorks determines **which domain states and transitions are legal**.
 
 For example:
 
@@ -244,9 +244,9 @@ CFW cannot simply declare the infrastructure stable because the agent says the d
 
 The StateWork transition contract determines what evidence is required to reach that state.
 
-## Digital Psychology integration
+## DigitalPsychology integration
 
-Digital Psychology consumes CFW's behavioral telemetry and evaluates actual behavior across tasks and sessions.
+DigitalPsychology consumes CFW's behavioral telemetry and evaluates actual behavior across tasks and sessions.
 
 Its validated output may eventually become one of two things:
 
@@ -354,10 +354,10 @@ But the larger architecture makes a stronger distinction:
 CognitiveFrameWorks
     HOW should the agent behave?
 
-CognitiveStateWork
+CognitiveStateWorks
     WHAT behavior and transitions make sense NOW?
 
-Digital Psychology
+DigitalPsychology
     WHY does this behavior recur under THESE CONDITIONS,
     and WHAT ACTUALLY CHANGES IT?
 ```
@@ -366,8 +366,21 @@ Together, the three systems turn agent reliability from a collection of prompt i
 
 That is the direction of the project.
 
-## FreeInference attribution
+## Current implementation
 
+CognitiveFrameWorks is implemented as a host-owned runtime and policy compiler:
+
+- **Task policy resolution** freezes an immutable policy snapshot for each task.
+- **Capability composition** supports CFW-only, CFW + CSW, and CFW + DP deployments. A missing StateWork checkout does not prevent an ordinary CFW-only task from resolving.
+- **Safe adaptive advice** is applied only after the host computes eligible choices. Mandatory stages such as `WARD` cannot be suppressed, and malformed or ineligible advice is rejected as a whole.
+- **Action authority** remains host-owned. `ActionStrategy` provides bounded preference hints, but every action still passes the structural action gate.
+- **Evidence and telemetry** are separated: the runtime keeps local NDJSON telemetry, while the optional exporter provides bounded, cursor-based, event-ID-idempotent delivery to an external service.
+- **StateWork integration** validates explicit and learned flows against the same operation, trigger, shape, and current-state selectors.
+
+The public-beta gate is the authoritative automated release gate. It covers structural acceptance, cross-system integration, packaging, installation, upgrade, hostile-install, CSW, and DP behavior. Real-model reasoning claims still require running `scripts/acceptance-real-agent.py` with an explicitly supplied external agent command; deterministic tests do not substitute for that qualification.
+
+
+## FreeInference attribution
 This work benefited in some way from inference provided by [freeinference.org](https://freeinference.org/).
 
 These are independent developments that are not reviewed, endorsed, or sponsored by FreeInference. If you find these projects genuinely useful, please consider donating to or sponsoring FreeInference, which provides a vital inference service.
