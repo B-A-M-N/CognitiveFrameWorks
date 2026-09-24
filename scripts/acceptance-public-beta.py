@@ -44,7 +44,8 @@ def main() -> int:
                               "gates": report}, sort_keys=True))
             return result.returncode
     commits = {}
-    for repo in (ROOT, BASE / "CognitiveStateWorks", BASE / "DigitalPsychology"):
+    statework_repo = BASE / "CognitiveStateWorks" if (BASE / "CognitiveStateWorks").is_dir() else BASE / "CognitiveStateWork"
+    for repo in (ROOT, statework_repo, BASE / "DigitalPsychology"):
         commits[repo.name] = subprocess.check_output(
             ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     print(json.dumps({"manifest_version": manifest["manifest_version"],
