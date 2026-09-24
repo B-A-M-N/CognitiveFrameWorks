@@ -17,6 +17,49 @@ Over time, that grew from a collection of behavioral protocols into a host-integ
 
 > **How should this agent behave while doing the work?**
 
+## Current implementation
+
+CognitiveFrameWorks is implemented as a host-owned runtime and policy compiler:
+
+- **Task policy resolution** freezes an immutable policy snapshot for each task.
+- **Capability composition** supports CFW-only, CFW + CSW, and CFW + DP deployments. A missing StateWork checkout does not prevent an ordinary CFW-only task from resolving.
+- **Safe adaptive advice** is applied only after the host computes eligible choices. Mandatory stages such as `WARD` cannot be suppressed, and malformed or ineligible advice is rejected as a whole.
+- **Action authority** remains host-owned. `ActionStrategy` provides bounded preference hints, but every action still passes the structural action gate.
+- **Evidence and telemetry** are separated: the runtime keeps local NDJSON telemetry, while the optional exporter provides bounded, cursor-based, event-ID-idempotent delivery to an external service.
+- **StateWork integration** validates explicit and learned flows against the same operation, trigger, shape, and current-state selectors.
+
+The public-beta gate is the authoritative automated release gate. It covers structural acceptance, cross-system integration, packaging, installation, upgrade, hostile-install, CSW, and DP behavior. Real-model reasoning claims still require running `scripts/acceptance-real-agent.py` with an explicitly supplied external agent command; deterministic tests do not substitute for that qualification.
+
+## Five-minute standalone quick start
+
+CFW does not require either sibling checkout. Install into an isolated host registry and run the checked-in example:
+
+```bash
+python3 scripts/install-framework.py \
+  --registry demo="$HOME/.demo-cfw" \
+  --statework-root "$HOME/no-cognitive-stateworks-here"
+python3 scripts/doctor.py --registry demo="$HOME/.demo-cfw"
+python3 scripts/quickstart-standalone.py
+```
+
+Expected output includes:
+
+```text
+kernel: owl -> anchor_open -> fuse -> ward -> anchor_closeout -> sispis
+read action gate: allow
+policy snapshot: <64-character SHA-256>
+```
+
+The example resolves an `implement` task, shows the host action gate decision, and prints the immutable policy hash. The `read` action is authorized by CFW itself; this is not evidence that a real model reasons better.
+
+## Optional integrations
+
+- **CFW alone:** required for the example above. No CSW or DP installation is loaded.
+- **CFW + CSW:** point `--statework-root` at a CognitiveStateWorks checkout. CFW composes only eligible StateWorks and enforces their transition contracts.
+- **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. DP supplies bounded preferences only; CFW remains the authority for eligibility, permissions, and mandatory stages.
+
+The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
+
 ## The larger architecture
 
 CognitiveFrameWorks is one of three complementary systems:
@@ -366,19 +409,17 @@ Together, the three systems turn agent reliability from a collection of prompt i
 
 That is the direction of the project.
 
-## Current implementation
+## Tests, limitations, and release status
 
-CognitiveFrameWorks is implemented as a host-owned runtime and policy compiler:
+The authoritative automated release gate is [`release-gates.json`](release-gates.json). It covers CFW runtime/public API/structural/session routing, CSW validation/control-plane/concurrency, DP self-tests/routing/cross-system/three-system/dynamic improvement, package resources, installation, upgrade, and hostile-install checks.
 
-- **Task policy resolution** freezes an immutable policy snapshot for each task.
-- **Capability composition** supports CFW-only, CFW + CSW, and CFW + DP deployments. A missing StateWork checkout does not prevent an ordinary CFW-only task from resolving.
-- **Safe adaptive advice** is applied only after the host computes eligible choices. Mandatory stages such as `WARD` cannot be suppressed, and malformed or ineligible advice is rejected as a whole.
-- **Action authority** remains host-owned. `ActionStrategy` provides bounded preference hints, but every action still passes the structural action gate.
-- **Evidence and telemetry** are separated: the runtime keeps local NDJSON telemetry, while the optional exporter provides bounded, cursor-based, event-ID-idempotent delivery to an external service.
-- **StateWork integration** validates explicit and learned flows against the same operation, trigger, shape, and current-state selectors.
+The public-beta gate uses the three local checkout layout. Standalone CFW behavior is separately exercised by the isolated install, doctor, and quickstart commands above.
 
-The public-beta gate is the authoritative automated release gate. It covers structural acceptance, cross-system integration, packaging, installation, upgrade, hostile-install, CSW, and DP behavior. Real-model reasoning claims still require running `scripts/acceptance-real-agent.py` with an explicitly supplied external agent command; deterministic tests do not substitute for that qualification.
+Structural tests establish deterministic policy, authority, state, and integration behavior. They do not establish that an external model reasons differently. Real-agent claims require [`scripts/acceptance-real-agent.py`](scripts/acceptance-real-agent.py) with an explicit external agent command and complete objective qualification. Host integrations, model availability, tool permissions, and evaluator behavior remain deployment-specific limitations.
 
+## License and contribution
+
+These projects are released under the [MIT License](LICENSE). Contributions are welcome through repository issues and pull requests. Please include a focused regression or acceptance check for behavior changes, keep authority boundaries explicit, and do not claim model-performance improvements without the corresponding qualification evidence.
 
 ## FreeInference attribution
 This work benefited in some way from inference provided by [freeinference.org](https://freeinference.org/).
