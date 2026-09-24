@@ -22,11 +22,13 @@ import json
 import os
 import selectors
 import shlex
+import signal
+import time
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 DP_ROOT = ROOT.parent / "DigitalPsychology"
@@ -50,7 +52,8 @@ class PersistentAgent:
     def __init__(self, command: list[str]) -> None:
         self.process = subprocess.Popen(
             command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            stderr=subprocess.DEVNULL, text=True, bufsize=1,
+            start_new_session=(os.name == "posix"))
         assert self.process.stdin is not None and self.process.stdout is not None
         self.stdin = self.process.stdin
         self.stdout = self.process.stdout
@@ -74,14 +77,38 @@ class PersistentAgent:
 
     def close(self) -> None:
         self.selector.close()
-        if self.process.poll() is None:
-            self.process.terminate()
+        if os.name == "posix":
             try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+                os.killpg(self.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        elif self.process.poll() is None:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            if os.name == "posix":
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
                 self.process.kill()
-                self.process.wait(timeout=2)
-        self.stdin.close()
+            self.process.wait(timeout=2)
+        if os.name == "posix":
+            try:
+                os.killpg(self.process.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                try:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        try:
+            self.stdin.close()
+        except OSError:
+            pass
         self.stdout.close()
 
     def __enter__(self) -> "PersistentAgent":
@@ -125,10 +152,45 @@ def execute_fixture_action(action: dict[str, Any], workspace: Path,
             "content_digest": hashlib.sha256(actual.encode("utf-8")).hexdigest()}
 
 
+class QualificationBudget:
+    def __init__(self, *, max_model_calls: int, max_elapsed_seconds: float,
+                 max_external_tokens: int, max_monetary_cost: float) -> None:
+        if min(max_model_calls, max_elapsed_seconds, max_external_tokens, max_monetary_cost) <= 0:
+            raise ValueError("qualification budget limits must be positive")
+        self.max_model_calls = max_model_calls
+        self.max_elapsed_seconds = max_elapsed_seconds
+        self.max_external_tokens = max_external_tokens
+        self.max_monetary_cost = max_monetary_cost
+        self.model_calls = 0
+        self.external_tokens = 0
+        self.monetary_cost = 0.0
+        self.started_at = time.monotonic()
+
+    def check(self) -> None:
+        if self.model_calls >= self.max_model_calls:
+            raise RuntimeError("real-agent qualification model-call limit reached")
+        if time.monotonic() - self.started_at >= self.max_elapsed_seconds:
+            raise RuntimeError("real-agent qualification elapsed-time limit reached")
+        if self.external_tokens >= self.max_external_tokens:
+            raise RuntimeError("real-agent qualification external-token limit reached")
+        if self.monetary_cost >= self.max_monetary_cost:
+            raise RuntimeError("real-agent qualification monetary-cost limit reached")
+
+    def record_response(self, response: Mapping[str, Any]) -> None:
+        self.model_calls += 1
+        usage = response.get("usage") if isinstance(response.get("usage"), Mapping) else {}
+        input_tokens = int(usage.get("input_tokens") or usage.get("input") or 0)
+        output_tokens = int(usage.get("output_tokens") or usage.get("output") or 0)
+        cost = float(usage.get("cost") or usage.get("monetary_cost") or 0.0)
+        self.external_tokens += max(0, input_tokens) + max(0, output_tokens)
+        self.monetary_cost += max(0.0, cost)
+
+
 def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str,
               profile_path: Path | None, max_turns: int, timeout: float,
               workspace: Path, experiment_plan: dict[str, Any] | None = None,
-              agent_instance_id: str = "external-agent-instance") -> dict[str, Any]:
+              agent_instance_id: str = "external-agent-instance",
+              budget: QualificationBudget | None = None) -> dict[str, Any]:
     api = api_module.CognitiveRuntime(
         routing_profile_path=str(profile_path) if profile_path else None)
     request = resolve.TaskRequest(
@@ -174,6 +236,8 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
             metrics["prompt_words"] += len(prompt.split())
             # Cohort, profile status, and treatment labels are intentionally not
             # present.  The agent sees only the real model-facing context.
+            if budget is not None:
+                budget.check()
             response = agent_process.request({
                 "task": {"task_id": task_id, "subject_ref": request.subject_ref,
                          "shape": request.shape, "domain_tags": list(request.domain_tags),
@@ -181,6 +245,8 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
                          "fixture_target": str(fixture_target)},
                 "prompt": prompt, "turn": turn, "previous_results": previous,
             }, timeout)
+            if budget is not None:
+                budget.record_response(response)
             action = response.get("action")
             if action is not None:
                 if not isinstance(action, dict):
@@ -263,9 +329,17 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--minimum-effect", type=float, default=0.10)
     parser.add_argument("--post-trials", type=int, default=1)
+    parser.add_argument("--max-attempts", type=int, default=0,
+                        help="hard cap on closed-loop cohort assignment attempts")
+    parser.add_argument("--max-model-calls", type=int, default=200)
+    parser.add_argument("--max-elapsed-seconds", type=float, default=1800.0)
+    parser.add_argument("--max-external-tokens", type=int, default=1_000_000)
+    parser.add_argument("--max-monetary-cost", type=float, default=25.0)
     args = parser.parse_args()
-    if args.trials < 1 or args.max_turns < 1:
-        raise SystemExit("trials and max-turns must be positive")
+    if args.trials < 1 or args.max_turns < 1 or args.post_trials < 0:
+        raise SystemExit("trials/max-turns must be positive and post-trials non-negative")
+    if min(args.max_model_calls, args.max_elapsed_seconds, args.max_external_tokens, args.max_monetary_cost) <= 0:
+        raise SystemExit("real-agent resource limits must be positive")
     if bool(args.treatment_profile) == bool(args.experiment_plan):
         raise SystemExit("provide exactly one of --experiment-plan or --treatment-profile")
     command = shlex.split(args.agent_command)
@@ -292,6 +366,15 @@ def main() -> int:
         promoted_path: Path | None = None
         if args.experiment_plan:
             plan = json.loads(args.experiment_plan.read_text(encoding="utf-8"))
+            canary_fraction = float(plan.get("canary_fraction", 0.0) or 0.0)
+            if not 0 < canary_fraction < 1:
+                raise SystemExit("closed-loop qualification requires 0 < canary_fraction < 1")
+            max_attempts = args.max_attempts or max(4, args.trials * 8)
+            budget = QualificationBudget(
+                max_model_calls=args.max_model_calls,
+                max_elapsed_seconds=args.max_elapsed_seconds,
+                max_external_tokens=args.max_external_tokens,
+                max_monetary_cost=args.max_monetary_cost)
             counts = {"control": 0, "treatment": 0}
             index = 0
             while min(counts.values()) < args.trials:
@@ -301,12 +384,15 @@ def main() -> int:
                     api_module, resolve, command,
                     task_id=f"real-agent-experiment-{index}", profile_path=None,
                     max_turns=args.max_turns, timeout=args.timeout,
-                    workspace=workspace, experiment_plan=plan)
+                    workspace=workspace, experiment_plan=plan, budget=budget)
                 cohort = metrics.get("cohort")
                 if cohort in results and counts[cohort] < args.trials:
                     results[cohort].append(metrics)
                     counts[cohort] += 1
                 index += 1
+                if index >= max_attempts:
+                    raise RuntimeError(
+                        f"closed-loop cohort assignment did not reach both populations in {max_attempts} attempts")
             from lib.feedback_loop import load_events  # noqa: E402
             from lib.routing_profiles import derive_profiles, promote_profile  # noqa: E402
             telemetry_root = Path(state) / "cognitiveframeworks" / "telemetry"
@@ -335,8 +421,13 @@ def main() -> int:
                         api_module, resolve, command,
                         task_id=f"real-agent-post-{index}", profile_path=promoted_path,
                         max_turns=args.max_turns, timeout=args.timeout,
-                        workspace=workspace))
+                        workspace=workspace, budget=budget))
         else:
+            budget = QualificationBudget(
+                max_model_calls=args.max_model_calls,
+                max_elapsed_seconds=args.max_elapsed_seconds,
+                max_external_tokens=args.max_external_tokens,
+                max_monetary_cost=args.max_monetary_cost)
             for cohort, profile in (("control", None), ("treatment", args.treatment_profile)):
                 for index in range(args.trials):
                     workspace = Path(state) / "workspaces" / cohort / str(index)
@@ -345,7 +436,7 @@ def main() -> int:
                         api_module, resolve, command,
                         task_id=f"real-agent-{cohort}-{index}", profile_path=profile,
                         max_turns=args.max_turns, timeout=args.timeout,
-                        workspace=workspace))
+                        workspace=workspace, budget=budget))
 
         def rate(items: list[dict[str, Any]], field: str) -> float:
             return sum(bool(item.get(field)) for item in items) / len(items) if items else 0.0
@@ -361,6 +452,14 @@ def main() -> int:
         print(json.dumps({"experiment": "real-agent-control-treatment",
                           "cohort_labels_hidden_from_agent": True,
                           "persistent_agent_process_per_trajectory": True,
+                          "budget": {"max_model_calls": budget.max_model_calls,
+                                     "model_calls": budget.model_calls,
+                                     "max_elapsed_seconds": budget.max_elapsed_seconds,
+                                     "elapsed_seconds": round(time.monotonic() - budget.started_at, 3),
+                                     "max_external_tokens": budget.max_external_tokens,
+                                     "external_tokens": budget.external_tokens,
+                                     "max_monetary_cost": budget.max_monetary_cost,
+                                     "monetary_cost": round(budget.monetary_cost, 8)},
                           "objective": {"control_oracle_success_rate": control_rate,
                                         "treatment_oracle_success_rate": treatment_rate,
                                         "effect": effect,
