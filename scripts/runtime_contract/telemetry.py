@@ -95,10 +95,28 @@ class DurableTelemetryExporter:
             self._save_cursor(start + min(self.batch_size, len(events) - start))
             return 0
         try:
-            self.sink(batch)
+            acknowledged = self.sink(batch)
         except Exception:
             return 0
-        delivered.update(str(event["event_id"]) for event in batch if event.get("event_id"))
+        if acknowledged is False:
+            return 0
+        if acknowledged is None:
+            acknowledged_ids = {str(event.get("event_id")) for event in batch if event.get("event_id")}
+        elif isinstance(acknowledged, (set, list, tuple)):
+            acknowledged_ids = {str(value) for value in acknowledged}
+        elif isinstance(acknowledged, Mapping):
+            acknowledged_ids = {str(key) for key, value in acknowledged.items() if value}
+        else:
+            raise ValueError("telemetry sink must return acknowledged event identities")
+        if not acknowledged_ids:
+            return 0
+        delivered.update(acknowledged_ids)
         self._save_ids(delivered)
-        self._save_cursor(start + min(self.batch_size, len(events) - start))
-        return len(batch)
+        consumed = 0
+        for event in batch:
+            if str(event.get("event_id")) in acknowledged_ids:
+                consumed += 1
+            else:
+                break
+        self._save_cursor(start + consumed)
+        return consumed

@@ -1669,7 +1669,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "harness_version": harness_version, "toolset": toolset,
         "task_family": shape, "task_shape": shape, "domain_tags": domains,
         "phase": phase, "environment": os.environ.get("CFW_ENVIRONMENT", "runtime"),
-        "statework_versions": {},
+        "statework_versions": {str(item.get("id")): str(item.get("version"))
+                                for item in load_stateworks(cow_root)},
         "framework_version": routing_plugin.get("version", "unknown"),
         "guard_pack_hash": routing_pack_for_context.get("semantic_hash"),
     }
@@ -1742,6 +1743,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             pass
     for guard in routing_pack_for_context.get("always_on", []) + routing_pack_for_context.get("guards", []):
         eligible_routes.append({"route_type": "guard", "route": str(guard.get("key") or guard.get("id") or "")})
+    for action_id in effective_actions:
+        eligible_routes.append({"route_type": "tool_policy", "route": str(action_id), "action_id": str(action_id)})
     static_policy_hash = hashlib.sha256(_stable_json({
         "profile": profile, "aliases": aliases, "stages": stages,
     }).encode("utf-8")).hexdigest()
@@ -1779,7 +1782,9 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             validate_adaptive_adjustment(
                 adjustment, static_stages=stages,
                 always_on_guards=[g.get("key") or g.get("id") for g in load_guard_pack().get("always_on", [])])
-    routing_context["statework_versions"] = {}
+    routing_context["statework_versions"] = {
+        str(item.get("id")): str(item.get("version")) for item in load_stateworks(cow_root)
+    }
     routing_context["comparison_context_hash"] = comparison_context_hash(routing_context)
     if behavioral_advisor is not None:
         advice_receipt = {

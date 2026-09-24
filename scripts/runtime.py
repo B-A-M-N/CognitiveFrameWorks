@@ -599,6 +599,87 @@ class HostIngress:
             self._capability, packet, observation_context=observation_context)
 
 
+class StateAuthority:
+    """Host interface for combined CSW authority; the session never owns it."""
+    def inspect(self, *, statework_id: str, subject_ref: str, contract_hash: str) -> Dict[str, Any]:
+        raise NotImplementedError
+    def commit(self, *, statework_id: str, subject_ref: str, contract_hash: str,
+               expected_revision: int, output_state: str, evidence_refs: list[str], trigger: str,
+               evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Dict[str, Any]:
+        raise NotImplementedError
+
+
+class CSWStateAuthority(StateAuthority):
+    """Concrete combined-mode adapter owned by CSW, injected into CFW."""
+    def __init__(self, root: Path, *, state_path: Optional[Path] = None,
+                 evidence_path: Optional[Path] = None) -> None:
+        self.root = Path(root)
+        self.control = _statework_transition_engines(self.root)
+        self.state_store = self.control.SubjectStateStore(
+            Path(state_path) if state_path else self.root / "state" / "subjects.json")
+        self.evidence_store = self.control.EvidenceStore()
+        self.evidence_path = Path(evidence_path) if evidence_path else self.root / "state" / "evidence.json"
+        self._controllers: Dict[str, Any] = {}
+        self._load_evidence()
+
+    def _load_evidence(self) -> None:
+        if not self.evidence_path.exists():
+            return
+        try:
+            records = json.loads(self.evidence_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("CSW evidence authority is unreadable") from exc
+        for record in records if isinstance(records, list) else []:
+            self.evidence_store.put(record)
+
+    def _contract(self, statework_id: str, contract_hash: str) -> tuple[Dict[str, Any], str]:
+        import yaml
+        path = self.root / statework_id / "transitions.yaml"
+        if not path.is_file():
+            raise ValueError(f"CSW StateWork {statework_id!r} is unavailable")
+        contract = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        actual = hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+        if actual != contract_hash:
+            raise ValueError("CFW pinned contract does not match CSW authority contract")
+        return contract, actual
+
+    def _identity(self, *, statework_id: str, subject_ref: str, contract: Mapping[str, Any]) -> Dict[str, Any]:
+        return {"namespace_id": "cfw", "application_id": "combined-runtime",
+                "subject_ref": subject_ref, "statework_id": statework_id,
+                "contract_version": str(contract.get("version") or "1.0.0")}
+
+    def inspect(self, *, statework_id: str, subject_ref: str, contract_hash: str) -> Dict[str, Any]:
+        contract, _ = self._contract(statework_id, contract_hash)
+        identity = self._identity(statework_id=statework_id, subject_ref=subject_ref, contract=contract)
+        key = self.control.SubjectStateStore.key(identity)
+        if key not in self._controllers:
+            registry = self.control.load_evidence_kind_registry(self.root / "schemas" / "evidence-kinds.yaml")
+            self._controllers[key] = self.control.StandaloneStateWorkController(
+                contract=contract, identity=identity, state_store=self.state_store,
+                evidence_store=self.evidence_store, evidence_registry=registry)
+        return self._controllers[key].inspect()
+
+    def commit(self, *, statework_id: str, subject_ref: str, contract_hash: str,
+               expected_revision: int, output_state: str, evidence_refs: list[str], trigger: str,
+               evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Dict[str, Any]:
+        contract, _ = self._contract(statework_id, contract_hash)
+        identity = self._identity(statework_id=statework_id, subject_ref=subject_ref, contract=contract)
+        key = self.control.SubjectStateStore.key(identity)
+        controller = self._controllers.get(key)
+        if controller is None:
+            self.inspect(statework_id=statework_id, subject_ref=subject_ref, contract_hash=contract_hash)
+            controller = self._controllers[key]
+        for record in (evidence_records or []):
+            self.evidence_store.put(dict(record))
+        decision = controller.request_transition(
+            to_state=output_state, trigger=trigger, evidence_refs=evidence_refs,
+            expected_revision=expected_revision)
+        if not decision.allowed:
+            raise ValueError(f"CSW authority blocked transition: {decision.reason}")
+        self.evidence_store.save(self.evidence_path)
+        return controller.inspect()
+
+
 @dataclass
 class RuntimeSession:
     """A started task runtime: injected instructions + hooks."""
@@ -628,6 +709,7 @@ class RuntimeSession:
     _packet_store: Any = None
     _emit: Optional[TelemetrySink] = None
     _telemetry_exporter: Optional[DurableTelemetryExporter] = None
+    state_authority: Optional[StateAuthority] = None
     host_context: HostExecutionContext = field(default_factory=HostExecutionContext)
     host_invocations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     _consumed_grant_ids: set[str] = field(default_factory=set, repr=False)
@@ -670,7 +752,7 @@ class RuntimeSession:
                 "authority_revision", "session_id", "agent_instance_id", "attempt_id",
                 "interaction_id", "parent_session_id", "delegator_agent_id",
                 "delegate_agent_id", "delegation_id", "role",
-                "journal_path", "journal_db_path", "_telemetry_exporter"}:
+                "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -701,7 +783,7 @@ class RuntimeSession:
                     preferences.append(route)
         eligible = [route for route in self.action_registry if route not in preferences]
         return ActionStrategy(
-            eligible_actions=tuple(eligible + preferences),
+            eligible_actions=tuple(preferences + eligible),
             priorities={route: index for index, route in enumerate(preferences)},
             reason="learned preference within host-authorized action set",
             policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
@@ -1401,7 +1483,16 @@ class RuntimeSession:
         engine = control.TransitionEngine(
             contract, evidence_registry=evidence_registry, require_registered=False)
         state_key = (statework_id, subject_ref)
-        current = self.statework_states.get(state_key, contract["initial_state"])
+        contract_hash = hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+        if self.state_authority is not None:
+            authoritative = self.state_authority.inspect(
+                statework_id=statework_id, subject_ref=subject_ref, contract_hash=contract_hash)
+            current = str(authoritative.get("state") or contract["initial_state"])
+            authoritative_revision = int(authoritative.get("revision", 0) or 0)
+        else:
+            authoritative = None
+            authoritative_revision = 0
+            current = self.statework_states.get(state_key, contract["initial_state"])
         if input_state is not None and input_state != current:
             self._emit_runtime({"category": "blocker", "event_type": "state_conflict",
                        "subject": subject_ref, "input_state": input_state,
@@ -1440,6 +1531,19 @@ class RuntimeSession:
                                "result_class": "allowed" if decision.allowed else "blocked"}})
         if not decision.allowed:
             return GateDecision.BLOCK
+        if self.state_authority is not None:
+            try:
+                committed = self.state_authority.commit(
+                    statework_id=statework_id, subject_ref=subject_ref,
+                    contract_hash=contract_hash, expected_revision=authoritative_revision,
+                    output_state=output_state, evidence_refs=[item["ref"] for item in verified_evidence],
+                    trigger=trigger or "", evidence_records=verified_evidence)
+            except Exception as exc:
+                self._emit_runtime({"category": "blocker", "event_type": "state_authority_conflict",
+                           "subject": subject_ref, "input_state": origin, "output_state": output_state,
+                           "payload": {"summary": str(exc)[:512], "result_class": "re-inspection required"}})
+                return GateDecision.REQUIRE_REINSPECTION
+            authoritative_revision = int(committed.get("revision", authoritative_revision + 1) or authoritative_revision + 1)
         self.statework_states[state_key] = output_state
         entry_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.statework_entry_times[state_key] = entry_time
@@ -1859,6 +1963,7 @@ class RuntimeSession:
 def start(bundle: resolve_runtime.RuntimeBundle, *,
           telemetry_sink: Optional[TelemetrySink] = None,
           telemetry_exporter: Optional[DurableTelemetryExporter] = None,
+          state_authority: Optional[StateAuthority] = None,
           telemetry_disabled: bool = False,
           tool_hooks: Optional[List[Callable[[Dict[str, Any]], Optional[GateDecision]]]] = None,
           final_hooks: Optional[List[Callable[[Dict[str, Any]], None]]] = None,
@@ -1951,6 +2056,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
        role=bundle.pinned.get("role"))
     session._ledger_token = object()
     session.ledger = EvidenceLedger(bundle.task_id, writer_token=session._ledger_token)
+    session.state_authority = state_authority
     session._segment_status = {
         item.segment_id: (SegmentStatus.ACTIVE if index == 0 else SegmentStatus.PENDING)
         for index, item in enumerate(session.execution_segments)
