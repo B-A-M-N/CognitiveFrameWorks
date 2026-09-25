@@ -87,13 +87,14 @@ class TaskRequest:
         if self.shared_workflow_membership is not None:
             membership = dict(self.shared_workflow_membership)
             required = {"namespace_id", "application_id", "application_instance_id",
-                        "workflow_id", "statework_id", "subject_ref", "authorization_revision"}
-            if set(membership) != required or any(
+                        "workflow_id", "statework_id", "subject_ref"}
+            if not required.issubset(membership) or any(
                     not isinstance(membership.get(name), str) or not membership.get(name)
-                    for name in required - {"authorization_revision"}):
+                    for name in required):
                 raise ValueError("shared workflow membership has an invalid identity contract")
-            if int(membership.get("authorization_revision") or 0) < 1:
-                raise ValueError("shared workflow membership requires a positive authorization revision")
+            revision = membership.get("membership_revision", membership.get("authorization_revision"))
+            if int(revision or 0) < 1:
+                raise ValueError("shared workflow membership requires a positive membership revision")
             object.__setattr__(self, "shared_workflow_membership", MappingProxyType(membership))
         if self.policy_revocation_revision < 0:
             raise ValueError("policy_revocation_revision must be non-negative")

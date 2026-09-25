@@ -1,17 +1,19 @@
 """Canonical DP behavior-event schema contract for host telemetry."""
 from __future__ import annotations
 
-import json
-import hashlib
-import os
-import tempfile
-import time
 import fcntl
+import hashlib
+import json
+import os
+import queue
+import tempfile
 import threading
-from typing import Callable, Iterable, Mapping
+import time
 from importlib.resources import files as resource_files
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Iterable, Mapping, Tuple
+
+EventKey = Tuple[str, str, str]
 
 def behavior_schema_contract(path: Path) -> Tuple[Dict[str, Any], str, str]:
     packaged = resource_files("runtime_contract").joinpath(f"contracts/{path.name}")
@@ -34,188 +36,246 @@ def behavior_schema_contract(path: Path) -> Tuple[Dict[str, Any], str, str]:
     return schema, hashlib.sha256(path.read_bytes()).hexdigest(), version
 
 
-class DurableTelemetryExporter:
-    """Bounded-offset DP delivery with explicit production acknowledgements.
+def event_key(event: Mapping[str, Any]) -> EventKey:
+    return (str(event.get("namespace_id") or "default"),
+            str(event.get("application_instance_id") or "unknown-application"),
+            str(event.get("event_id") or ""))
 
-    Local telemetry remains the source record. The exporter reads only bytes
-    after its durable cursor, never advances past an incomplete trailing line,
-    and never assumes delivery without an explicit acknowledgement identity.
+
+def _encode_key(key: EventKey) -> str:
+    return json.dumps(list(key), separators=(",", ":"))
+
+
+def _decode_key(value: Any) -> EventKey:
+    if isinstance(value, str):
+        parsed = json.loads(value)
+    elif isinstance(value, (list, tuple)) and len(value) == 3:
+        parsed = list(value)
+    else:
+        raise ValueError("telemetry acknowledgement is not an EventKey")
+    return tuple(str(item) for item in parsed)  # type: ignore[return-value]
+
+
+class DurableTelemetryExporter:
+    """Single-owner bounded exporter with durable cursor, keys, and lease.
+
+    ``enqueue`` never calls the sink. One background worker owns delivery and
+    cursor updates, preventing overlapping timed-out deliveries.
     """
     def __init__(self, source: Path, sink: Callable[[list[dict[str, Any]]], Any],
                  *, state_dir: Path, batch_size: int = 64,
                  max_delivered_ids: int = 2048,
-                 origin_budget: Mapping[str, int] | None = None):
+                 origin_budget: Mapping[str, int] | None = None,
+                 queue_size: int = 256, worker_poll_seconds: float = 0.2):
         if not 1 <= batch_size <= 1000:
             raise ValueError("telemetry exporter batch_size must be 1..1000")
-        if not 1 <= max_delivered_ids <= 100_000:
-            raise ValueError("telemetry exporter max_delivered_ids must be 1..100000")
-        if origin_budget is not None and any(int(value) < 1 for value in origin_budget.values()):
-            raise ValueError("telemetry origin budgets must be positive")
+        if not 1 <= max_delivered_ids <= 100_000 or queue_size < batch_size:
+            raise ValueError("telemetry exporter storage/queue limits are invalid")
         self.source = Path(source)
         self.sink = sink
         self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         self.cursor_path = self.state_dir / "telemetry.cursor.json"
         self.ids_path = self.state_dir / "telemetry.ids.json"
+        self.lease_path = self.state_dir / "telemetry.lease.json"
+        self.lock_path = self.state_dir / "telemetry.exporter.lock"
         self.batch_size = batch_size
         self.max_delivered_ids = max_delivered_ids
         self.origin_budget = {str(key): int(value) for key, value in (origin_budget or {}).items()}
-        self.lock_path = self.state_dir / "telemetry.exporter.lock"
-        self._inflight = False
+        self._queue: queue.Queue[None] = queue.Queue(maxsize=queue_size)
+        self._worker = threading.Thread(target=self._delivery_loop, daemon=True,
+                                        name="cognitiveframeworks-telemetry-owner")
+        self._worker.start()
 
     def _cursor(self) -> dict[str, Any]:
         try:
             data = json.loads(self.cursor_path.read_text(encoding="utf-8"))
-            return {
-                "byte_offset": max(0, int(data.get("byte_offset", 0) or 0)),
-                "last_event_id": str(data.get("last_event_id") or ""),
-            }
+            return {"byte_offset": max(0, int(data.get("byte_offset", 0) or 0)),
+                    "last_event_key": str(data.get("last_event_key") or "")}
         except (FileNotFoundError, ValueError, TypeError, json.JSONDecodeError):
-            return {"byte_offset": 0, "last_event_id": ""}
+            return {"byte_offset": 0, "last_event_key": ""}
 
-    def _save_cursor(self, *, byte_offset: int, last_event_id: str) -> None:
-        fd, temp = tempfile.mkstemp(dir=self.state_dir, prefix=".telemetry-cursor.", suffix=".tmp")
+    def _atomic_json(self, path: Path, value: Any) -> None:
+        fd, temp = tempfile.mkstemp(dir=self.state_dir, prefix=f".{path.name}.", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"byte_offset": max(0, int(byte_offset)),
-                           "last_event_id": str(last_event_id or "")},
-                          stream, sort_keys=True, separators=(",", ":"))
+                json.dump(value, stream, sort_keys=True, separators=(",", ":"))
                 stream.flush(); os.fsync(stream.fileno())
-            os.chmod(temp, 0o600); os.replace(temp, self.cursor_path)
+            os.chmod(temp, 0o600); os.replace(temp, path)
         finally:
             if os.path.exists(temp): os.unlink(temp)
 
-    def _delivered_ids(self) -> list[str]:
+    def _save_cursor(self, *, byte_offset: int, last_key: EventKey | None) -> None:
+        self._atomic_json(self.cursor_path, {
+            "byte_offset": max(0, byte_offset),
+            "last_event_key": _encode_key(last_key) if last_key else "",
+        })
+
+    def _delivered_keys(self) -> list[EventKey]:
         try:
             data = json.loads(self.ids_path.read_text(encoding="utf-8"))
-            return [str(value) for value in data][-self.max_delivered_ids:] if isinstance(data, list) else []
+            return [_decode_key(value) for value in data][-self.max_delivered_ids:] if isinstance(data, list) else []
         except (FileNotFoundError, ValueError, TypeError, json.JSONDecodeError):
             return []
 
-    def _save_ids(self, ids: Iterable[str]) -> None:
-        bounded = list(dict.fromkeys(str(value) for value in ids))[-self.max_delivered_ids:]
-        fd, temp = tempfile.mkstemp(dir=self.state_dir, prefix=".telemetry-ids.", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump(bounded, stream, separators=(",", ":"))
-                stream.flush(); os.fsync(stream.fileno())
-            os.chmod(temp, 0o600); os.replace(temp, self.ids_path)
-        finally:
-            if os.path.exists(temp): os.unlink(temp)
+    def _save_keys(self, keys: Iterable[EventKey]) -> None:
+        bounded = list(dict.fromkeys(keys))[-self.max_delivered_ids:]
+        self._atomic_json(self.ids_path, [_encode_key(key) for key in bounded])
 
-    def flush(self) -> int:
+    def enqueue(self) -> bool:
+        try:
+            self._queue.put_nowait(None)
+            return True
+        except queue.Full:
+            return False
+
+    def close(self, timeout: float = 0.2) -> None:
+        # Never block task shutdown on a slow receiver. The worker is a daemon;
+        # durable cursor/lease state makes unfinished delivery retryable.
+        self._worker.join(timeout)
+
+    def _read_entries(self, start: int) -> list[tuple[dict[str, Any], int]]:
         if not self.source.exists():
-            return 0
+            return []
         size = self.source.stat().st_size
-        cursor = self._cursor()
-        start = cursor["byte_offset"]
         if start > size:
-            # Source rotation/truncation starts a new generation; do not seek
-            # into the middle of an unrelated replacement file.
             start = 0
-        delivered = self._delivered_ids()
-        delivered_set = set(delivered)
+        entries: list[tuple[dict[str, Any], int]] = []
         with self.source.open("rb") as stream:
             stream.seek(start)
-            entries: list[tuple[dict[str, Any], int]] = []
-            while len(entries) < self.batch_size:
+            while len(entries) < self.batch_size * 4:
                 line = stream.readline()
-                if not line:
+                if not line or not line.endswith(b"\n"):
                     break
-                if not line.endswith(b"\n"):
-                    break
-                line_end = stream.tell()
                 try:
                     value = json.loads(line.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
-                    # A malformed complete line cannot become valid by
-                    # appending more data; skip exactly that line.
                     continue
-                if not isinstance(value, dict):
-                    continue
-                event_id = str(value.get("event_id") or "")
-                if not event_id or event_id in delivered_set:
-                    entries.append((value, line_end))
-                    continue
-                entries.append((value, line_end))
-        if not entries:
-            self._save_cursor(byte_offset=start, last_event_id=cursor["last_event_id"])
-            return 0
-        pending = [value for value, _ in entries
-                   if str(value.get("event_id") or "") not in delivered_set]
-        if not pending:
-            final_entry = entries[-1]
-            self._save_cursor(byte_offset=final_entry[1],
-                              last_event_id=str(final_entry[0].get("event_id") or cursor["last_event_id"]))
-            return 0
-        origins = {
-            (str(item.get("namespace_id") or "default"),
-             str(item.get("application_instance_id") or "unknown-application"),
-             str(item.get("agent_instance_id") or "unknown-agent"))
-            for item in pending
-        }
-        if any(sum(1 for item in pending if (
-                str(item.get("namespace_id") or "default"),
-                str(item.get("application_instance_id") or "unknown-application"),
-                str(item.get("agent_instance_id") or "unknown-agent")) == origin)
-               > self.origin_budget.get("|".join(origin), 1 << 30)
-               for origin in origins):
-            return 0
-        deadline = time.monotonic() + min(15.0, max(0.1, self.batch_size / 10))
-        result: list[Any] = []
-        completed = threading.Event()
-        def deliver() -> None:
-            try:
-                result.append(self.sink(pending))
-            finally:
-                completed.set()
-                self._inflight = False
+                if isinstance(value, dict) and event_key(value)[2]:
+                    entries.append((value, stream.tell()))
+        return entries
+
+    def _fair_batch(self, entries, delivered: set[EventKey]) -> list[dict[str, Any]]:
+        buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        order: list[tuple[str, str, str]] = []
+        for value, _ in entries:
+            key = event_key(value)
+            if key in delivered:
+                continue
+            origin = (key[0], key[1], str(value.get("agent_instance_id") or "unknown-agent"))
+            if origin not in buckets:
+                buckets[origin] = []; order.append(origin)
+            buckets[origin].append(value)
+        result: list[dict[str, Any]] = []
+        origins = list(order)
+        while origins and len(result) < self.batch_size:
+            following = []
+            for origin in origins:
+                values = buckets[origin]
+                budget = self.origin_budget.get("|".join(origin), self.batch_size)
+                if sum(1 for item in result if event_key(item) in {
+                        event_key(v) for v in buckets[origin]}) >= budget:
+                    following.append(origin); continue
+                if values:
+                    result.append(values.pop(0))
+                    if len(result) >= self.batch_size:
+                        break
+                if values:
+                    following.append(origin)
+            if not following and len(result) >= self.batch_size:
+                break
+            origins = following
+        return result
+
+    def _lease(self) -> bool:
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return 0
-            if self._inflight:
-                return 0
-            self._inflight = True
-            worker = threading.Thread(target=deliver, daemon=True,
-                                      name="cognitiveframeworks-telemetry-sink")
-            worker.start()
-            finished = completed.wait(max(0.01, deadline - time.monotonic()))
-        if not finished:
-            return 0
-        self._inflight = False
-        acknowledged = result[0] if result else None
-        if acknowledged is None:
-            raise ValueError("telemetry sink must explicitly acknowledge delivered event identities")
-        if isinstance(acknowledged, (set, list, tuple)):
-            acknowledged_ids = {str(value) for value in acknowledged}
-        elif isinstance(acknowledged, Mapping):
-            acknowledged_ids = {str(key) for key, value in acknowledged.items() if value}
-        else:
-            raise ValueError("telemetry sink must return acknowledged event identities")
-        if not acknowledged_ids:
-            return 0
-        consumed = 0
-        final_offset = start
-        last_id = cursor["last_event_id"]
-        newly_acked: list[str] = []
-        for event, line_end in entries:
-            event_id = str(event.get("event_id") or "")
-            if event_id in delivered_set:
-                consumed += 1
-                final_offset = line_end
-                last_id = event_id
+                return False
+            try:
+                if self.lease_path.exists():
+                    lease = json.loads(self.lease_path.read_text(encoding="utf-8"))
+                    if float(lease.get("expires_at", 0)) > time.time():
+                        return False
+                self._atomic_json(self.lease_path, {
+                    "owner": threading.get_ident(), "expires_at": time.time() + min(5.0, max(0.1, self.batch_size / 10)),
+                })
+                return True
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _release_lease(self) -> None:
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                if self.lease_path.exists(): self.lease_path.unlink()
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def _delivery_loop(self) -> None:
+        while True:
+            try:
+                self._queue.get(timeout=0.2)
+                self._drain_once()
+            except queue.Empty:
                 continue
-            if event_id not in acknowledged_ids:
-                break
-            consumed += 1
-            final_offset = line_end
-            last_id = event_id
-            newly_acked.append(event_id)
-            delivered_set.add(event_id)
-        if consumed:
-            delivered.extend(newly_acked)
-            self._save_ids(delivered)
-            self._save_cursor(byte_offset=final_offset, last_event_id=last_id)
-        return consumed
+            except Exception:
+                continue
+
+    def _drain_once(self) -> int:
+        if not self._lease():
+            return 0
+        try:
+            cursor = self._cursor(); start = cursor["byte_offset"]
+            entries = self._read_entries(start)
+            if not entries:
+                self._save_cursor(byte_offset=start, last_key=None); return 0
+            delivered = self._delivered_keys(); delivered_set = set(delivered)
+            pending = self._fair_batch(entries, delivered_set)
+            if not pending:
+                return 0
+            deadline = time.monotonic() + min(15.0, max(0.1, self.batch_size / 10))
+            try:
+                acknowledged = self.sink(pending)
+            except Exception:
+                return 0
+            if time.monotonic() > deadline:
+                # A timed-out/ambiguous response is retried. Receiver idempotency
+                # is required; it is not safe to advance the cursor.
+                return 0
+            if acknowledged is None:
+                raise ValueError("telemetry sink must explicitly acknowledge EventKey identities")
+            if isinstance(acknowledged, (set, list, tuple)):
+                ack_keys = {_decode_key(value) for value in acknowledged}
+            elif isinstance(acknowledged, Mapping):
+                ack_keys = {_decode_key(key) for key, value in acknowledged.items() if value}
+            else:
+                raise ValueError("telemetry sink must return EventKey identities")
+            allowed = {event_key(value) for value in pending}
+            if not ack_keys.issubset(allowed):
+                raise ValueError("telemetry sink acknowledged unknown or cross-origin EventKey")
+            consumed = 0; final_offset = start; last_key = None
+            newly: list[EventKey] = []
+            for value, line_end in entries:
+                key = event_key(value)
+                if key in delivered_set:
+                    consumed += 1; final_offset = line_end; last_key = key
+                elif key in ack_keys:
+                    consumed += 1; final_offset = line_end; last_key = key; newly.append(key)
+                else:
+                    break
+            if consumed:
+                delivered.extend(newly); self._save_keys(delivered)
+                self._save_cursor(byte_offset=final_offset, last_key=last_key)
+            return consumed
+        finally:
+            self._release_lease()
+
+    def flush(self) -> int:
+        """Enqueue delivery and return immediately.
+
+        Tests may call ``_drain_once`` for deterministic synchronous evidence.
+        """
+        self.enqueue()
+        return 0

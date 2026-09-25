@@ -13,7 +13,8 @@ import uuid
 from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
-from runtime import (CompletionClaim, GateDecision, RuntimeSession, start)
+from runtime import (CompletionClaim, GateDecision, RuntimeSession,
+                     SharedWorkflowMembershipAuthority, start)
 from runtime_contract.actions import (ActionDescriptor, HostExecutionContext,
                                        effective_action_registry)
 from runtime_contract.advisor import BehavioralAdvisor
@@ -109,6 +110,11 @@ class RuntimeTaskHandle:
     def agent(self) -> AgentSessionHandle:
         return AgentSessionHandle(self._session_token)
 
+    def close(self) -> None:
+        session = _HOST_SESSION_REGISTRY.pop(self._session_token, None)
+        if session is not None and session._telemetry_exporter is not None:
+            session._telemetry_exporter.close()
+
 
 class HostSessionHandle:
     """Host-only adapter view for evidence, transitions, and completion."""
@@ -134,6 +140,11 @@ class HostSessionHandle:
 
     def operator_trace(self) -> dict[str, Any]:
         return _resolve_host_session(self._session_token)._operator_trace()
+
+    def close(self) -> None:
+        session = _HOST_SESSION_REGISTRY.pop(self._session_token, None)
+        if session is not None and session._telemetry_exporter is not None:
+            session._telemetry_exporter.close()
 
     def after_tool(self, **kwargs: Any) -> str:
         return CognitiveRuntime().after_tool(self._session(), **kwargs)
@@ -226,7 +237,9 @@ class CognitiveRuntime:
                  action_registry: Optional[Mapping[str, ActionDescriptor]] = None,
                  routing_profile_path: Optional[str] = None,
                  behavioral_advisor: Optional[BehavioralAdvisor] = None,
-                 sharing_verifier: Optional[Any] = None) -> None:
+                 sharing_verifier: Optional[Any] = None,
+                 membership_authority: Optional[SharedWorkflowMembershipAuthority] = None,
+                 operator_read_model: Optional[Any] = None) -> None:
         self.telemetry_disabled = telemetry_disabled
         self.host_context = host_context
         self.action_registry = effective_action_registry(action_registry)
@@ -234,6 +247,8 @@ class CognitiveRuntime:
         self.behavioral_advisor = behavioral_advisor
         # Host-only callback; never copied into RuntimeTaskHandle or AgentSessionHandle.
         self._sharing_verifier = sharing_verifier
+        self._membership_authority = membership_authority
+        self._operator_read_model = operator_read_model
 
     def begin_task(self, request: TaskRequest, **start_options: Any) -> RuntimeTaskHandle:
         from pathlib import Path
@@ -248,8 +263,16 @@ class CognitiveRuntime:
                 raise ValueError("task start cannot override the runtime telemetry contract")
             start_options = dict(start_options)
             start_options.pop("telemetry_disabled")
-        session = start(bundle, telemetry_disabled=self.telemetry_disabled,
-                        host_context=self.host_context, **start_options)
+        try:
+            session = start(bundle, telemetry_disabled=self.telemetry_disabled,
+                            host_context=self.host_context,
+                            membership_authority=self._membership_authority,
+                            operator_read_model=self._operator_read_model,
+                            **start_options)
+        except Exception:
+            if self._operator_read_model is not None:
+                self._operator_read_model.close()
+            raise
         return RuntimeTaskHandle(_register_host_session(session))
 
     def before_tool(self, session: RuntimeSession, action: Mapping[str, Any]) -> GateDecision:

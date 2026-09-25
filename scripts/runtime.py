@@ -14,6 +14,7 @@ $XDG_RUNTIME_DIR/cognitiveframeworks/<task>/<policy-hash>.json.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -50,6 +51,7 @@ from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
                                         completion_claim_digest)
 from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema_contract
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
+from runtime_contract.operator_events import OperatorEvent
 from runtime_contract.stateworks import ExecutionSegment, SegmentStatus
 from runtime_contract.validators import evaluate_validator, validator_registry_hash
 if "resolve_runtime" in sys.modules:
@@ -674,6 +676,68 @@ class PolicyRevocationAuthority:
         raise NotImplementedError
 
 
+class SharedWorkflowMembershipAuthority:
+    """Trusted host issuer/validator for shared workflow membership grants."""
+    def __init__(self, signing_key: bytes) -> None:
+        if not isinstance(signing_key, bytes) or len(signing_key) < 32:
+            raise ValueError("membership authority requires at least 256 bits of key material")
+        self._key = signing_key
+        self._grants: Dict[str, Dict[str, Any]] = {}
+        self._revocations: set[str] = set()
+
+    @staticmethod
+    def _grant_id(membership: Mapping[str, Any]) -> str:
+        return hashlib.sha256(json.dumps(dict(membership), sort_keys=True,
+                                           separators=(",", ":"), default=str).encode()).hexdigest()
+
+    def issue(self, *, namespace_id: str, application_id: str,
+              application_instance_id: str, workflow_id: str, statework_id: str,
+              subject_ref: str, member_agent_id: str,
+              allowed_operations: Iterable[str], expires_at: str,
+              membership_revision: int) -> Dict[str, Any]:
+        grant = {
+            "schema_version": "1.0.0", "namespace_id": namespace_id,
+            "application_id": application_id, "application_instance_id": application_instance_id,
+            "workflow_id": workflow_id, "statework_id": statework_id,
+            "subject_ref": subject_ref, "member_agent_id": member_agent_id,
+            "allowed_operations": tuple(sorted(set(allowed_operations))),
+            "expires_at": expires_at, "membership_revision": int(membership_revision),
+        }
+        grant["grant_id"] = self._grant_id(grant)
+        grant["signature"] = hmac.new(
+            self._key, json.dumps(grant, sort_keys=True, separators=(",", ":"),
+                                  default=str).encode(), hashlib.sha256).hexdigest()
+        self._grants[grant["grant_id"]] = grant
+        return dict(grant)
+
+    def revoke(self, grant_id: str) -> None:
+        if grant_id not in self._grants:
+            raise KeyError(grant_id)
+        self._revocations.add(grant_id)
+
+    def validate(self, membership: Mapping[str, Any], *, session: "RuntimeSession",
+                 operation: str) -> bool:
+        grant = dict(membership)
+        signature = str(grant.pop("signature", ""))
+        grant_id = str(grant.get("grant_id") or "")
+        if grant_id not in self._grants or grant_id in self._revocations:
+            return False
+        expected = hmac.new(
+            self._key, json.dumps(grant, sort_keys=True, separators=(",", ":"),
+                                  default=str).encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            return False
+        if grant.get("member_agent_id") != session.agent_instance_id:
+            return False
+        if operation not in set(grant.get("allowed_operations") or ()):
+            return False
+        try:
+            expiry = datetime.fromisoformat(str(grant.get("expires_at")).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return expiry > datetime.now(timezone.utc)
+
+
 class CSWStateAuthority(StateAuthority):
     """Concrete combined-mode adapter owned by CSW, injected into CFW."""
     def __init__(self, root: Path, *, state_path: Optional[Path] = None,
@@ -687,12 +751,28 @@ class CSWStateAuthority(StateAuthority):
             Path(state_path) if state_path else self.root / "state" / "subjects.json")
         self.evidence_store = self.control.EvidenceStore()
         self.evidence_path = Path(evidence_path) if evidence_path else self.root / "state" / "evidence.json"
-        self.namespace_id = str(namespace_id)
-        self.application_id = str(application_id)
-        self.application_instance_id = str(application_instance_id)
-        self.workflow_id = str(workflow_id)
+        object.__setattr__(self, "namespace_id", str(namespace_id))
+        object.__setattr__(self, "application_id", str(application_id))
+        object.__setattr__(self, "application_instance_id", str(application_instance_id))
+        object.__setattr__(self, "workflow_id", str(workflow_id))
+        object.__setattr__(self, "_frozen_scope", True)
         self._controllers: Dict[str, Any] = {}
         self._load_evidence()
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_frozen_scope", False) and name in {
+                "namespace_id", "application_id", "application_instance_id", "workflow_id"}:
+            raise AttributeError("CSW authority scope is immutable")
+        object.__setattr__(self, name, value)
+
+    def bind_scope(self, *, namespace_id: str, application_id: str,
+                   application_instance_id: str, workflow_id: str) -> "CSWStateAuthority":
+        """Return a task-scoped view while sharing durable storage services."""
+        return CSWStateAuthority(
+            self.root, state_path=self.state_store.path,
+            evidence_path=self.evidence_path, namespace_id=namespace_id,
+            application_id=application_id, application_instance_id=application_instance_id,
+            workflow_id=workflow_id)
 
     def _load_evidence(self) -> None:
         if not self.evidence_path.exists():
@@ -762,12 +842,14 @@ class CSWStateAuthority(StateAuthority):
             copied["workflow_id"] = identity["workflow_id"]
             self.evidence_store.create(copied)
             scoped_refs.append(scoped_ref)
+        if scoped_refs:
+            # Evidence must be durable before a state transition can reference it.
+            self.evidence_store.save(self.evidence_path)
         decision = controller.request_transition(
             to_state=output_state, trigger=trigger, evidence_refs=scoped_refs,
             expected_revision=expected_revision)
         if not decision.allowed:
             raise ValueError(f"CSW authority blocked transition: {decision.reason}")
-        self.evidence_store.save(self.evidence_path)
         return controller.inspect()
 
 
@@ -802,6 +884,9 @@ class RuntimeSession:
     _telemetry_exporter: Optional[DurableTelemetryExporter] = None
     state_authority: Optional[StateAuthority] = None
     policy_revocation_authority: Optional[PolicyRevocationAuthority] = None
+    membership_authority: Optional[SharedWorkflowMembershipAuthority] = None
+    operator_read_model: Optional[Any] = None
+    _operator_sequence: int = 0
     runtime_mode: str = "standalone_enforcing"
     host_context: HostExecutionContext = field(default_factory=HostExecutionContext)
     host_invocations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -858,7 +943,7 @@ class RuntimeSession:
                 "delegate_agent_id", "delegation_id", "role", "parent_decision_ref",
                 "shared_evidence_refs", "delegation_topology", "premise_digest", "failure_attribution",
                 "adopted_profile_hashes", "execution_identity", "shared_workflow_membership", "policy_revocation_revision", "revocation_mode",
-                "policy_revocation_authority",
+                "policy_revocation_authority", "membership_authority", "operator_read_model",
                 "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
                 "runtime_mode"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
@@ -1004,10 +1089,30 @@ class RuntimeSession:
             event, task_id=self.bundle.task_id,
             expected_schema_hash=self.bundle.policy.behavior_event_schema_hash,
             expected_schema_version=self.bundle.policy.behavior_event_schema_version)
+        if self.operator_read_model is not None:
+            try:
+                self._operator_sequence = self.operator_read_model.allocate_sequence()
+                self.operator_read_model.publish(OperatorEvent.create(
+                    sequence=self._operator_sequence,
+                    namespace_id=str(event.get("namespace_id") or "default"),
+                    application_instance_id=str(event.get("application_instance_id") or "unknown"),
+                    agent_instance_id=event.get("agent_instance_id"),
+                    session_id=event.get("session_id"), task_id=self.bundle.task_id,
+                    interaction_id=event.get("interaction_id"),
+                    workflow_id=(self.shared_workflow_membership or {}).get("workflow_id"),
+                    event_type=str(event.get("event_type") or "runtime_event"),
+                    severity=("warning" if "block" in str(event.get("event_type") or "") else "info"),
+                    summary=str((event.get("payload") or {}).get("summary") or event.get("event_type") or "Runtime event")[:512],
+                    reason_code=(event.get("payload") or {}).get("result_class"),
+                    source_system="cfw", provenance="host_verified",
+                    correlation_id=f"{self.session_id}:{self.bundle.task_id}",
+                    evidence_refs=tuple(event.get("evidence_refs") or ())))
+            except Exception:
+                pass
         if self._emit:
             self._emit(event)
         if self._telemetry_exporter is not None:
-            self._telemetry_exporter.flush()
+            self._telemetry_exporter.enqueue()
 
     def _request(self, action: Mapping[str, Any] | AgentActionRequest) -> AgentActionRequest:
         return action if isinstance(action, AgentActionRequest) else AgentActionRequest.from_mapping(action)
@@ -1161,6 +1266,15 @@ class RuntimeSession:
             "route_outcomes": [dict(value) for value in self.route_outcomes.values()],
         }
 
+    def _membership_current(self) -> bool:
+        membership = self.shared_workflow_membership
+        if not membership:
+            return True
+        if self.membership_authority is None:
+            return False
+        return self.membership_authority.validate(
+            membership, session=self, operation="transition")
+
     def _authoritative_state_ready(self) -> bool:
         if self.runtime_mode != "combined_enforcing":
             return True
@@ -1195,7 +1309,7 @@ class RuntimeSession:
         request = self._request(action)
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
             return GateDecision.BLOCK
-        if not self._revocation_current():
+        if not self._revocation_current() or not self._membership_current():
             return GateDecision.BLOCK
         descriptor = self._descriptor(request)
         decision = self._decision(request)
@@ -2246,6 +2360,8 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
           telemetry_exporter: Optional[DurableTelemetryExporter] = None,
           state_authority: Optional[StateAuthority] = None,
           policy_revocation_authority: Optional[PolicyRevocationAuthority] = None,
+          membership_authority: Optional["SharedWorkflowMembershipAuthority"] = None,
+          operator_read_model: Optional[Any] = None,
           runtime_mode: str = "standalone_enforcing",
           telemetry_disabled: bool = False,
           tool_hooks: Optional[List[Callable[[Dict[str, Any]], Optional[GateDecision]]]] = None,
@@ -2362,9 +2478,6 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
         if not bundle.stateworks:
             raise ValueError("combined_enforcing requires at least one StateWork-backed task")
         if isinstance(state_authority, CSWStateAuthority):
-            state_authority.namespace_id = bundle.pinned["namespace_id"]
-            state_authority.application_id = bundle.pinned["application_id"]
-            state_authority.application_instance_id = bundle.pinned["application_instance_id"]
             membership = bundle.pinned.get("shared_workflow_membership")
             if membership:
                 required = ("workflow_id", "statework_id", "subject_ref")
@@ -2378,15 +2491,25 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                 ):
                     if membership.get(field) != expected:
                         raise ValueError(f"shared workflow membership {field} differs from task identity")
-                state_authority.workflow_id = str(membership["workflow_id"])
+                if membership_authority is None or not membership_authority.validate(
+                        membership, session=session, operation="transition"):
+                    raise PermissionError("shared workflow membership is not host-authorized")
+                workflow_id = str(membership["workflow_id"])
             else:
-                state_authority.workflow_id = (
+                workflow_id = (
                     f"private:{bundle.pinned['namespace_id']}:"
                     f"{bundle.pinned['application_instance_id']}:{session.agent_instance_id}")
+            state_authority = state_authority.bind_scope(
+                namespace_id=bundle.pinned["namespace_id"],
+                application_id=bundle.pinned["application_id"],
+                application_instance_id=bundle.pinned["application_instance_id"],
+                workflow_id=workflow_id)
     if runtime_mode == "standalone_advisory" and state_authority is not None:
         raise ValueError("standalone_advisory cannot combine with shared StateWork authority")
     session.state_authority = state_authority
     session.policy_revocation_authority = policy_revocation_authority
+    session.membership_authority = membership_authority
+    session.operator_read_model = operator_read_model
     session.runtime_mode = runtime_mode
     if runtime_mode == "combined_enforcing" and not session._authoritative_state_ready():
         raise ValueError("shared StateWork authority could not resolve initial state")

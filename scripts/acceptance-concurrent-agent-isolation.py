@@ -40,6 +40,15 @@ def private_agent(index: int, state_path: str, evidence_path: str, output_path: 
                  use_shared_subject: bool) -> None:
     runtime = load("isolation_runtime", ROOT / "scripts" / "runtime.py")
     request_type = runtime.resolve_runtime.TaskRequest
+    membership_authority = runtime.SharedWorkflowMembershipAuthority(b"membership-host-key" * 4)
+    grant = membership_authority.issue(
+        namespace_id=("shared-namespace" if use_shared_subject else f"namespace-{index}"),
+        application_id=("shared-app" if use_shared_subject else "app"),
+        application_instance_id=("shared-instance" if use_shared_subject else f"instance-{index}"),
+        workflow_id="authorized-workflow" if use_shared_subject else "private-workflow",
+        statework_id="tuid", subject_ref=("shared-subject" if use_shared_subject else "same-subject"),
+        member_agent_id="agent", allowed_operations=["transition"],
+        expires_at="2099-01-01T00:00:00Z", membership_revision=1) if use_shared_subject else None
     request = request_type(
         task_id="task",
         application_id="shared-app" if use_shared_subject else "app",
@@ -49,12 +58,7 @@ def private_agent(index: int, state_path: str, evidence_path: str, output_path: 
         subject_ref="shared-subject" if use_shared_subject else "same-subject",
         shape="quick", role="delegator", interaction_id="interaction",
         domain_tags=("terminal interface",), phase="domain_state",
-        shared_workflow_membership=({
-            "namespace_id": "shared-namespace", "application_id": "shared-app",
-            "application_instance_id": "shared-instance", "workflow_id": "authorized-workflow",
-            "statework_id": "tuid", "subject_ref": "shared-subject",
-            "authorization_revision": 1,
-        } if use_shared_subject else None),
+        shared_workflow_membership=grant,
     )
     identity = runtime.ExecutionIdentity(
         namespace_id=request.namespace_id, application_instance_id=request.application_instance_id,
@@ -67,13 +71,14 @@ def private_agent(index: int, state_path: str, evidence_path: str, output_path: 
         application_instance_id=request.application_instance_id)
     bundle = runtime.resolve_runtime.resolve(request, requested_flows={"tuid": "discover"})
     session = runtime.start(bundle, telemetry_disabled=True, state_authority=authority,
-                            runtime_mode="combined_enforcing")
+                            runtime_mode="combined_enforcing",
+                            membership_authority=membership_authority)
     host = session._host_ingress()
     evidence = host.record_observation("rendered_observation", subject_ref=request.subject_ref)
     decision = session.record_state_transition(
         "tuid", request.subject_ref, "OBSERVED", trigger="discover",
         evidence_refs=[evidence])
-    snapshot = authority.inspect(statework_id="tuid", subject_ref=request.subject_ref,
+    snapshot = session.state_authority.inspect(statework_id="tuid", subject_ref=request.subject_ref,
                                  contract_hash=contract_hash("tuid"))
     Path(output_path).write_text(json.dumps({
         "execution": identity.to_dict(), "storage_key": identity.storage_key(),

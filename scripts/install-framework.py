@@ -397,6 +397,13 @@ def _main_impl() -> int:
                         scripts_dst / "runtime_contract")
         shutil.copytree(ROOT / "contracts", runtime_dst / "contracts")
         shutil.copytree(ROOT / "shared", runtime_dst / "shared")
+        # Optional read-only cockpit. It is isolated from the authority package
+        # and can be removed without affecting task execution.
+        cockpit_dst = runtime_dst / "operator"
+        cockpit_dst.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "scripts" / "operator_service.py", cockpit_dst / "operator_service.py")
+        shutil.copy2(ROOT / "scripts" / "cfw-ops.py", cockpit_dst / "cfw-ops.py")
+        shutil.copytree(ROOT / "scripts" / "operator_ui", cockpit_dst / "operator_ui")
         if statework_available:
             bundled_statework = runtime_dst / "statework"
             bundled_statework.mkdir(parents=True, exist_ok=True)
@@ -405,7 +412,7 @@ def _main_impl() -> int:
             bundled_scripts = bundled_statework / "scripts"
             bundled_scripts.mkdir(parents=True, exist_ok=True)
             for filename in ("__init__.py", "control_plane.py",
-                             "validate-repository-truth.py"):
+                             "validate-repository-truth.py", "operator_projection.py"):
                 source_script = statework_root / "scripts" / filename
                 if source_script.exists():
                     shutil.copy2(source_script, bundled_scripts / filename)

@@ -447,3 +447,7 @@ DP profiles use three sharing scopes:
 Even a shared profile is not automatically adopted. Each new CFW task must list the exact profile hash in `TaskRequest.adopted_profile_hashes`; normal model, harness, role, context, and eligible-route checks still apply. Running tasks retain their pinned policy revision. `deferred` revocation takes effect at the next task boundary; `immediate` revocation through the host revocation authority blocks affected active actions.
 
 `scripts/acceptance-concurrent-agent-isolation.py` verifies private-state separation, authorized shared-state serialization, crash recovery, and origin-distinct DP ingestion using separate processes and a shared persistent backend.
+
+## Cognitive Cockpit
+
+The optional read-only cockpit is available with `python3 scripts/cfw-ops.py` for the terminal view or `python3 scripts/cfw-ops.py --web` for a localhost-only browser view. It presents Overview, Workflow, Learning, Timeline, and Health data from the same sanitized operator-event stream. It never receives host session tokens, signing keys, or authority capabilities, and closing it does not terminate tasks.

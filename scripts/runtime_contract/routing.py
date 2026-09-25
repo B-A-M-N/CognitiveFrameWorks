@@ -475,36 +475,43 @@ def applicable_adjustments(profile: Optional[Mapping[str, Any]] | list[Mapping[s
                            context: Mapping[str, Any]) -> list[dict[str, Any]]:
     if profile is None:
         return []
-    profiles = profile if isinstance(profile, list) else [profile]
     result = []
-    for item in profiles:
+    for item in (profile if isinstance(profile, list) else [profile]):
         subject = item.get("subject") or {}
-        if any(not _match(subject.get(field), context.get(field), semantics="exact") for field in (
-                "namespace_id", "application_id", "application_version", "provider_id",
-                "model_id", "model_revision", "model_capability_hash",
-                "harness_id", "harness_version")):
+        common = ("application_version", "provider_id", "model_id", "model_revision",
+                  "model_capability_hash", "harness_id", "harness_version")
+        if any(not _match(subject.get(field), context.get(field)) for field in common):
             continue
+        scope = item.get("sharing_scope", "agent_private")
+        if scope == "agent_private":
+            exact = ("namespace_id", "application_id", "application_instance_id", "agent_instance_id")
+            if any(not _match(subject.get(field), context.get(field)) for field in exact):
+                continue
+        elif scope == "application_shared":
+            if any(not _match(subject.get(field), context.get(field))
+                   for field in ("namespace_id", "application_id")):
+                continue
+        elif scope != "cross_application":
+            raise RoutingProfileError("unsupported routing profile sharing scope")
+        if scope != "agent_private":
+            if item.get("profile_hash") not in set(context.get("adopted_profile_hashes") or ()):
+                continue
+            if scope == "cross_application":
+                allowed = set(context.get("authorized_target_application_ids") or ())
+                if context.get("application_id") not in allowed:
+                    continue
+                constraints = (item.get("context") or {}).get("compatibility_constraints")
+                if not isinstance(constraints, Mapping) or not constraints:
+                    continue
+                if any(not _match(expected, context.get(field))
+                       for field, expected in constraints.items()):
+                    continue
         semantics = item.get("selector_semantics") or {}
         if any(not _match(expected, context.get(field),
                           semantics=str(semantics.get("context", "exact")))
-               for field, expected in (item.get("context") or {}).items()):
+               for field, expected in (item.get("context") or {}).items()
+               if field != "compatibility_constraints"):
             continue
-        sharing_scope = item.get("sharing_scope", "agent_private")
-        if sharing_scope not in {"agent_private", "application_shared", "cross_application"}:
-            raise RoutingProfileError("unsupported routing profile sharing scope")
-        if sharing_scope == "agent_private":
-            if any(not _match(subject.get(field), context.get(field), semantics="exact")
-                   for field in ("application_instance_id", "agent_instance_id")):
-                continue
-        else:
-            if item.get("profile_hash") not in set(context.get("adopted_profile_hashes") or ()):
-                continue
-            if sharing_scope == "application_shared" and any(
-                    not _match(subject.get(field), context.get(field), semantics="exact")
-                    for field in ("namespace_id", "application_id")):
-                continue
-            if sharing_scope == "cross_application" and subject.get("application_id") == context.get("application_id"):
-                continue
         for adjustment in item.get("routing_adjustments", []):
             if _condition_matches(adjustment.get("condition") or {}, context):
                 enriched = dict(adjustment)

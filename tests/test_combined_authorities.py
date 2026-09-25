@@ -45,7 +45,7 @@ def test_independent_cfw_tasks_share_csw_subject_revision(tmp_path):
         assert session.record_state_transition(
             "tuid", "repo:shared", output_state, trigger=trigger,
             evidence_refs=[evidence]) == runtime.GateDecision.ALLOW
-    snapshot = authority.inspect(
+    snapshot = session.state_authority.inspect(
         statework_id="tuid", subject_ref="repo:shared",
         contract_hash=__import__("hashlib").sha256(
             __import__("json").dumps(
@@ -107,9 +107,10 @@ def test_shared_authority_identity_uses_task_origin(tmp_path):
             __import__("yaml").safe_load((COW / "tuid" / "transitions.yaml").read_text()),
             sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest())
     assert snapshot["state"] == "UNKNOWN"
-    assert authority.namespace_id == "tenant-a"
-    assert authority.application_id == "app-a"
-    assert authority.application_instance_id == "instance-a"
+    assert session.state_authority.namespace_id == "tenant-a"
+    assert session.state_authority.application_id == "app-a"
+    assert session.state_authority.application_instance_id == "instance-a"
+    assert authority.namespace_id == "default"
     assert session.runtime_mode == "combined_enforcing"
 
 
@@ -144,3 +145,73 @@ def test_task_handle_does_not_expose_host_authority():
     assert not hasattr(task, "host")
     host = module.CognitiveRuntime(telemetry_disabled=True).host_handle(task)
     assert hasattr(host, "request_transition")
+
+
+def test_shared_authority_scope_is_immutable_and_task_views_do_not_mutate_parent(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    resolve, runtime = _runtime_modules()
+    authority = runtime.CSWStateAuthority(
+        COW, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json",
+        namespace_id="host-service", application_id="service", application_instance_id="service",
+        workflow_id="service-workflow")
+    membership_authority = runtime.SharedWorkflowMembershipAuthority(b"m" * 32)
+    def request(task, namespace, instance):
+        grant = membership_authority.issue(
+            namespace_id=namespace, application_id="app",
+            application_instance_id=instance, workflow_id="workflow", statework_id="tuid",
+            subject_ref="repo:shared", member_agent_id="agent",
+            allowed_operations=["transition"],
+            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            membership_revision=1)
+        return resolve.TaskRequest(
+            task_id=task, application_id="app", application_instance_id=instance,
+            namespace_id=namespace, subject_ref="repo:shared", shape="quick",
+            domain_tags=("terminal interface",), phase="domain_state",
+            shared_workflow_membership=grant)
+    a = resolve.resolve(request("task-a", "ns-a", "instance-a"), requested_flows={"tuid": "discover"})
+    b = resolve.resolve(request("task-b", "ns-b", "instance-b"), requested_flows={"tuid": "discover"})
+    session_a = runtime.start(a, telemetry_disabled=True, state_authority=authority,
+                              runtime_mode="combined_enforcing",
+                              membership_authority=membership_authority)
+    session_b = runtime.start(b, telemetry_disabled=True, state_authority=authority,
+                              runtime_mode="combined_enforcing",
+                              membership_authority=membership_authority)
+    assert authority.workflow_id == "service-workflow"
+    assert session_a.state_authority.workflow_id == "workflow"
+    assert session_b.state_authority.workflow_id == "workflow"
+    assert session_a.state_authority is not session_b.state_authority
+    assert session_a.state_authority.state_store.path == session_b.state_authority.state_store.path
+    assert session_a.state_authority.evidence_path == session_b.state_authority.evidence_path
+    try:
+        authority.workflow_id = "mutated"
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError("shared authority scope mutated")
+
+
+def test_unauthorized_membership_transition_is_rejected_without_mutation(tmp_path):
+    resolve, runtime = _runtime_modules()
+    authority = runtime.CSWStateAuthority(
+        COW, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
+    membership_authority = runtime.SharedWorkflowMembershipAuthority(b"m" * 32)
+    forged = {
+        "namespace_id": "ns", "application_id": "app", "application_instance_id": "instance",
+        "workflow_id": "workflow", "statework_id": "tuid", "subject_ref": "repo:shared",
+        "member_agent_id": "agent", "allowed_operations": ["transition"],
+        "expires_at": "2099-01-01T00:00:00Z", "membership_revision": 1,
+        "grant_id": "forged", "signature": "forged",
+    }
+    request = resolve.TaskRequest(
+        task_id="forged", application_id="app", application_instance_id="instance",
+        namespace_id="ns", subject_ref="repo:shared", shape="quick",
+        domain_tags=("terminal interface",), phase="domain_state",
+        shared_workflow_membership=forged)
+    bundle = resolve.resolve(request, requested_flows={"tuid": "discover"})
+    with pytest.raises(PermissionError, match="not host-authorized"):
+        runtime.start(bundle, telemetry_disabled=True, state_authority=authority,
+                      runtime_mode="combined_enforcing",
+                      membership_authority=membership_authority)
+    state = json.loads((tmp_path / "subjects.json").read_text()) if (tmp_path / "subjects.json").exists() else {"subjects": {}}
+    assert not any(item["subject_ref"] == "repo:shared" and item["state"] == "OBSERVED"
+                   for item in state.get("subjects", {}).values())

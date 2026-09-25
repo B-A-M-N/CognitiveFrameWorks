@@ -80,6 +80,13 @@
       ]
     },
     {
+      "name": "cfw_operator_cockpit",
+      "cwd": "CognitiveFrameWorks",
+      "command": [
+        "scripts/acceptance-operator-cockpit.py"
+      ]
+    },
+    {
       "name": "cfw_adversarial_concurrency",
       "cwd": "CognitiveFrameWorks",
       "command": [

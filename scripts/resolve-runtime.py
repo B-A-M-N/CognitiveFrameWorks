@@ -29,6 +29,7 @@ never into the source tree.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import importlib.util
 import json
 import os
@@ -2341,32 +2342,39 @@ def write_snapshot(bundle: RuntimeBundle, task_id: Optional[str] = None) -> Path
     policy_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(policy_dir, 0o700)
     policy_path = policy_dir / f"{policy_hash}.json"
+    stable_contracts = {key: value for key, value in _thaw(bundle.pinned.get("contracts", {})).items()
+                        if key not in {"routing_experiment", "policy_snapshot_metadata"}}
     policy_artifact = {
         "artifact_version": "policy-1",
         "policy_hash": policy_hash,
-        "policy": bundle.policy.canonical(),
-        "contracts": _thaw(bundle.pinned.get("contracts", {})),
+        "policy": {key: value for key, value in bundle.policy.canonical().items()
+                   if key not in {"adopted_profile_hashes", "shared_workflow_membership",
+                                  "policy_revocation_revision", "revocation_mode"}},
+        "contracts": stable_contracts,
     }
-    if policy_path.exists():
-        try:
-            existing_policy = json.loads(policy_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise SnapshotIntegrityError(f"existing policy artifact is unreadable: {exc}") from exc
-        if existing_policy != policy_artifact:
-            raise SnapshotIntegrityError(
-                f"existing semantic policy differs from requested policy: {policy_path}")
-    else:
-        fd, temporary = tempfile.mkstemp(dir=str(policy_dir), prefix=".policy-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps(policy_artifact, indent=2, sort_keys=True) + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, policy_path)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+    policy_lock_path = policy_dir / f".{policy_hash}.lock"
+    policy_lock_path.touch(mode=0o600, exist_ok=True)
+    with policy_lock_path.open("r+", encoding="utf-8") as policy_lock:
+        fcntl.flock(policy_lock.fileno(), fcntl.LOCK_EX)
+        if policy_path.exists():
+            try:
+                existing_policy = json.loads(policy_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise SnapshotIntegrityError(f"existing policy artifact is unreadable: {exc}") from exc
+            if existing_policy != policy_artifact:
+                raise SnapshotIntegrityError(
+                    f"existing semantic policy differs from requested policy: {policy_path}")
+        else:
+            fd, temporary = tempfile.mkstemp(dir=str(policy_dir), prefix=".policy-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(json.dumps(policy_artifact, indent=2, sort_keys=True) + "\n")
+                    fh.flush(); os.fsync(fh.fileno())
+                os.chmod(temporary, 0o600)
+                os.replace(temporary, policy_path)
+            finally:
+                if os.path.exists(temporary): os.unlink(temporary)
+        fcntl.flock(policy_lock.fileno(), fcntl.LOCK_UN)
     task_dir = runtime_state_dir() / _safe_task_id(task)
     task_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(task_dir, 0o700)
