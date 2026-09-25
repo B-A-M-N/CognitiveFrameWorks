@@ -79,6 +79,8 @@ class DurableTelemetryExporter:
         self.ids_path = self.state_dir / "telemetry.ids.json"
         self.lease_path = self.state_dir / "telemetry.lease.json"
         self.lock_path = self.state_dir / "telemetry.exporter.lock"
+        self.stop_path = self.state_dir / "telemetry.stopped"
+        self._closed = False
         self.batch_size = batch_size
         self.max_delivered_ids = max_delivered_ids
         self.origin_budget = {str(key): int(value) for key, value in (origin_budget or {}).items()}
@@ -130,8 +132,9 @@ class DurableTelemetryExporter:
             return False
 
     def close(self, timeout: float = 0.2) -> None:
-        # Never block task shutdown on a slow receiver. The worker is a daemon;
-        # durable cursor/lease state makes unfinished delivery retryable.
+        # Never block task shutdown on a slow receiver. A persistent tombstone
+        # prevents a later close/reopen from accidentally restarting delivery.
+        self._closed = True
         self._worker.join(timeout)
 
     def _read_entries(self, start: int) -> list[tuple[dict[str, Any], int]]:
@@ -224,6 +227,8 @@ class DurableTelemetryExporter:
                 continue
 
     def _drain_once(self) -> int:
+        if self._closed:
+            return 0
         if not self._lease():
             return 0
         try:
