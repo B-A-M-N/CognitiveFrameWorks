@@ -65,7 +65,10 @@ print(os.getpid(), flush=True)
         stat_path = Path(f"/proc/{child_pid}/stat")
         if not stat_path.exists():
             return False
-        fields = stat_path.read_text().split()
+        try:
+            fields = stat_path.read_text().split()
+        except ProcessLookupError:
+            return False
         return len(fields) > 2 and fields[2] != "Z"
     while time.monotonic() < deadline and descendant_is_live():
         time.sleep(0.02)

@@ -8,7 +8,7 @@ import stat
 from importlib.resources import files as resource_files
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 
 class RoutingProfileError(ValueError):
@@ -155,10 +155,20 @@ def assign_experiment_cohort(plan: Mapping[str, Any], trial_identity: str,
 
 
 def comparison_context_hash(context: Mapping[str, Any]) -> str:
-    excluded = {"routing_experiment_plan", "routing_cohort", "candidate_profile_hash",
-                "candidate_adjustment_applied", "comparison_context_hash",
-                "session_id", "attempt_id", "task_id"}
-    body = {key: value for key, value in context.items() if key not in excluded}
+    """Hash experimental comparability, not exact trial provenance.
+
+    Interaction, delegation, task, and session identities remain attached to
+    each event for attribution.  Excluding them here allows otherwise
+    equivalent trials to contribute to one population while their correlation
+    is still checked separately by DigitalPsychology.
+    """
+    fields = (
+        "model_id", "model_revision", "model_capability_hash", "harness_id",
+        "harness_version", "task_family", "task_shape", "domain_tags", "phase",
+        "environment", "toolset", "statework_versions", "framework_version",
+        "guard_pack_hash", "role", "policy_hash",
+    )
+    body = {key: context.get(key) for key in fields}
     return hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
 
 
@@ -239,7 +249,8 @@ def _pack_schema_path() -> Path:
     return Path(__file__).resolve().parents[2] / "contracts" / "behavioral-routing-pack.schema.json"
 
 
-def _validate_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_profile(profile: Mapping[str, Any], *,
+                      sharing_verifier: Optional[Callable[[Mapping[str, Any], str, str], bool]] = None) -> dict[str, Any]:
     profile = dict(profile)
     if profile.get("lifecycle_status") == "stale":
         raise RoutingProfileError("routing profile lifecycle record is stale")
@@ -255,6 +266,18 @@ def _validate_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         raise RoutingProfileError("routing profile semantic hash mismatch")
     if profile.get("status") not in {"validated", "active"}:
         raise RoutingProfileError("only validated or active routing profiles may affect composition")
+    sharing_scope = profile.get("sharing_scope", "agent_private")
+    if sharing_scope not in {"agent_private", "application_shared", "cross_application"}:
+        raise RoutingProfileError("unsupported routing profile sharing scope")
+    if sharing_scope != "agent_private":
+        decision = (profile.get("evidence") or {}).get("sharing_promotion_decision") or {}
+        candidate_hash = str((profile.get("evidence") or {}).get("receipt", {}).get(
+            "profile_candidate_hash") or "")
+        if (not callable(sharing_verifier)
+                or not isinstance(decision, Mapping)
+                or not sharing_verifier(decision, sharing_scope, candidate_hash)):
+            raise RoutingProfileError(
+                "shared routing profile requires host-owned promotion verification")
     if profile.get("scope_mode") not in {"exact", "validated_generalization"}:
         raise RoutingProfileError("deployable routing profile requires an explicit scope_mode")
     if (profile.get("selector_semantics") or {}).get("subject", "exact") != "exact":
@@ -294,7 +317,14 @@ def _validate_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
     candidate_evidence.pop("receipt_ref", None)
     candidate_evidence.pop("receipt", None)
     candidate_evidence.pop("experiment_receipt", None)
+    candidate_evidence.pop("sharing_promotion_decision", None)
     candidate["evidence"] = candidate_evidence
+    candidate.pop("sharing_scope", None)
+    candidate.pop("adoption", None)
+    candidate.pop("lifecycle_revision", None)
+    candidate.pop("lifecycle_status", None)
+    candidate.pop("deployment_lineage_id", None)
+    candidate.pop("lifecycle_reason", None)
     if receipt.get("profile_candidate_hash") != profile_semantic_hash(candidate):
         raise RoutingProfileError("routing receipt is bound to a different candidate")
     if receipt.get("source_evidence_hash") != candidate_evidence.get("source_hash"):
@@ -327,7 +357,8 @@ def _assert_trusted_artifact_path(path: Path) -> None:
         parent = parent.parent
 
 
-def load_routing_profiles(path: Optional[Path] = None) -> tuple[list[dict[str, Any]], str]:
+def load_routing_profiles(path: Optional[Path] = None, *,
+                          sharing_verifier: Optional[Callable[[Mapping[str, Any], str, str], bool]] = None) -> tuple[list[dict[str, Any]], str]:
     canonical_deployment = False
     if path is None:
         raw = os.environ.get("COGNITIVE_ROUTING_PROFILE")
@@ -393,7 +424,7 @@ def load_routing_profiles(path: Optional[Path] = None) -> tuple[list[dict[str, A
                 raise RoutingProfileError(errors[0].message)
     except ImportError as exc:
         raise RoutingProfileError("jsonschema is required for routing profile validation") from exc
-    validated = [_validate_profile(item) for item in raw_profiles]
+    validated = [_validate_profile(item, sharing_verifier=sharing_verifier) for item in raw_profiles]
     pack_body = {"routing_pack_version": "1.0.0", "source_revision": None,
                  "profiles": validated}
     pack_hash = routing_pack_semantic_hash(pack_body)
@@ -402,8 +433,9 @@ def load_routing_profiles(path: Optional[Path] = None) -> tuple[list[dict[str, A
     return validated, pack_hash
 
 
-def load_routing_profile(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
-    profiles, _ = load_routing_profiles(path)
+def load_routing_profile(path: Optional[Path] = None, *,
+                         sharing_verifier: Optional[Callable[[Mapping[str, Any], str, str], bool]] = None) -> Optional[dict[str, Any]]:
+    profiles, _ = load_routing_profiles(path, sharing_verifier=sharing_verifier)
     return profiles[0] if profiles else None
 
 
@@ -448,15 +480,31 @@ def applicable_adjustments(profile: Optional[Mapping[str, Any]] | list[Mapping[s
     for item in profiles:
         subject = item.get("subject") or {}
         if any(not _match(subject.get(field), context.get(field), semantics="exact") for field in (
-                "namespace_id", "application_id", "application_version", "application_instance_id",
-                "provider_id", "model_id", "model_revision", "model_capability_hash",
-                "harness_id", "harness_version", "agent_instance_id")):
+                "namespace_id", "application_id", "application_version", "provider_id",
+                "model_id", "model_revision", "model_capability_hash",
+                "harness_id", "harness_version")):
             continue
         semantics = item.get("selector_semantics") or {}
         if any(not _match(expected, context.get(field),
                           semantics=str(semantics.get("context", "exact")))
                for field, expected in (item.get("context") or {}).items()):
             continue
+        sharing_scope = item.get("sharing_scope", "agent_private")
+        if sharing_scope not in {"agent_private", "application_shared", "cross_application"}:
+            raise RoutingProfileError("unsupported routing profile sharing scope")
+        if sharing_scope == "agent_private":
+            if any(not _match(subject.get(field), context.get(field), semantics="exact")
+                   for field in ("application_instance_id", "agent_instance_id")):
+                continue
+        else:
+            if item.get("profile_hash") not in set(context.get("adopted_profile_hashes") or ()):
+                continue
+            if sharing_scope == "application_shared" and any(
+                    not _match(subject.get(field), context.get(field), semantics="exact")
+                    for field in ("namespace_id", "application_id")):
+                continue
+            if sharing_scope == "cross_application" and subject.get("application_id") == context.get("application_id"):
+                continue
         for adjustment in item.get("routing_adjustments", []):
             if _condition_matches(adjustment.get("condition") or {}, context):
                 enriched = dict(adjustment)

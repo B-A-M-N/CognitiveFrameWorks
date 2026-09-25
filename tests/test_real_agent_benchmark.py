@@ -70,3 +70,33 @@ def test_run_agent_enforces_model_call_budget(tmp_path: Path) -> None:
             [sys.executable, str(agent)], {"task_family": "loop"},
             timeout=2, max_model_calls=1, max_tokens=100,
             max_cost=1, max_elapsed_seconds=2)
+
+
+def test_release_qualifications_are_separate_and_not_fabricated_evidence() -> None:
+    import json
+    root = ROOT
+    manifests = root / "contracts" / "qualifications"
+    documents = [json.loads(path.read_text()) for path in sorted(manifests.glob("*.json"))]
+    assert {item["evidence_class"] for item in documents} == {
+        "hostile_integration", "real_agent_behavioral", "operational_performance"
+    }
+    for item in documents:
+        result_path = root / item["result_contract"]["path"]
+        result = json.loads(result_path.read_text())
+        assert set(item["result_contract"]["required_fields"]).issubset(result)
+        assert result["status"] == "not_run"
+        assert result["completed_at"] is None
+
+
+def test_real_agent_transfer_protocol_requires_real_agent_and_external_report(tmp_path: Path) -> None:
+    transfer_path = ROOT / "scripts" / "acceptance-real-agent-transfer.py"
+    spec = importlib.util.spec_from_file_location("real_agent_transfer", transfer_path)
+    transfer = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = transfer
+    spec.loader.exec_module(transfer)
+    assert callable(transfer.run_cell)
+    assert callable(transfer.summarize)
+    result = json.loads((ROOT / "contracts" / "qualification-results" /
+                         "real-agent-behavioral-v1.result.json").read_text())
+    assert result["status"] == "not_run"
+    assert result["completed_at"] is None

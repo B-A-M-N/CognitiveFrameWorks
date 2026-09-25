@@ -912,9 +912,20 @@ class PolicySnapshot:
     delegate_agent_id: Optional[str] = None
     delegation_id: Optional[str] = None
     role: Optional[str] = None
+    parent_decision_ref: Optional[str] = None
+    shared_evidence_refs: Tuple[str, ...] = ()
+    delegation_topology: Optional[str] = None
+    premise_digest: Optional[str] = None
+    failure_attribution: str = "none"
+    adopted_profile_hashes: Tuple[str, ...] = ()
+    shared_workflow_membership: Optional[Mapping[str, Any]] = None
+    policy_revocation_revision: int = 0
+    revocation_mode: str = "deferred"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "contracts", _freeze_contracts(self.contracts))
+        object.__setattr__(self, "shared_evidence_refs", tuple(self.shared_evidence_refs))
+        object.__setattr__(self, "adopted_profile_hashes", tuple(self.adopted_profile_hashes))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -949,6 +960,15 @@ class PolicySnapshot:
             "delegate_agent_id": self.delegate_agent_id,
             "delegation_id": self.delegation_id,
             "role": self.role,
+            "parent_decision_ref": self.parent_decision_ref,
+            "shared_evidence_refs": list(self.shared_evidence_refs),
+            "delegation_topology": self.delegation_topology,
+            "premise_digest": self.premise_digest,
+            "failure_attribution": self.failure_attribution,
+            "adopted_profile_hashes": list(self.adopted_profile_hashes),
+            "shared_workflow_membership": dict(self.shared_workflow_membership or {}),
+            "policy_revocation_revision": self.policy_revocation_revision,
+            "revocation_mode": self.revocation_mode,
             "phase": self.phase,
             "domain_tags": list(self.domain_tags),
             "task_shape": self.task_shape,
@@ -1061,6 +1081,15 @@ class EffectivePolicy:
     cow_runtime_hash: str = ""
     runtime_build_manifest_hash: str = ""
     routing_profile_hash: str = ""
+    parent_decision_ref: Optional[str] = None
+    shared_evidence_refs: Tuple[str, ...] = ()
+    delegation_topology: Optional[str] = None
+    premise_digest: Optional[str] = None
+    failure_attribution: str = "none"
+    adopted_profile_hashes: Tuple[str, ...] = ()
+    shared_workflow_membership: Optional[Mapping[str, Any]] = None
+    policy_revocation_revision: int = 0
+    revocation_mode: str = "deferred"
     policy_contract_version: str = "2.1.0"
 
     def canonical(self) -> Dict[str, Any]:
@@ -1098,6 +1127,15 @@ class EffectivePolicy:
             "cow_runtime_hash": self.cow_runtime_hash,
             "runtime_build_manifest_hash": self.runtime_build_manifest_hash,
             "routing_profile_hash": self.routing_profile_hash,
+            "parent_decision_ref": self.parent_decision_ref,
+            "shared_evidence_refs": list(self.shared_evidence_refs),
+            "delegation_topology": self.delegation_topology,
+            "premise_digest": self.premise_digest,
+            "failure_attribution": self.failure_attribution,
+            "adopted_profile_hashes": list(self.adopted_profile_hashes),
+            "shared_workflow_membership": dict(self.shared_workflow_membership or {}),
+            "policy_revocation_revision": self.policy_revocation_revision,
+            "revocation_mode": self.revocation_mode,
             "policy_contract_version": self.policy_contract_version,
         }
 
@@ -1639,7 +1677,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             namespace_id: str = "default",
             action_registry: Optional[Mapping[str, Any]] = None,
             routing_profile_path: Optional[Path] = None,
-            behavioral_advisor: Optional[BehavioralAdvisor] = None) -> RuntimeBundle:
+            behavioral_advisor: Optional[BehavioralAdvisor] = None,
+            sharing_verifier: Optional[Callable[[Mapping[str, Any], str, str], bool]] = None) -> RuntimeBundle:
     """Pure library entry point: TaskRequest -> RuntimeBundle. No source-tree
     writes (the CLI snapshot writer is separate and out-of-tree)."""
     if isinstance(task_id, TaskRequest):
@@ -1661,6 +1700,16 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         delegate_agent_id = request.delegate_agent_id
         delegation_id = request.delegation_id
         role = request.role
+        parent_decision_ref = request.parent_decision_ref
+        shared_evidence_refs = list(request.shared_evidence_refs)
+        delegation_topology = request.delegation_topology
+        premise_digest = request.premise_digest
+        failure_attribution = request.failure_attribution
+        adopted_profile_hashes = tuple(request.adopted_profile_hashes)
+        shared_workflow_membership = (dict(request.shared_workflow_membership)
+                                      if request.shared_workflow_membership is not None else None)
+        policy_revocation_revision = request.policy_revocation_revision
+        revocation_mode = request.revocation_mode
         routing_experiment_plan = dict(request.routing_experiment_plan)
         phase = request.phase
         operation = request.operation
@@ -1687,6 +1736,15 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         delegate_agent_id = None
         delegation_id = None
         role = None
+        parent_decision_ref = None
+        shared_evidence_refs = []
+        delegation_topology = None
+        premise_digest = None
+        failure_attribution = "none"
+        adopted_profile_hashes = ()
+        shared_workflow_membership = None
+        policy_revocation_revision = 0
+        revocation_mode = "deferred"
         routing_experiment_plan = {}
         application_instance_id = application_instance_id or application_id
         model_id = model_id or model
@@ -1708,7 +1766,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     aliases = pipeline["aliases"]
     stages = pipeline["stages"]
 
-    routing_profiles, routing_pack_hash = load_routing_profiles(routing_profile_path)
+    routing_profiles, routing_pack_hash = load_routing_profiles(
+        routing_profile_path, sharing_verifier=sharing_verifier)
     routing_profile = ({"routing_pack_version": "1.0.0",
                         "semantic_hash": routing_pack_hash,
                         "profiles": routing_profiles}
@@ -1717,6 +1776,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     routing_plugin = _load_document(ROOT / "plugin.json", _load_json)
     routing_pack_for_context = load_guard_pack()
     routing_context = {
+        "adopted_profile_hashes": tuple(adopted_profile_hashes),
         "task_id": task_id,
         "session_id": None,
         "attempt_id": attempt_id,
@@ -1736,6 +1796,11 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "framework_version": routing_plugin.get("version", "unknown"),
         "guard_pack_hash": routing_pack_for_context.get("semantic_hash"),
         "role": role,
+        "parent_decision_ref": parent_decision_ref,
+        "shared_evidence_refs": shared_evidence_refs,
+        "delegation_topology": delegation_topology,
+        "premise_digest": premise_digest,
+        "failure_attribution": failure_attribution,
         "interaction_id": interaction_id,
         "delegation_id": delegation_id,
     }
@@ -2121,6 +2186,15 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         routing_profile_hash=hashlib.sha256(
             f"{routing_pack_hash}:{routing_experiment_plan.get('plan_hash', '')}:{routing_cohort or ''}".encode()
         ).hexdigest() if routing_experiment_plan else routing_pack_hash,
+        parent_decision_ref=parent_decision_ref,
+        shared_evidence_refs=tuple(shared_evidence_refs),
+        delegation_topology=delegation_topology,
+        premise_digest=premise_digest,
+        failure_attribution=failure_attribution,
+        adopted_profile_hashes=adopted_profile_hashes,
+        shared_workflow_membership=shared_workflow_membership,
+        policy_revocation_revision=policy_revocation_revision,
+        revocation_mode=revocation_mode,
     )
     frozen_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     instruction_words = sum(len(str(k["activation"] or "").split()) + sum(len(str(o).split()) for o in k["outputs"]) for k in kernel_instructions)
@@ -2191,6 +2265,15 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         delegate_agent_id=delegate_agent_id,
         delegation_id=delegation_id,
         role=role,
+        parent_decision_ref=parent_decision_ref,
+        shared_evidence_refs=tuple(shared_evidence_refs),
+        delegation_topology=delegation_topology,
+        premise_digest=premise_digest,
+        failure_attribution=failure_attribution,
+        adopted_profile_hashes=tuple(adopted_profile_hashes),
+        shared_workflow_membership=shared_workflow_membership,
+        policy_revocation_revision=policy_revocation_revision,
+        revocation_mode=revocation_mode,
         contracts=policy_documents,
     )
 

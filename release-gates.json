@@ -80,6 +80,20 @@
       ]
     },
     {
+      "name": "cfw_adversarial_concurrency",
+      "cwd": "CognitiveFrameWorks",
+      "command": [
+        "scripts/acceptance-adversarial-concurrency.py"
+      ]
+    },
+    {
+      "name": "cfw_concurrent_agent_isolation",
+      "cwd": "CognitiveFrameWorks",
+      "command": [
+        "scripts/acceptance-concurrent-agent-isolation.py"
+      ]
+    },
+    {
       "name": "cfw_runtime",
       "cwd": "CognitiveFrameWorks",
       "command": [

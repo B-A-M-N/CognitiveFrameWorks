@@ -109,10 +109,6 @@ class RuntimeTaskHandle:
     def agent(self) -> AgentSessionHandle:
         return AgentSessionHandle(self._session_token)
 
-    @property
-    def host(self) -> "HostSessionHandle":
-        return HostSessionHandle(self._session_token)
-
 
 class HostSessionHandle:
     """Host-only adapter view for evidence, transitions, and completion."""
@@ -135,6 +131,9 @@ class HostSessionHandle:
 
     def _session(self) -> RuntimeSession:
         return _resolve_host_session(self._session_token)
+
+    def operator_trace(self) -> dict[str, Any]:
+        return _resolve_host_session(self._session_token)._operator_trace()
 
     def after_tool(self, **kwargs: Any) -> str:
         return CognitiveRuntime().after_tool(self._session(), **kwargs)
@@ -226,12 +225,15 @@ class CognitiveRuntime:
                  host_context: Optional[HostExecutionContext] = None,
                  action_registry: Optional[Mapping[str, ActionDescriptor]] = None,
                  routing_profile_path: Optional[str] = None,
-                 behavioral_advisor: Optional[BehavioralAdvisor] = None) -> None:
+                 behavioral_advisor: Optional[BehavioralAdvisor] = None,
+                 sharing_verifier: Optional[Any] = None) -> None:
         self.telemetry_disabled = telemetry_disabled
         self.host_context = host_context
         self.action_registry = effective_action_registry(action_registry)
         self.routing_profile_path = routing_profile_path
         self.behavioral_advisor = behavioral_advisor
+        # Host-only callback; never copied into RuntimeTaskHandle or AgentSessionHandle.
+        self._sharing_verifier = sharing_verifier
 
     def begin_task(self, request: TaskRequest, **start_options: Any) -> RuntimeTaskHandle:
         from pathlib import Path
@@ -239,7 +241,8 @@ class CognitiveRuntime:
             request, action_registry=self.action_registry,
             routing_profile_path=Path(self.routing_profile_path)
             if self.routing_profile_path else None,
-            behavioral_advisor=self.behavioral_advisor)
+            behavioral_advisor=self.behavioral_advisor,
+            sharing_verifier=self._sharing_verifier)
         if "telemetry_disabled" in start_options:
             if bool(start_options["telemetry_disabled"]) != self.telemetry_disabled:
                 raise ValueError("task start cannot override the runtime telemetry contract")
@@ -263,7 +266,7 @@ class CognitiveRuntime:
 
     def host_handle(self, session: RuntimeSession | RuntimeTaskHandle) -> HostSessionHandle:
         if isinstance(session, RuntimeTaskHandle):
-            return session.host
+            return HostSessionHandle(session._session_token)
         return HostSessionHandle(_register_host_session(session))
 
     def before_model_call(self, session: RuntimeSession, *, tool_capable: bool = False,

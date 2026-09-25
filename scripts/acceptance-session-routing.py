@@ -85,7 +85,8 @@ def main() -> int:
                      "domain_tags": [], "phase": None, "environment": "runtime",
                      "toolset": None,
                      "statework_versions": {}, "framework_version": "1.4.0",
-                     "guard_pack_hash": resolve.load_guard_pack()["semantic_hash"]},
+                     "guard_pack_hash": resolve.load_guard_pack()["semantic_hash"],
+                     "role": "delegator"},
             observations=[], routing_adjustments=[adjustment],
             evidence={"event_ids": ["preexperiment"], "trajectory_ids": [],
                       "source_hash": "preexperiment",
@@ -124,6 +125,7 @@ def main() -> int:
         })
 
         sessions = []
+        session_requests = []
         counts = {"control": 0, "treatment": 0, "holdout": 0}
         index = 0
         while min(counts.values()) < 10:
@@ -137,7 +139,8 @@ def main() -> int:
                 model_revision=model_revision, model_capability_hash=model_capability_hash,
                 harness=harness, harness_version=harness_version,
                 agent_id="agent-a", agent_instance_id="agent-a-instance",
-                routing_experiment_plan=plan)
+                role="delegator", interaction_id=f"interaction-{index}",
+                delegation_id=f"delegation-{index}", routing_experiment_plan=plan)
             session = api.begin_task(request)
             experiment = session.bundle.guard_pack["routing_experiment"]
             cohort = experiment["routing_cohort"]
@@ -162,6 +165,7 @@ def main() -> int:
                 route_decision_id=decision_ids[0], evaluator_id="route-success-v1",
                 evidence_refs=[evidence_id])
             sessions.append(session)
+            session_requests.append(request)
             counts[cohort] += 1
             index += 1
 
@@ -170,11 +174,19 @@ def main() -> int:
         for path in sorted(telemetry_root.glob("*.ndjson")):
             events.extend(load_events(path))
         contexts = {}
-        for session in sessions:
+        for session, request in zip(sessions, session_requests, strict=True):
             experiment = dict(session.bundle.guard_pack["routing_experiment"])
-            contexts[f"{session.session_id}:{session.bundle.task_id}:{session.attempt_id}"] = {
+            context_key = "|".join(str(value) for value in (
+                request.namespace_id, request.application_instance_id,
+                request.agent_instance_id, session.session_id, request.task_id,
+                session.attempt_id, request.subject_ref, request.role,
+                request.interaction_id, request.delegation_id))
+            contexts[context_key] = {
                 "task_id": session.bundle.task_id, "session_id": session.session_id,
                 "attempt_id": session.attempt_id, "agent_instance_id": session.agent_instance_id,
+                "behavioral_subject": request.subject_ref,
+                "role": request.role, "interaction_id": request.interaction_id,
+                "delegation_id": request.delegation_id,
                 "namespace_id": "test-namespace", "application_id": application,
                 "application_version": application_version,
                 "application_instance_id": application_instance, "provider_id": provider,
@@ -200,7 +212,7 @@ def main() -> int:
         assert candidate["status"] == "candidate"
         receipt = candidate["evidence"]["experiment_receipt"]
         assert receipt["decision"] == "pass"
-        promoted = promote_profile(candidate, receipt)
+        promoted = promote_profile(candidate, receipt, sharing_scope="agent_private")
         profile_path = raw_root / "active-routing-profile.json"
         profile_path.write_text(json.dumps(promoted, indent=2) + "\n", encoding="utf-8")
         os.chmod(profile_path, 0o600)
@@ -212,7 +224,7 @@ def main() -> int:
             provider_id=provider, model_id=model, model_revision=model_revision,
             model_capability_hash=model_capability_hash, harness=harness,
             harness_version=harness_version, agent_id="agent-a",
-            agent_instance_id="agent-a-instance")
+            agent_instance_id="agent-a-instance", role="delegator")
         profiled_bundle = api_module.CognitiveRuntime(
             routing_profile_path=str(profile_path)).begin_task(profiled).bundle
         assert "flow" not in profiled_bundle.kernel

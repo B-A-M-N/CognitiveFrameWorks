@@ -425,3 +425,25 @@ These projects are released under the [MIT License](LICENSE). Contributions are 
 This work benefited in some way from inference provided by [freeinference.org](https://freeinference.org/).
 
 These are independent developments that are not reviewed, endorsed, or sponsored by FreeInference. If you find these projects genuinely useful, please consider donating to or sponsoring FreeInference, which provides a vital inference service.
+
+## Release qualification
+
+Structural public-beta checks, hostile integration, real-agent behavioral
+qualification, and operational performance are separate evidence classes.
+See `contracts/qualifications/`; unexecuted results remain `not_run`.
+
+## Concurrent-agent isolation and controlled sharing
+
+Independent executions use a complete `ExecutionIdentity`: namespace, application instance, agent instance, session, task, attempt, and interaction. A private workflow key includes the agent identity, so reused local identifiers do not create shared state.
+
+Agents may share a CSW subject only by presenting a pinned `shared_workflow_membership` whose namespace, application, application instance, StateWork, subject, workflow, and authorization revision match the task. Shared transitions still use compare-and-swap revisions; stale or concurrent incompatible writes require re-inspection.
+
+DP profiles use three sharing scopes:
+
+- `agent_private`: available only to the originating agent.
+- `application_shared`: requires an authenticated scope-promotion decision.
+- `cross_application`: additionally requires explicit data-sharing authorization.
+
+Even a shared profile is not automatically adopted. Each new CFW task must list the exact profile hash in `TaskRequest.adopted_profile_hashes`; normal model, harness, role, context, and eligible-route checks still apply. Running tasks retain their pinned policy revision. `deferred` revocation takes effect at the next task boundary; `immediate` revocation through the host revocation authority blocks affected active actions.
+
+`scripts/acceptance-concurrent-agent-isolation.py` verifies private-state separation, authorized shared-state serialization, crash recovery, and origin-distinct DP ingestion using separate processes and a shared persistent backend.

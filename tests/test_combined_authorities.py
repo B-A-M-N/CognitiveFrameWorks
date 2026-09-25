@@ -125,3 +125,22 @@ def test_authority_unavailable_blocks_consequential_action(tmp_path):
     session = runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing", state_authority=authority)
     authority.inspect = lambda **_: (_ for _ in ()).throw(RuntimeError("offline"))
     assert session.before_action({"tool_binding_id": "read", "arguments": {}, "subject_ref": "repo:shared"}) == runtime.GateDecision.BLOCK
+
+
+def test_task_handle_does_not_expose_host_authority():
+    resolve, runtime = _runtime_modules()
+    api = runtime.cognitive_runtime.CognitiveRuntime(telemetry_disabled=True) if hasattr(runtime, "cognitive_runtime") else None
+    # Import through the normal module path used by public API tests.
+    sys.modules.pop("cognitive_runtime", None)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cognitive_runtime", ROOT / "scripts" / "cognitive_runtime.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    module.resolve_runtime = resolve
+    module.start = runtime.start
+    request = resolve.TaskRequest(task_id="no-host-handle", application_id="app", shape="quick")
+    task = module.CognitiveRuntime(telemetry_disabled=True).begin_task(request)
+    assert not hasattr(task, "host")
+    host = module.CognitiveRuntime(telemetry_disabled=True).host_handle(task)
+    assert hasattr(host, "request_transition")

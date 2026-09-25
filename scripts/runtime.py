@@ -93,6 +93,62 @@ AUTHORITATIVE_EVIDENCE_KINDS = {
 RUNTIME_MODES = {"standalone_advisory", "standalone_enforcing", "combined_enforcing"}
 
 
+@dataclass(frozen=True)
+class ExecutionIdentity:
+    """Immutable identity for one agent execution; never a workflow key."""
+    namespace_id: str
+    application_instance_id: str
+    agent_instance_id: str
+    session_id: str
+    task_id: str
+    attempt_id: str
+    interaction_id: Optional[str]
+
+    def __post_init__(self) -> None:
+        for name in ("namespace_id", "application_instance_id", "agent_instance_id",
+                     "session_id", "task_id", "attempt_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value or len(value) > 256:
+                raise ValueError(f"execution identity field {name} must be a bounded identifier")
+        if self.interaction_id is not None and (
+                not isinstance(self.interaction_id, str) or not self.interaction_id
+                or len(self.interaction_id) > 256):
+            raise ValueError("execution identity interaction_id must be null or a bounded identifier")
+
+    def storage_key(self) -> str:
+        return "|".join((self.namespace_id, self.application_instance_id,
+                         self.agent_instance_id, self.session_id, self.task_id,
+                         self.attempt_id, self.interaction_id or ""))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in (
+            "namespace_id", "application_instance_id", "agent_instance_id",
+            "session_id", "task_id", "attempt_id", "interaction_id")}
+
+
+@dataclass(frozen=True)
+class SharedWorkflowMembership:
+    """Explicit authorization to use a shared CSW workflow subject."""
+    namespace_id: str
+    application_id: str
+    application_instance_id: str
+    workflow_id: str
+    statework_id: str
+    subject_ref: str
+    authorization_revision: int
+
+    def state_identity(self) -> dict[str, Any]:
+        if self.authorization_revision < 1:
+            raise ValueError("shared workflow membership requires a positive authorization revision")
+        return {
+            "namespace_id": self.namespace_id, "application_id": self.application_id,
+            "application_instance_id": self.application_instance_id,
+            "workflow_id": self.workflow_id, "statework_id": self.statework_id,
+            "subject_ref": self.subject_ref,
+            "authorization_revision": self.authorization_revision,
+        }
+
+
 class GateDecision(Enum):
     ALLOW = "allow"
     BLOCK = "block"
@@ -612,12 +668,19 @@ class StateAuthority:
         raise NotImplementedError
 
 
+class PolicyRevocationAuthority:
+    """Host interface for global profile rollback/revocation revisions."""
+    def inspect(self, profile_hashes: tuple[str, ...]) -> dict[str, Any]:
+        raise NotImplementedError
+
+
 class CSWStateAuthority(StateAuthority):
     """Concrete combined-mode adapter owned by CSW, injected into CFW."""
     def __init__(self, root: Path, *, state_path: Optional[Path] = None,
                  evidence_path: Optional[Path] = None,
                  namespace_id: str = "default", application_id: str = "cognitiveframeworks-runtime",
-                 application_instance_id: str = "cognitiveframeworks-runtime") -> None:
+                 application_instance_id: str = "cognitiveframeworks-runtime",
+                 workflow_id: str = "default-workflow") -> None:
         self.root = Path(root)
         self.control = _statework_transition_engines(self.root)
         self.state_store = self.control.SubjectStateStore(
@@ -627,6 +690,7 @@ class CSWStateAuthority(StateAuthority):
         self.namespace_id = str(namespace_id)
         self.application_id = str(application_id)
         self.application_instance_id = str(application_instance_id)
+        self.workflow_id = str(workflow_id)
         self._controllers: Dict[str, Any] = {}
         self._load_evidence()
 
@@ -654,6 +718,7 @@ class CSWStateAuthority(StateAuthority):
     def _identity(self, *, statework_id: str, subject_ref: str, contract: Mapping[str, Any]) -> Dict[str, Any]:
         return {"namespace_id": self.namespace_id, "application_id": self.application_id,
                 "application_instance_id": self.application_instance_id,
+                "workflow_id": self.workflow_id,
                 "subject_ref": subject_ref, "statework_id": statework_id,
                 "contract_version": str(contract.get("version") or "1.0.0")}
 
@@ -678,10 +743,27 @@ class CSWStateAuthority(StateAuthority):
         if controller is None:
             self.inspect(statework_id=statework_id, subject_ref=subject_ref, contract_hash=contract_hash)
             controller = self._controllers[key]
+        scoped_refs: list[str] = []
         for record in (evidence_records or []):
-            self.evidence_store.create(dict(record))
+            copied = dict(record)
+            original_ref = str(copied.get("ref") or "")
+            if not original_ref:
+                raise ValueError("CSW evidence record requires a ref")
+            scoped_ref = "evidence:" + hashlib.sha256(
+                (f"{identity['namespace_id']}|{identity['application_id']}|"
+                 f"{identity['application_instance_id']}|{identity['workflow_id']}|"
+                 f"{statework_id}|{subject_ref}|{original_ref}").encode("utf-8")
+            ).hexdigest()
+            copied["ref"] = scoped_ref
+            copied["origin_ref"] = original_ref
+            copied["namespace_id"] = identity["namespace_id"]
+            copied["application_id"] = identity["application_id"]
+            copied["application_instance_id"] = identity["application_instance_id"]
+            copied["workflow_id"] = identity["workflow_id"]
+            self.evidence_store.create(copied)
+            scoped_refs.append(scoped_ref)
         decision = controller.request_transition(
-            to_state=output_state, trigger=trigger, evidence_refs=evidence_refs,
+            to_state=output_state, trigger=trigger, evidence_refs=scoped_refs,
             expected_revision=expected_revision)
         if not decision.allowed:
             raise ValueError(f"CSW authority blocked transition: {decision.reason}")
@@ -719,6 +801,7 @@ class RuntimeSession:
     _emit: Optional[TelemetrySink] = None
     _telemetry_exporter: Optional[DurableTelemetryExporter] = None
     state_authority: Optional[StateAuthority] = None
+    policy_revocation_authority: Optional[PolicyRevocationAuthority] = None
     runtime_mode: str = "standalone_enforcing"
     host_context: HostExecutionContext = field(default_factory=HostExecutionContext)
     host_invocations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -733,6 +816,16 @@ class RuntimeSession:
     delegate_agent_id: Optional[str] = None
     delegation_id: Optional[str] = None
     role: Optional[str] = None
+    parent_decision_ref: Optional[str] = None
+    shared_evidence_refs: tuple[str, ...] = ()
+    delegation_topology: Optional[str] = None
+    premise_digest: Optional[str] = None
+    failure_attribution: str = "none"
+    adopted_profile_hashes: tuple[str, ...] = ()
+    execution_identity: Optional[ExecutionIdentity] = None
+    shared_workflow_membership: Optional[Mapping[str, Any]] = None
+    policy_revocation_revision: int = 0
+    revocation_mode: str = "deferred"
     authority_revision: int = 0
     _completion_permit: Optional[CompletionPermit] = field(default=None, repr=False)
     _security_frozen: bool = field(default=False, init=False, repr=False)
@@ -742,6 +835,7 @@ class RuntimeSession:
                                                init=False, repr=False, compare=False)
     _ledger_token: Any = field(default_factory=object, init=False, repr=False, compare=False)
     route_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
+    route_outcomes: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
 
     def _host_ingress(self) -> HostIngress:
         """Return the host-only channel to the adapter implementation.
@@ -761,8 +855,11 @@ class RuntimeSession:
                 "_consumed_grant_ids", "execution_segments", "session_nonce",
                 "authority_revision", "session_id", "agent_instance_id", "attempt_id",
                 "interaction_id", "parent_session_id", "delegator_agent_id",
-                "delegate_agent_id", "delegation_id", "role",
-                "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
+                "delegate_agent_id", "delegation_id", "role", "parent_decision_ref",
+                "shared_evidence_refs", "delegation_topology", "premise_digest", "failure_attribution",
+                "adopted_profile_hashes", "execution_identity", "shared_workflow_membership", "policy_revocation_revision", "revocation_mode",
+                "policy_revocation_authority",
+                "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
                 "runtime_mode"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
@@ -982,6 +1079,88 @@ class RuntimeSession:
         }
         return left if rank[left] >= rank[right] else right
 
+    def _operator_state_snapshot(self) -> list[dict[str, Any]]:
+        """Return bounded StateWork state references without evidence content."""
+        subject = self.bundle.policy.subject_ref
+        snapshots: list[dict[str, Any]] = []
+        for statework in self.bundle.stateworks:
+            statework_id = str(statework.get("id") or "")
+            contract = statework.get("transitions_contract") or {}
+            state = self.statework_states.get((statework_id, subject))
+            revision = None
+            if self.state_authority is not None and subject:
+                try:
+                    contract_hash = hashlib.sha256(json.dumps(
+                        contract, sort_keys=True, separators=(",", ":"), default=str
+                    ).encode("utf-8")).hexdigest()
+                    authoritative = self.state_authority.inspect(
+                        statework_id=statework_id, subject_ref=subject,
+                        contract_hash=contract_hash)
+                    state = authoritative.get("state")
+                    revision = authoritative.get("revision")
+                except Exception as exc:
+                    revision = None
+                    state = f"unavailable:{type(exc).__name__}"
+            snapshots.append({
+                "statework_id": statework_id,
+                "subject_ref": subject,
+                "state": state,
+                "revision": revision,
+            })
+        return snapshots
+
+    def _revocation_current(self) -> bool:
+        if self.policy_revocation_authority is None or not self.adopted_profile_hashes:
+            return True
+        try:
+            snapshot = self.policy_revocation_authority.inspect(tuple(self.adopted_profile_hashes))
+            revision = int(snapshot.get("revision", 0) or 0)
+            revoked = set(snapshot.get("revoked_profile_hashes") or ())
+            immediate = bool(snapshot.get("immediate"))
+            if not revoked.intersection(self.adopted_profile_hashes):
+                self.policy_revocation_revision = max(self.policy_revocation_revision, revision)
+                return True
+            if self.revocation_mode == "immediate" or immediate:
+                return False
+            # Deferred: the pinned policy remains intact until the next task.
+            self.policy_revocation_revision = max(self.policy_revocation_revision, revision)
+            return True
+        except Exception as exc:
+            self._emit_runtime({"category": "blocker", "event_type": "policy_revocation_unavailable",
+                                "payload": {"summary": type(exc).__name__,
+                                            "result_class": "reinspection required"}})
+            return False
+
+    def _operator_trace(self) -> dict[str, Any]:
+        """Correlate bounded authority references; never expose prompt or raw evidence."""
+        advice = self.bundle.guard_pack.get("advice_exchange") or {}
+        advice_context = advice.get("context") if isinstance(advice, Mapping) else {}
+        advice_sources = advice.get("adjustments") if isinstance(advice, Mapping) else []
+        return {
+            "trace_version": "1.0.0",
+            "task": {
+                "task_id": self.bundle.task_id,
+                "session_id": self.session_id,
+                "attempt_id": self.attempt_id,
+                "agent_instance_id": self.agent_instance_id,
+            },
+            "policy": {
+                "policy_hash": self.bundle.pinned.get("policy_hash"),
+                "static_policy_hash": (advice_context or {}).get("static_policy_hash"),
+                "eligible_choice_hash": (advice_context or {}).get("eligible_choice_hash"),
+                "context_identity": (advice_context or {}).get("context_identity"),
+            },
+            "statework": self._operator_state_snapshot(),
+            "advice": {
+                "advice_id": (advice_context or {}).get("advice_version"),
+                "source_profile_hash": (advice_context or {}).get("source_profile_hash"),
+                "expires_at": (advice_context or {}).get("expires_at"),
+                "adjustment_count": len(advice_sources or []),
+            },
+            "route_decisions": [dict(value) for value in self.route_decisions.values()],
+            "route_outcomes": [dict(value) for value in self.route_outcomes.values()],
+        }
+
     def _authoritative_state_ready(self) -> bool:
         if self.runtime_mode != "combined_enforcing":
             return True
@@ -1015,6 +1194,8 @@ class RuntimeSession:
         """Structural WARD gate; host executors run only ALLOW decisions."""
         request = self._request(action)
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
+            return GateDecision.BLOCK
+        if not self._revocation_current():
             return GateDecision.BLOCK
         descriptor = self._descriptor(request)
         decision = self._decision(request)
@@ -1294,12 +1475,27 @@ class RuntimeSession:
             raise ValueError("route decision requires a typed route and route_type")
         decision_id = f"route-{uuid.uuid4()}"
         experiment = self.bundle.guard_pack.get("routing_experiment") or {}
+        candidate = experiment.get("candidate_adjustment") or {}
+        intervention_assigned = experiment.get("routing_cohort") == "treatment"
+        intervention_executed = bool(
+            intervention_assigned
+            and candidate.get("route_type") == route_type
+            and str(candidate.get("route") or "") == route
+        )
+        effective_policy_identity = (
+            experiment.get("cohort_policy_identity")
+            if experiment.get("routing_cohort") in {"control", "treatment", "holdout"}
+            else self.bundle.pinned.get("policy_hash")
+        )
         self.route_decisions[decision_id] = {
             "decision_id": decision_id, "route": route, "route_type": route_type,
             "policy_hash": self.bundle.pinned.get("policy_hash"),
             "selection_reason": selection_reason,
             "candidate_profile_hash": experiment.get("candidate_profile_hash"),
             "candidate_adjustment_applied": experiment.get("candidate_adjustment_applied", False),
+            "intervention_assigned": intervention_assigned,
+            "intervention_executed": intervention_executed,
+            "effective_policy_identity": effective_policy_identity,
             "comparison_context_hash": experiment.get("comparison_context_hash"),
             "experiment_plan_hash": experiment.get("plan_hash"),
             "routing_cohort": experiment.get("routing_cohort"),
@@ -1307,6 +1503,8 @@ class RuntimeSession:
             "evaluator_version": experiment.get("target_evaluator_version"),
             "evaluator_hash": experiment.get("target_evaluator_hash"),
         }
+        self._journal("route_decision_recorded", decision_id=decision_id,
+                      decision=dict(self.route_decisions[decision_id]))
         route_payload = {"summary": route, "route": route, "route_type": route_type,
                          "route_decision_id": decision_id,
                          "policy_hash": self.bundle.pinned.get("policy_hash"),
@@ -1314,7 +1512,15 @@ class RuntimeSession:
         route_payload.update({key: value for key, value in {
             "experiment_plan_hash": experiment.get("plan_hash"),
             "routing_cohort": experiment.get("routing_cohort"),
-            "policy_identity": experiment.get("cohort_policy_identity"),
+            "policy_identity": effective_policy_identity,
+            "intervention_assigned": intervention_assigned,
+            "intervention_executed": intervention_executed,
+            "effective_policy_hash": self.bundle.pinned.get("policy_hash"),
+            "parent_decision_ref": self.parent_decision_ref,
+            "shared_evidence_refs": list(self.shared_evidence_refs),
+            "delegation_topology": self.delegation_topology,
+            "premise_digest": self.premise_digest,
+            "failure_attribution": self.failure_attribution,
         }.items() if value is not None})
         self._host_event({
             "event_id": decision_id, "category": "decision", "event_type": event_type,
@@ -1351,6 +1557,9 @@ class RuntimeSession:
             "evaluator_id": evaluator_id, "outcome_source": f"evaluator:{evaluator_id}",
             "outcome": outcome, "policy_hash": decision["policy_hash"],
             "candidate_adjustment_applied": decision.get("candidate_adjustment_applied", False),
+            "intervention_assigned": decision.get("intervention_assigned", False),
+            "intervention_executed": decision.get("intervention_executed", False),
+            "effective_policy_hash": decision.get("effective_policy_identity"),
             "reason": "registered_host_evaluator",
         }
         outcome_payload.update({key: value for key, value in {
@@ -1362,6 +1571,15 @@ class RuntimeSession:
             "routing_cohort": decision.get("routing_cohort"),
             "policy_identity": decision.get("policy_identity"),
         }.items() if value is not None})
+        self.route_outcomes[event_id] = {
+            "event_id": event_id,
+            "route_decision_id": route_decision_id,
+            "evaluator_id": evaluator_id,
+            "outcome": outcome,
+            "evidence_refs": list(evidence_refs),
+        }
+        self._journal("route_outcome_recorded", event_id=event_id,
+                      outcome=dict(self.route_outcomes[event_id]))
         self._host_event({
             "event_id": event_id, "category": "decision", "event_type": "route_outcome",
             "subject": self.bundle.policy.subject_ref,
@@ -1962,6 +2180,8 @@ class RuntimeSession:
             raise PermissionError("task finalization requires a validated completion permit")
         if not self._authoritative_state_ready():
             raise PermissionError("shared StateWork authority is unavailable for completion")
+        if not self._revocation_current():
+            raise PermissionError("pinned policy has been immediately revoked")
         if (permit.task_id != self.bundle.task_id
                 or permit.policy_hash != self.bundle.pinned["policy_hash"]
                 or permit.session_nonce != self.session_nonce
@@ -2010,10 +2230,22 @@ class RuntimeSession:
         return self._render_output(output, complete=True, **kwargs)
 
 
+def _journal_identity_prefix(bundle: resolve_runtime.RuntimeBundle) -> str:
+    values = (
+        bundle.pinned.get("namespace_id", "default"),
+        bundle.pinned.get("application_instance_id", "unknown-application"),
+        bundle.pinned.get("agent_instance_id", bundle.pinned.get("agent_id", "agent")),
+        bundle.task_id, bundle.pinned.get("attempt_id", "attempt-1"),
+        bundle.pinned.get("interaction_id") or "",
+    )
+    return hashlib.sha256("|".join(str(value) for value in values).encode("utf-8")).hexdigest()[:32]
+
+
 def start(bundle: resolve_runtime.RuntimeBundle, *,
           telemetry_sink: Optional[TelemetrySink] = None,
           telemetry_exporter: Optional[DurableTelemetryExporter] = None,
           state_authority: Optional[StateAuthority] = None,
+          policy_revocation_authority: Optional[PolicyRevocationAuthority] = None,
           runtime_mode: str = "standalone_enforcing",
           telemetry_disabled: bool = False,
           tool_hooks: Optional[List[Callable[[Dict[str, Any]], Optional[GateDecision]]]] = None,
@@ -2043,7 +2275,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     if resume and session_id is None:
         # Analytics identity is restored from the authority journal; it is
         # never regenerated from the security nonce or inferred from task ID.
-        journal_db = journal_root / f"{safe_task}-{session_nonce}.sqlite3"
+        journal_db = journal_root / f"session-{_journal_identity_prefix(bundle)}-{safe_task}-{session_nonce}.sqlite3"
         if journal_db.exists():
             with sqlite3.connect(journal_db) as database:
                 row = database.execute(
@@ -2106,9 +2338,24 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
        delegator_agent_id=bundle.pinned.get("delegator_agent_id"),
        delegate_agent_id=bundle.pinned.get("delegate_agent_id"),
        delegation_id=bundle.pinned.get("delegation_id"),
-       role=bundle.pinned.get("role"))
+       role=bundle.pinned.get("role"),
+       parent_decision_ref=bundle.pinned.get("parent_decision_ref"),
+       shared_evidence_refs=tuple(bundle.pinned.get("shared_evidence_refs") or ()),
+       delegation_topology=bundle.pinned.get("delegation_topology"),
+       premise_digest=bundle.pinned.get("premise_digest"),
+       failure_attribution=bundle.pinned.get("failure_attribution") or "none",
+       adopted_profile_hashes=tuple(bundle.pinned.get("adopted_profile_hashes") or ()),
+       shared_workflow_membership=bundle.pinned.get("shared_workflow_membership"),
+       policy_revocation_revision=int(bundle.pinned.get("policy_revocation_revision", 0) or 0),
+       revocation_mode=str(bundle.pinned.get("revocation_mode") or "deferred"))
     session._ledger_token = object()
     session.ledger = EvidenceLedger(bundle.task_id, writer_token=session._ledger_token)
+    session.execution_identity = ExecutionIdentity(
+        namespace_id=bundle.pinned["namespace_id"],
+        application_instance_id=bundle.pinned["application_instance_id"],
+        agent_instance_id=session.agent_instance_id,
+        session_id=session.session_id, task_id=bundle.task_id,
+        attempt_id=session.attempt_id, interaction_id=session.interaction_id)
     if runtime_mode == "combined_enforcing":
         if state_authority is None:
             raise ValueError("combined_enforcing requires an injected shared StateAuthority")
@@ -2118,9 +2365,28 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
             state_authority.namespace_id = bundle.pinned["namespace_id"]
             state_authority.application_id = bundle.pinned["application_id"]
             state_authority.application_instance_id = bundle.pinned["application_instance_id"]
+            membership = bundle.pinned.get("shared_workflow_membership")
+            if membership:
+                required = ("workflow_id", "statework_id", "subject_ref")
+                if any(not membership.get(name) for name in required):
+                    raise ValueError("shared workflow membership is incomplete")
+                for field, expected in (
+                    ("namespace_id", bundle.pinned["namespace_id"]),
+                    ("application_id", bundle.pinned["application_id"]),
+                    ("application_instance_id", bundle.pinned["application_instance_id"]),
+                    ("subject_ref", bundle.policy.subject_ref),
+                ):
+                    if membership.get(field) != expected:
+                        raise ValueError(f"shared workflow membership {field} differs from task identity")
+                state_authority.workflow_id = str(membership["workflow_id"])
+            else:
+                state_authority.workflow_id = (
+                    f"private:{bundle.pinned['namespace_id']}:"
+                    f"{bundle.pinned['application_instance_id']}:{session.agent_instance_id}")
     if runtime_mode == "standalone_advisory" and state_authority is not None:
         raise ValueError("standalone_advisory cannot combine with shared StateWork authority")
     session.state_authority = state_authority
+    session.policy_revocation_authority = policy_revocation_authority
     session.runtime_mode = runtime_mode
     if runtime_mode == "combined_enforcing" and not session._authoritative_state_ready():
         raise ValueError("shared StateWork authority could not resolve initial state")
@@ -2130,9 +2396,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     }
     journal_root.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(journal_root, 0o700)
-    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", bundle.task_id)[:128] or "task"
-    session.journal_path = journal_root / f"{safe_task}-{session_nonce}.ndjson"
-    session.journal_db_path = journal_root / f"{safe_task}-{session_nonce}.sqlite3"
+    identity_digest = _journal_identity_prefix(bundle)
+    session.journal_path = journal_root / f"session-{identity_digest}-{safe_task}-{session_nonce}.ndjson"
+    session.journal_db_path = journal_root / f"session-{identity_digest}-{safe_task}-{session_nonce}.sqlite3"
     if not resume:
         if session.journal_path.exists() or session.journal_db_path.exists():
             raise FileExistsError(
@@ -2151,7 +2417,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
         session._emit = telemetry_sink
     elif not telemetry_disabled:
         digest = hashlib.sha256(
-            f"{bundle.task_id}:{session.session_id}".encode("utf-8")).hexdigest()[:24]
+            session.execution_identity.storage_key().encode("utf-8")).hexdigest()[:24]
         store = (resolve_runtime.runtime_state_dir() / "telemetry" /
                  f"{digest}.ndjson")
         session._emit = HostTelemetry(
@@ -2179,14 +2445,17 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
             delegation_id=session.delegation_id, role=session.role).emit
     session.tool_hooks.extend(tool_hooks or [])
     session.final_hooks.extend(final_hooks or [])
-    if session._emit is not None:
+    if session._emit is not None and not resume:
         session._emit_runtime({
             "category": "decision", "event_type": "policy_composed",
             "subject": bundle.policy.subject_ref,
             "payload": {"summary": "host resolver froze task routing",
                         "result_class": "validated",
                         "policy_hash": bundle.pinned.get("policy_hash"),
-                        "routing_profile_hash": bundle.policy.routing_profile_hash}})
+                        "routing_profile_hash": bundle.policy.routing_profile_hash,
+                        "intervention_assigned": ((bundle.guard_pack.get("routing_experiment") or {}).get("routing_cohort") == "treatment"),
+                        "intervention_executed": False,
+                        "effective_policy_hash": bundle.pinned.get("policy_hash")}})
         for stage in bundle.kernel:
             session._record_route_decision(
                 session._host_capability, route=stage, route_type="stage",
@@ -2284,6 +2553,19 @@ def _restore_session(session: RuntimeSession) -> None:
         elif event_type == "segment_activated":
             session.current_segment_index = int(record["segment_index"])
             session._segment_status[record["segment_id"]] = SegmentStatus.ACTIVE
+        elif event_type == "policy_revocation_observed":
+            session.policy_revocation_revision = max(
+                session.policy_revocation_revision,
+                int(record.get("policy_revocation_revision", 0) or 0))
+            session.revocation_mode = str(record.get("revocation_mode") or session.revocation_mode)
+        elif event_type == "route_decision_recorded":
+            decision_id = str(record.get("decision_id") or record.get("route_decision_id") or "")
+            if decision_id:
+                session.route_decisions[decision_id] = dict(record.get("decision") or {})
+        elif event_type == "route_outcome_recorded":
+            event_id = str(record.get("event_id") or "")
+            if event_id:
+                session.route_outcomes[event_id] = dict(record.get("outcome") or {})
         elif event_type == "evidence_attested":
             evidence_id = str(record["evidence_id"])
             session.ledger._records[evidence_id] = EvidenceRecord(

@@ -76,6 +76,32 @@ def main() -> int:
         str(root): {"tag": tag, "commit": git(root, "rev-parse", "HEAD")}
         for root, tag in zip(roots, tags)
     }
+    qualification_manifest = cfw / "contracts" / "qualifications"
+    qualification_results = cfw / "contracts" / "qualification-results"
+    qualification_classes = {
+        "hostile_integration", "real_agent_behavioral", "operational_performance"
+    }
+    seen_qualification_classes = set()
+    for manifest_path in sorted(qualification_manifest.glob("*.json")):
+        qualification = json.loads(manifest_path.read_text(encoding="utf-8"))
+        evidence_class = str(qualification.get("evidence_class") or "")
+        if evidence_class not in qualification_classes:
+            raise RuntimeError(f"unknown qualification evidence class: {evidence_class}")
+        if evidence_class in seen_qualification_classes:
+            raise RuntimeError(f"duplicate qualification evidence class: {evidence_class}")
+        seen_qualification_classes.add(evidence_class)
+        result_relative = ((qualification.get("result_contract") or {}).get("path") or "")
+        result_path = cfw / str(result_relative)
+        if not result_path.is_file():
+            raise RuntimeError(f"qualification result is missing: {result_relative}")
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        required = set(((qualification.get("result_contract") or {}).get("required_fields") or ()))
+        if not required.issubset(result):
+            raise RuntimeError(f"qualification result is incomplete: {result_relative}")
+        if result.get("qualification_id") != qualification.get("qualification_id"):
+            raise RuntimeError(f"qualification result identity mismatch: {result_relative}")
+    if seen_qualification_classes != qualification_classes:
+        raise RuntimeError("release qualification classes are incomplete")
     artifact_manifest = {
         "plugin.json": file_hash(cfw / "plugin.json"),
         "enforcement-capabilities.json": file_hash(
@@ -83,6 +109,14 @@ def main() -> int:
         "transition-contract.schema.json": file_hash(
             cfw / "contracts" / "transition-contract.schema.json"),
         "release-gates.json": file_hash(cfw / "release-gates.json"),
+        "qualification_manifests": {
+            path.name: file_hash(path)
+            for path in sorted(qualification_manifest.glob("*.json"))
+        },
+        "qualification_results": {
+            path.name: file_hash(path)
+            for path in sorted(qualification_results.glob("*.result.json"))
+        },
     }
 
     # Both temporary directories start empty.  The installer is responsible

@@ -1,0 +1,12 @@
+{
+  "benchmark_hash": null,
+  "completed_at": null,
+  "evidence_class": "real_agent_behavioral",
+  "host_verified_profile_hash": null,
+  "qualification_id": "real-agent-behavioral-v1",
+  "report_path": null,
+  "source_commits": {},
+  "status": "not_run",
+  "transfer_decision": "not_run",
+  "transfer_report_hash": null
+}
