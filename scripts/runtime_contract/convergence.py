@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 CONVERGENCE_SCHEMA_VERSION = "1.0.0"
@@ -27,7 +29,13 @@ TERMINAL_DISPOSITIONS = {"SUCCEEDED", "BLOCKED", "FAILED", "HANDOFF"}
 GATE_BLOCK = "block"
 GATE_REINSPECT = "require_reinspection"
 GATE_CHANGED_HYPOTHESIS = "require_changed_hypothesis"
+GATE_GOAL_REANCHOR = "require_goal_reanchor"
 GATE_ALLOW = None
+
+PROGRESS_CLASSES = {
+    "GOAL_PROGRESS", "BLOCKER_REMOVED", "DIAGNOSTIC_PROGRESS",
+    "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS",
+}
 
 
 def _canonical(value: Any) -> str:
@@ -36,6 +44,119 @@ def _canonical(value: Any) -> str:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class AttemptDescriptor:
+    """Host-canonical attempt identity; action plan text is stored only as a digest."""
+
+    attempt_ref: str
+    cause_id: str
+    premise_digest: str
+    action_plan_digest: str
+    parent_attempt_ref: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        for name in ("attempt_ref", "cause_id", "premise_digest", "action_plan_digest"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or len(value) > 256:
+                raise ValueError(f"{name} must be a non-empty bounded identifier")
+        if self.parent_attempt_ref is not None and (
+                not isinstance(self.parent_attempt_ref, str)
+                or not self.parent_attempt_ref.strip()
+                or len(self.parent_attempt_ref) > 256):
+            raise ValueError("parent_attempt_ref must be null or a bounded identifier")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"attempt_ref": self.attempt_ref, "cause_id": self.cause_id,
+                "premise_digest": self.premise_digest,
+                "action_plan_digest": self.action_plan_digest,
+                "parent_attempt_ref": self.parent_attempt_ref}
+
+
+class SharedBranchLedger:
+    """Tiny durable premise ledger shared only inside an authorized workflow."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with sqlite3.connect(str(self.path), timeout=2.0) as database:
+            database.execute("PRAGMA journal_mode=WAL")
+            database.execute("PRAGMA synchronous=FULL")
+            database.execute("""
+                CREATE TABLE IF NOT EXISTS investigation_branches (
+                    namespace_id TEXT NOT NULL,
+                    application_instance_id TEXT NOT NULL,
+                    workflow_id TEXT NOT NULL,
+                    cause_id TEXT NOT NULL,
+                    premise_digest TEXT NOT NULL,
+                    action_plan_fingerprints_json TEXT NOT NULL,
+                    rejecting_evidence_refs_json TEXT NOT NULL,
+                    recovery_count INTEGER NOT NULL,
+                    attempt_ref_digests_json TEXT NOT NULL,
+                    PRIMARY KEY(namespace_id, application_instance_id,
+                                workflow_id, cause_id, premise_digest)
+                )
+            """)
+        self.path.chmod(0o600)
+
+    @staticmethod
+    def _scope(namespace_id: str, application_instance_id: str,
+               workflow_id: str, cause_id: str, premise_digest: str) -> tuple[str, ...]:
+        values = (namespace_id, application_instance_id, workflow_id,
+                  cause_id, premise_digest)
+        if any(not isinstance(value, str) or not value or len(value) > 256
+               for value in values):
+            raise ValueError("shared branch identity requires bounded workflow/cause/premise fields")
+        return values
+
+    def record_failure(self, *, namespace_id: str, application_instance_id: str,
+                       workflow_id: str, cause_id: str, premise_digest: str,
+                       action_plan_fingerprint: str, evidence_ref: str,
+                       attempt_ref: str) -> int:
+        scope = self._scope(namespace_id, application_instance_id, workflow_id,
+                            cause_id, premise_digest)
+        attempt_digest = _digest(attempt_ref)
+        with sqlite3.connect(str(self.path), timeout=2.0) as database:
+            row = database.execute(
+                "SELECT action_plan_fingerprints_json, rejecting_evidence_refs_json, "
+                "recovery_count, attempt_ref_digests_json FROM investigation_branches "
+                "WHERE namespace_id=? AND application_instance_id=? AND workflow_id=? "
+                "AND cause_id=? AND premise_digest=?", scope).fetchone()
+            actions, evidence, count, attempts = row or ("[]", "[]", 0, "[]")
+            action_values = set(json.loads(actions))
+            evidence_values = set(json.loads(evidence))
+            attempt_values = set(json.loads(attempts))
+            action_values.add(action_plan_fingerprint)
+            evidence_values.add(evidence_ref)
+            is_new_attempt = attempt_digest not in attempt_values
+            attempt_values.add(attempt_digest)
+            action_values = set(sorted(action_values)[-32:])
+            evidence_values = set(sorted(evidence_values)[-32:])
+            attempt_values = set(sorted(attempt_values)[-64:])
+            next_count = int(count) + int(is_new_attempt)
+            database.execute(
+                "INSERT INTO investigation_branches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(namespace_id, application_instance_id, workflow_id, cause_id, premise_digest) "
+                "DO UPDATE SET action_plan_fingerprints_json=excluded.action_plan_fingerprints_json, "
+                "rejecting_evidence_refs_json=excluded.rejecting_evidence_refs_json, "
+                "recovery_count=excluded.recovery_count, "
+                "attempt_ref_digests_json=excluded.attempt_ref_digests_json",
+                (*scope, json.dumps(sorted(action_values)), json.dumps(sorted(evidence_values)),
+                 next_count, json.dumps(sorted(attempt_values))))
+            database.commit()
+        return next_count
+
+    def recovery_count(self, *, namespace_id: str, application_instance_id: str,
+                       workflow_id: str, cause_id: str, premise_digest: str) -> int:
+        scope = self._scope(namespace_id, application_instance_id, workflow_id,
+                            cause_id, premise_digest)
+        with sqlite3.connect(str(self.path), timeout=2.0) as database:
+            row = database.execute(
+                "SELECT recovery_count FROM investigation_branches WHERE "
+                "namespace_id=? AND application_instance_id=? AND workflow_id=? "
+                "AND cause_id=? AND premise_digest=?", scope).fetchone()
+        return int(row[0]) if row else 0
 
 
 @dataclass(frozen=True)
@@ -128,6 +249,12 @@ class RetryState:
     last_reinspection_revision: int = 0
     last_progress_digest: Optional[str] = None
     last_failure_digest: Optional[str] = None
+    progress_sequence: int = 0
+    last_goal_progress_seq: int = 0
+    last_support_progress_seq: int = 0
+    support_actions_since_goal_progress: int = 0
+    recovery_epochs_since_goal_progress: int = 0
+    last_progress_class: Optional[str] = None
     disposition: str = "RUNNING"
     terminated_reason: Optional[str] = None
     rejected_paths: list[RejectedPath] = field(default_factory=list)
@@ -146,6 +273,12 @@ class RetryState:
             "last_reinspection_revision": self.last_reinspection_revision,
             "last_progress_digest": self.last_progress_digest,
             "last_failure_digest": self.last_failure_digest,
+            "progress_sequence": self.progress_sequence,
+            "last_goal_progress_seq": self.last_goal_progress_seq,
+            "last_support_progress_seq": self.last_support_progress_seq,
+            "support_actions_since_goal_progress": self.support_actions_since_goal_progress,
+            "recovery_epochs_since_goal_progress": self.recovery_epochs_since_goal_progress,
+            "last_progress_class": self.last_progress_class,
             "disposition": self.disposition,
             "terminated_reason": self.terminated_reason,
             "rejected_paths": [item.to_dict() for item in self.rejected_paths],
@@ -168,6 +301,15 @@ class RetryState:
                                       if data.get("last_progress_digest") else None)
         state.last_failure_digest = (str(data["last_failure_digest"])
                                      if data.get("last_failure_digest") else None)
+        state.progress_sequence = int(data.get("progress_sequence", 0) or 0)
+        state.last_goal_progress_seq = int(data.get("last_goal_progress_seq", 0) or 0)
+        state.last_support_progress_seq = int(data.get("last_support_progress_seq", 0) or 0)
+        state.support_actions_since_goal_progress = int(
+            data.get("support_actions_since_goal_progress", 0) or 0)
+        state.recovery_epochs_since_goal_progress = int(
+            data.get("recovery_epochs_since_goal_progress", 0) or 0)
+        state.last_progress_class = (str(data["last_progress_class"])
+                                     if data.get("last_progress_class") else None)
         state.disposition = str(data.get("disposition") or "RUNNING")
         state.terminated_reason = (str(data["terminated_reason"])
                                    if data.get("terminated_reason") else None)
@@ -258,25 +400,50 @@ class ConvergenceController:
         return state
 
     def record_progress(self, *, cause_id: str, progress_digest: str,
+                        progress_class: str = "DIAGNOSTIC_PROGRESS",
                         evidence_ref: str | None = None,
                         observed_at: str | None = None) -> RetryState:
-        """Only host-observable progress resets the no-progress budget."""
+        """Track goal movement separately from useful support work."""
+        if progress_class not in PROGRESS_CLASSES:
+            raise ValueError(f"unsupported progress class {progress_class!r}")
         state = self.state(cause_id)
         state.last_progress_digest = progress_digest
-        state.recovery_epochs = 0
-        state.no_progress_epochs = 0
-        state.same_approach_retries = 0
+        state.progress_sequence += 1
+        state.last_progress_class = progress_class
+        if progress_class in {"GOAL_PROGRESS", "BLOCKER_REMOVED"}:
+            state.last_goal_progress_seq = state.progress_sequence
+            state.support_actions_since_goal_progress = 0
+            state.recovery_epochs_since_goal_progress = 0
+            state.recovery_epochs = 0
+            state.no_progress_epochs = 0
+            state.same_approach_retries = 0
+        else:
+            state.last_support_progress_seq = state.progress_sequence
+            state.support_actions_since_goal_progress += 1
         if evidence_ref:
             state.last_failure_evidence_ref = None
+        return state
+
+    def record_support_action(self, *, cause_id: str) -> RetryState:
+        state = self.state(cause_id)
+        state.progress_sequence += 1
+        state.last_support_progress_seq = state.progress_sequence
+        state.support_actions_since_goal_progress += 1
+        state.last_progress_class = "DIAGNOSTIC_PROGRESS"
         return state
 
     def record_recovery_epoch(self, *, cause_id: str) -> RetryState:
         """A recovery hop with no intervening host-observed progress."""
         state = self.state(cause_id)
         state.recovery_epochs += 1
+        state.recovery_epochs_since_goal_progress += 1
         if state.last_progress_digest != state.last_failure_digest:
             state.no_progress_epochs += 1
         return state
+
+    def needs_goal_reanchor(self, *, cause_id: str, support_limit: int) -> bool:
+        state = self.state(cause_id)
+        return state.support_actions_since_goal_progress >= int(support_limit)
 
     def reject_path(self, *, cause_id: str, action_fingerprint: str,
                     hypothesis_fingerprint: str, evidence_ref: str | None,
@@ -302,7 +469,8 @@ class ConvergenceController:
     def evaluate_retry(self, *, cause_id: str, action_fingerprint: str,
                        hypothesis_fingerprint: str, premise_digest: str | None = None,
                        failure_digest: str | None = None,
-                       delegated: bool = False) -> str:
+                       delegated: bool = False,
+                       support_action_limit: int = 5) -> str:
         """Decide one retry. Novelty is judged against host state, not claims."""
         state = self.state(cause_id)
         if delegated and state.action_fingerprint == action_fingerprint \
@@ -314,7 +482,9 @@ class ConvergenceController:
         if state.disposition in TERMINAL_DISPOSITIONS:
             # A terminated cause cannot be revived by another retry.
             return GATE_BLOCK
-        if state.no_progress_epochs >= self.max_recovery_epochs_without_progress:
+        if state.support_actions_since_goal_progress >= int(support_action_limit):
+            return GATE_GOAL_REANCHOR
+        if state.recovery_epochs_since_goal_progress >= self.max_recovery_epochs_without_progress:
             state.disposition = "BLOCKED"
             state.terminated_reason = "max_recovery_epochs_without_progress"
             return GATE_BLOCK

@@ -165,8 +165,10 @@ def comparison_context_hash(context: Mapping[str, Any]) -> str:
     fields = (
         "model_id", "model_revision", "model_capability_hash", "harness_id",
         "harness_version", "task_family", "task_shape", "domain_tags", "phase",
+        "work_mode", "deliverable_kind", "acceptance_criterion_kinds",
+        "verification_policy",
         "environment", "toolset", "statework_versions", "framework_version",
-        "guard_pack_hash", "role", "policy_hash",
+        "guard_pack_hash", "role",
     )
     body = {key: context.get(key) for key in fields}
     return hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()

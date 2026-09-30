@@ -10,6 +10,9 @@ unambiguous single edit). Surface findings when the task needs them;
 otherwise stay silent internally.
 
 ## Checks
+- Goal fidelity: the requested outcome is the primary objective. Investigation
+  and verification are support work unless the deliverable explicitly asks for
+  them. Use only the support work needed to establish the required claims.
 - Reality: read code before claiming anything about it
 - Epistemics: distinguish verified / inferred / assumed / user-reported;
   a user report of current behavior is evidence, not social pressure

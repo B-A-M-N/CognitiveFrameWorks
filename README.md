@@ -157,6 +157,10 @@ At runtime, a task is resolved into a frozen effective policy.
 ```text
 TaskRequest
     │
+    ├── immutable goal contract when completion is expected
+    │     ├── primary outcome / deliverable / work mode
+    │     ├── required acceptance criteria and non-goals
+    │     └── proportional verification policy
     ├── task shape
     ├── domain
     ├── operation / phase
@@ -190,6 +194,20 @@ TaskRequest
             ├── completion boundary
             └── behavioral telemetry
 ```
+
+The goal contract is hashed into `EffectivePolicy`, the pinned
+task snapshot, routing context, and task manifest. A compact form leads every
+model context, and completion claims bind to its hash and the criterion IDs
+they prove. Hosts should pass the user's objective and acceptance criteria in
+`TaskRequest.goal_contract`. Legacy requests can still run, but successful
+completion is blocked until the host pins a goal contract with at least one
+required criterion and supplies host-attested evidence for each required claim.
+
+Lifecycle stages use their declared frequencies: per-action wrappers expire
+when the host completes the action, per-artifact checks expire after host
+postflight processing, and response calibration expires when output rendering
+finishes. Model tool capability alone does not activate action-planning stages;
+the host calls the explicit planning boundary when an action is being chosen.
 
 A key invariant is:
 

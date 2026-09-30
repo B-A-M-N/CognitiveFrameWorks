@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 from types import MappingProxyType
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from runtime import (CompletionClaim, GateDecision, RuntimeSession,
                      SharedWorkflowMembershipAuthority, start)
@@ -149,6 +149,30 @@ class HostSessionHandle:
     def after_tool(self, **kwargs: Any) -> str:
         return CognitiveRuntime().after_tool(self._session(), **kwargs)
 
+    def complete_action(self) -> None:
+        self._session()._host_ingress().complete_action()
+
+    def begin_attempt(self, **kwargs: Any):
+        return self._session()._host_ingress().begin_attempt(**kwargs)
+
+    def record_attempt_failure(self, **kwargs: Any) -> None:
+        self._session()._host_ingress().record_attempt_failure(**kwargs)
+
+    def record_reinspection(self, **kwargs: Any) -> None:
+        self._session()._host_ingress().record_reinspection(**kwargs)
+
+    def record_goal_progress(self, **kwargs: Any) -> None:
+        self._session()._host_ingress().record_goal_progress(**kwargs)
+
+    def record_recovery_epoch(self, **kwargs: Any) -> None:
+        self._session()._host_ingress().record_recovery_epoch(**kwargs)
+
+    def reject_investigative_path(self, **kwargs: Any) -> None:
+        self._session()._host_ingress().reject_investigative_path(**kwargs)
+
+    def before_retry(self, request: Mapping[str, Any]) -> GateDecision:
+        return self._session().before_retry(request)
+
     def on_artifact(self, *, flow_triggered: bool = False,
                     durable_contract_changed: bool = False,
                     state_changed: bool = True) -> None:
@@ -157,6 +181,9 @@ class HostSessionHandle:
             self._session(), flow_triggered=flow_triggered,
             durable_contract_changed=durable_contract_changed,
             state_changed=state_changed)
+
+    def artifact_processed(self) -> None:
+        CognitiveRuntime().artifact_processed(self._session())
 
     def observation(self, observation_type: str, subject_ref: Optional[str] = None,
                     *, details: Optional[Mapping[str, Any]] = None) -> str:
@@ -319,6 +346,9 @@ class CognitiveRuntime:
                             durable_contract_changed=durable_contract_changed,
                             state_changed=state_changed)
 
+    def artifact_processed(self, session: RuntimeSession) -> None:
+        session.artifact_processed()
+
     def observation(self, session: RuntimeSession, observation_type: str,
                    subject_ref: Optional[str] = None,
                    *, details: Optional[Mapping[str, Any]] = None) -> str:
@@ -338,12 +368,22 @@ class CognitiveRuntime:
                                 claim_id: Optional[str] = None,
                                 boundary_type: str = "completion",
                                 boundary_target: str = "task",
-                                expected_validator: str = "completion-boundary-v1") -> CompletionClaim:
+                                expected_validator: str = "completion-boundary-v1",
+                                criterion_ids: Optional[Iterable[str]] = None,
+                                criterion_evidence_refs: Optional[Mapping[str, Iterable[str]]] = None
+                                ) -> CompletionClaim:
+        goal = session.bundle.pinned.get("goal_contract") or {}
+        required_ids = [str(item.get("criterion_id"))
+                        for item in goal.get("acceptance_criteria", ())
+                        if item.get("required", True)]
         return CompletionClaim.create(
             claim_id=claim_id or f"claim-{session.bundle.task_id}-{invocation_id}",
             task_id=session.bundle.task_id, subject_ref=subject_ref,
             boundary_type=boundary_type, boundary_target=boundary_target,
-            expected_validator=expected_validator, invocation_id=invocation_id)
+            expected_validator=expected_validator, invocation_id=invocation_id,
+            goal_contract_hash=str(session.bundle.pinned.get("goal_contract_hash") or ""),
+            criterion_ids=tuple(criterion_ids) if criterion_ids is not None else tuple(required_ids),
+            criterion_evidence_refs=criterion_evidence_refs)
 
     def operator_observation(self, session: RuntimeSession, *, subject_ref: str,
                              invalidates: str) -> str:
@@ -368,11 +408,16 @@ class CognitiveRuntime:
                                      result: Mapping[str, Any],
                                      claim_id: Optional[str] = None,
                                      boundary_type: str = "completion",
-                                     boundary_target: str = "task") -> GateDecision:
+                                     boundary_target: str = "task",
+                                     criterion_ids: Optional[Iterable[str]] = None,
+                                     criterion_evidence_refs: Optional[Mapping[str, Iterable[str]]] = None
+                                     ) -> GateDecision:
         claim = self.create_completion_claim(
             session, subject_ref=subject_ref, invocation_id=invocation_id,
             claim_id=claim_id, boundary_type=boundary_type,
-            boundary_target=boundary_target, expected_validator=validator_id)
+            boundary_target=boundary_target, expected_validator=validator_id,
+            criterion_ids=criterion_ids,
+            criterion_evidence_refs=criterion_evidence_refs)
         evidence_ref = self.after_validator(
             session, validator_id=validator_id, invocation_id=invocation_id,
             result=result, subject_ref=subject_ref,

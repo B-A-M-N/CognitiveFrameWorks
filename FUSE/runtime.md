@@ -4,6 +4,9 @@ Tool/action strategy. Runs around every tool decision. WARD gates
 permission; FUSE owns selection, sequencing, bounds, and evidence scope.
 
 ## Decision logic
+- Action relevance: prefer actions that advance a required task criterion.
+  Support actions require a concrete uncertainty, blocker, or verification
+  claim. Repeated support actions without goal progress trigger goal re-anchoring.
 - Need current external evidence? Choose the narrowest tool that produces it.
 - Serialize real dependencies; parallelize independent reads.
 - WARD-gate any mutation/boundary action before executing.

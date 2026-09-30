@@ -4,17 +4,24 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import hashlib
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 
 def completion_claim_digest(task_id: str, subject_ref: Optional[str],
                             boundary_type: str, boundary_target: str,
-                            expected_validator: str, invocation_id: str) -> str:
+                            expected_validator: str, invocation_id: str,
+                            goal_contract_hash: str = "",
+                            criterion_ids: tuple[str, ...] = (),
+                            criterion_evidence_refs: tuple[tuple[str, tuple[str, ...]], ...] = ()) -> str:
     payload = {"task_id": task_id, "subject_ref": subject_ref,
                "boundary_type": boundary_type,
                "boundary_target": boundary_target,
                "expected_validator": expected_validator,
-               "invocation_id": invocation_id}
+               "invocation_id": invocation_id,
+               "goal_contract_hash": goal_contract_hash,
+               "criterion_ids": sorted(set(criterion_ids)),
+               "criterion_evidence_refs": {
+                   key: sorted(set(refs)) for key, refs in sorted(criterion_evidence_refs)}}
     return hashlib.sha256(json.dumps(
         payload, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")).hexdigest()
@@ -30,18 +37,33 @@ class CompletionClaim:
     expected_validator: str
     invocation_id: str
     claim_digest: str
+    goal_contract_hash: str = ""
+    criterion_ids: tuple[str, ...] = ()
+    criterion_evidence_refs: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     @classmethod
     def create(cls, *, claim_id: str, task_id: str, subject_ref: Optional[str],
                boundary_type: str, boundary_target: str,
-               expected_validator: str, invocation_id: str) -> "CompletionClaim":
+               expected_validator: str, invocation_id: str,
+               goal_contract_hash: str = "",
+               criterion_ids: tuple[str, ...] = (),
+               criterion_evidence_refs: Optional[Mapping[str, Iterable[str]]] = None
+               ) -> "CompletionClaim":
+        normalized_criterion_ids = tuple(sorted(set(criterion_ids)))
+        normalized_proofs = tuple(sorted(
+            (str(key), tuple(sorted(set(str(ref) for ref in refs))))
+            for key, refs in dict(criterion_evidence_refs or {}).items()))
         return cls(claim_id=claim_id, task_id=task_id, subject_ref=subject_ref,
                    boundary_type=boundary_type, boundary_target=boundary_target,
                    expected_validator=expected_validator,
                    invocation_id=invocation_id,
+                   goal_contract_hash=goal_contract_hash,
+                   criterion_ids=normalized_criterion_ids,
+                   criterion_evidence_refs=normalized_proofs,
                    claim_digest=completion_claim_digest(
                        task_id, subject_ref, boundary_type, boundary_target,
-                       expected_validator, invocation_id))
+                       expected_validator, invocation_id, goal_contract_hash,
+                       normalized_criterion_ids, normalized_proofs))
 
 
 @dataclass(frozen=True)
@@ -57,6 +79,9 @@ class CompletionPermit:
     boundary_type: str = "completion"
     boundary_target: str = "task"
     expected_validator: str = "completion-boundary-v1"
+    goal_contract_hash: str = ""
+    criterion_ids: tuple[str, ...] = ()
+    criterion_evidence_refs: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True)

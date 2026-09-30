@@ -19,6 +19,7 @@
     "model_capability_hash": { "type": ["string", "null"], "maxLength": 256 },
     "harness_id": { "type": ["string", "null"], "maxLength": 256 },
     "harness_version": { "type": ["string", "null"], "maxLength": 128 },
+    "goal_contract_hash": { "type": "string", "maxLength": 128 },
     "agent_instance_id": { "type": "string", "minLength": 1, "maxLength": 256 },
     "session_id": { "type": "string", "minLength": 1, "maxLength": 256 },
     "task_id": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -79,7 +80,19 @@
         "policy_identity": { "type": "string", "maxLength": 256 },
         "evaluator_version": { "type": "string", "maxLength": 128 },
         "evaluator_hash": { "type": "string", "maxLength": 128 },
-        "advice_priority": { "type": ["integer", "null"], "minimum": 0 }
+        "advice_priority": { "type": ["integer", "null"], "minimum": 0 },
+        "progress_class": { "enum": ["GOAL_PROGRESS", "BLOCKER_REMOVED", "DIAGNOSTIC_PROGRESS", "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS"] },
+        "criterion_id": { "type": "string", "maxLength": 128 },
+        "criterion_ids": { "type": "array", "items": { "type": "string", "maxLength": 128 }, "maxItems": 64 },
+        "action_fingerprint": { "type": "string", "maxLength": 128 },
+        "goal_progress_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "support_actions_since_goal_progress": { "type": "integer", "minimum": 0 },
+        "recovery_epochs_since_goal_progress": { "type": "integer", "minimum": 0 },
+        "revision": { "type": "integer", "minimum": 0 },
+        "verification_action_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
+        "intent_deviation_count": { "type": "integer", "minimum": 0 },
+        "unnecessary_scope_expansion": { "type": "integer", "minimum": 0 },
+        "completion_criterion_coverage": { "type": "number", "minimum": 0, "maximum": 1 }
       },
       "additionalProperties": false
     }

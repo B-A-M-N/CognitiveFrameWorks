@@ -204,6 +204,12 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
         harness=QUALIFICATION_HARNESS, harness_version=QUALIFICATION_HARNESS_VERSION,
         toolset="fixture", agent_id="external-agent",
         agent_instance_id=agent_instance_id,
+        goal_contract=resolve.TaskGoalContract(
+            objective="Write runtime-correct\n to the fixture target, then complete.",
+            deliverable_kind="code_behavior", work_mode="delivery",
+            acceptance_criteria=(resolve.AcceptanceCriterion(
+                "C1", "The fixture target contains the expected runtime-correct output.",
+                "code_behavior"),)),
         routing_experiment_plan=experiment_plan or {})
     session = api.begin_task(request)
     agent = api.agent_handle(session)
@@ -214,6 +220,7 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
     previous: list[dict[str, Any]] = []
     last_invocation: str | None = None
     last_result: dict[str, Any] | None = None
+    last_action_evidence_ref: str | None = None
     route_evidence_ref: str | None = None
     metrics = {"task_id": task_id, "turns": 0, "actions": 0,
                "blocked_actions": 0, "prompt_words": 0, "finished": False,
@@ -262,9 +269,10 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
                     binding = action.get("tool_binding_id") or action.get("tool")
                     invocation_id = f"agent-{task_id}-{turn}"
                     result = execute_fixture_action(action, workspace, expected)
-                    host.after_tool(tool_type=str(binding), result_class=result["status"],
-                                    subject_ref=request.subject_ref,
-                                    invocation_id=invocation_id, actual_result=result)
+                    last_action_evidence_ref = host.after_tool(
+                        tool_type=str(binding), result_class=result["status"],
+                        subject_ref=request.subject_ref,
+                        invocation_id=invocation_id, actual_result=result)
                     last_invocation, last_result = invocation_id, result
                     if experiment_plan and route_decision_id:
                         try:
@@ -291,7 +299,9 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
                 try:
                     completion = host.validate_completion_boundary(
                         subject_ref=request.subject_ref, validator_id="completion-boundary-v1",
-                        invocation_id=last_invocation, result=last_result)
+                        invocation_id=last_invocation, result=last_result,
+                        criterion_evidence_refs={"C1": [last_action_evidence_ref]}
+                        if last_action_evidence_ref else {})
                 except (ValueError, PermissionError) as exc:
                     # A real agent may claim completion against a failed
                     # artifact.  The host records the failed attempt and

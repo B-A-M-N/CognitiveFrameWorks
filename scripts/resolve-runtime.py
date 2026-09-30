@@ -59,7 +59,7 @@ from runtime_contract.pipeline import load_pipeline_document
 from runtime_contract.policy import freeze_contracts as _freeze_contracts
 from runtime_contract.policy import stable_hash as _stable_contract_hash
 from runtime_contract.stateworks import current_packet as _current_packet
-from runtime_contract.task import TaskRequest
+from runtime_contract.task import AcceptanceCriterion, TaskGoalContract, TaskRequest
 from runtime_contract.advisor import BehavioralAdvisor, bounded_adjustments, validate_advice_transaction
 from runtime_contract.manifests import build_task_manifest
 from runtime_contract.handlers import (enforcement_for_guard, handler_registry_hash,
@@ -295,7 +295,87 @@ def load_stateworks(cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
             data = load_yaml(manifest)
             data["_manifest_path"] = manifest
             out.append(data)
+    for item in out:
+        _validate_statework_runtime_contract(cow_root, str(item.get("id") or ""))
+        _validate_statework_flow_contracts(cow_root, str(item.get("id") or ""))
     return out
+
+
+def _validate_statework_flow_contracts(cow_root: Path, statework_id: str) -> None:
+    """Validate selector coverage and the single fallback invariant per StateWork."""
+    import yaml
+    flows_dir = cow_root / statework_id / "flows"
+    paths = sorted(flows_dir.glob("*/flow.md")) if flows_dir.is_dir() else []
+    if not paths:
+        return
+    fallbacks = []
+    for path in paths:
+        name = path.parent.name
+        pieces = path.read_text(encoding="utf-8").split("---", 2)
+        if len(pieces) < 3:
+            raise PacketDependencyError(
+                f"StateWork {statework_id!r} flow {name!r} lacks machine-readable frontmatter")
+        try:
+            meta = yaml.safe_load(pieces[1]) or {}
+        except Exception as exc:
+            raise PacketDependencyError(
+                f"StateWork {statework_id!r} flow {name!r} has invalid frontmatter") from exc
+        if not isinstance(meta, Mapping) or meta.get("flow") != name:
+            raise PacketDependencyError(
+                f"StateWork {statework_id!r} flow {name!r} metadata is invalid")
+        states = meta.get("states") or {}
+        has_selector = bool(meta.get("operations") or meta.get("triggers")
+                            or meta.get("task_shapes") or meta.get("domain_tags")
+                            or (isinstance(states, Mapping) and states.get("from")))
+        if not has_selector and meta.get("fallback") is not True:
+            raise PacketDependencyError(
+                f"StateWork {statework_id!r} flow {name!r} has no eligibility selectors or fallback=true")
+        if meta.get("fallback") is True:
+            fallbacks.append(name)
+    if len(fallbacks) != 1:
+        raise PacketDependencyError(
+            f"StateWork {statework_id!r} must declare exactly one fallback flow; found {fallbacks}")
+
+
+def _validate_statework_runtime_contract(cow_root: Path, statework_id: str) -> None:
+    """Reject model-visible state vocabulary that CSW cannot accept."""
+    import yaml
+    owner = cow_root / statework_id
+    capsule_path = owner / "runtime.md"
+    contract_path = owner / "transitions.yaml"
+    if not capsule_path.is_file() or not contract_path.is_file():
+        return
+    text = capsule_path.read_text(encoding="utf-8")
+    match = re.search(r"(?im)^#{1,6}\s+State vocabulary\s*$([\s\S]*?)(?=^#{1,6}\s+|\Z)", text)
+    if not match:
+        return
+    try:
+        contract = yaml.safe_load(contract_path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        raise PacketDependencyError(
+            f"StateWork {statework_id!r} transition contract is invalid") from exc
+    declared_states = set(str(value) for value in contract.get("states") or ())
+    edges = list(contract.get("transitions") or ())
+    vocabulary = match.group(1)
+    pair_re = re.compile(
+        r"\b([A-Z][A-Z0-9_]*(?:\s*/\s*[A-Z][A-Z0-9_]*)*)\s*→\s*"
+        r"([A-Z][A-Z0-9_]*(?:\s*/\s*[A-Z][A-Z0-9_]*)*)\b")
+    for origin_text, destination_text in pair_re.findall(vocabulary):
+        origins = [part.strip() for part in origin_text.split("/")]
+        destinations = [part.strip() for part in destination_text.split("/")]
+        for origin in origins:
+            if origin not in declared_states:
+                raise PacketDependencyError(
+                    f"StateWork {statework_id!r} runtime capsule references undeclared state {origin!r}")
+            for destination in destinations:
+                if destination not in declared_states:
+                    raise PacketDependencyError(
+                        f"StateWork {statework_id!r} runtime capsule references undeclared state {destination!r}")
+                if not any(edge.get("from") in {origin, "*"}
+                           and edge.get("to") == destination for edge in edges):
+                    raise PacketDependencyError(
+                        f"StateWork {statework_id!r} runtime capsule references undeclared transition "
+                        f"{origin!r} -> {destination!r}")
 
 
 def _norm(text: str) -> str:
@@ -328,6 +408,19 @@ def match_statework(stateworks: List[Dict[str, Any]], domains: Iterable[str],
         normalized_labels = [_norm(l) for l in labels]
         triggers = [str(t) for t in m.get("triggers", [])]
         target_tokens = set().union(*[_tokens(d) for d in domain_list]) if domain_list else set()
+        match_contract = m.get("match") or {}
+        required_any = [str(value) for value in match_contract.get("required_any") or ()]
+        secondary = [str(value) for value in match_contract.get("secondary") or ()]
+        normalized_domains = [_norm(value) for value in domain_list]
+        if required_any and not any(
+                _norm(term) and any(
+                    _norm(term) == domain or f" {_norm(term)} " in f" {domain} "
+                    for domain in normalized_domains)
+                for term in required_any):
+            # Secondary vocabulary may rank an already-eligible StateWork,
+            # but cannot turn generic layout/input work into terminal UI work.
+            continue
+        triggers = triggers + secondary
         for d in domain_list:
             nd = _norm(d)
             if nd in normalized_labels or any(nd == _norm(t) for t in triggers):
@@ -898,6 +991,8 @@ class PolicySnapshot:
     policy_hash: str = ""
     subject_ref: Optional[str] = None
     contracts: Mapping[str, Any] = field(default_factory=dict)
+    goal_contract: Mapping[str, Any] = field(default_factory=dict)
+    goal_contract_hash: str = ""
     phase: Optional[str] = None
     domain_tags: Tuple[str, ...] = ()
     task_shape: str = "implement"
@@ -925,6 +1020,7 @@ class PolicySnapshot:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "contracts", _freeze_contracts(self.contracts))
+        object.__setattr__(self, "goal_contract", _freeze_contracts(self.goal_contract))
         object.__setattr__(self, "shared_evidence_refs", tuple(self.shared_evidence_refs))
         object.__setattr__(self, "adopted_profile_hashes", tuple(self.adopted_profile_hashes))
 
@@ -952,6 +1048,8 @@ class PolicySnapshot:
             "frozen_at": self.frozen_at,
             "policy_hash": self.policy_hash,
             "subject_ref": self.subject_ref,
+            "goal_contract": _thaw(self.goal_contract),
+            "goal_contract_hash": self.goal_contract_hash,
             "agent_id": self.agent_id,
             "agent_instance_id": self.agent_instance_id,
             "attempt_id": self.attempt_id,
@@ -1071,6 +1169,7 @@ class EffectivePolicy:
     runtime_kernel_hash: str
     calibration_hash: str
     subject_ref: Optional[str] = None
+    goal_contract_hash: str = ""
     signal_schema_hash: str = ""
     signal_registry_hash: str = ""
     behavior_event_schema_hash: str = ""
@@ -1117,6 +1216,7 @@ class EffectivePolicy:
             "runtime_kernel_hash": self.runtime_kernel_hash,
             "calibration_hash": self.calibration_hash,
             "subject_ref": self.subject_ref,
+            "goal_contract_hash": self.goal_contract_hash,
             "signal_schema_hash": self.signal_schema_hash,
             "signal_registry_hash": self.signal_registry_hash,
             "behavior_event_schema_hash": self.behavior_event_schema_hash,
@@ -1350,6 +1450,9 @@ def enumerate_eligible_routes(sw: Dict[str, Any], cow_root: Path, *,
     result: List[Dict[str, Any]] = []
     flows_dir = cow_root / sid / "flows"
     if flows_dir.is_dir():
+        _validate_statework_flow_contracts(cow_root, sid)
+        parsed: list[tuple[Path, Dict[str, Any], bool, bool]] = []
+        fallback: Optional[tuple[Path, Dict[str, Any], bool, bool]] = None
         for path in sorted(flows_dir.glob("*/flow.md")):
             name = path.parent.name
             if name in suppressed_flows:
@@ -1358,6 +1461,21 @@ def enumerate_eligible_routes(sw: Dict[str, Any], cow_root: Path, *,
                 meta = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1]) or {}
             except Exception as exc:
                 raise PacketDependencyError(f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
+            operations = set(meta.get("operations") or ())
+            triggers = set(meta.get("triggers") or ())
+            shapes = set(meta.get("task_shapes") or ())
+            states = meta.get("states") or {}
+            flow_tags = set(meta.get("domain_tags") or ())
+            has_selector = bool(operations or triggers or shapes or flow_tags
+                                or states.get("from"))
+            entry = (path, meta, has_selector, meta.get("fallback") is True)
+            if entry[3]:
+                fallback = entry
+            parsed.append(entry)
+        eligible = []
+        for path, meta, has_selector, is_fallback in parsed:
+            if is_fallback and not has_selector:
+                continue
             operations = set(meta.get("operations") or ())
             triggers = set(meta.get("triggers") or ())
             shapes = set(meta.get("task_shapes") or ())
@@ -1372,6 +1490,15 @@ def enumerate_eligible_routes(sw: Dict[str, Any], cow_root: Path, *,
                 from_states = set(states.get("from") or ())
                 if from_states and current_state not in from_states:
                     continue
+            eligible.append((path, meta, has_selector, is_fallback))
+        if not eligible and fallback is not None:
+            eligible = [fallback]
+        for path, meta, _has_selector, _is_fallback in eligible:
+            name = path.parent.name
+            operations = set(meta.get("operations") or ())
+            triggers = set(meta.get("triggers") or ())
+            shapes = set(meta.get("task_shapes") or ())
+            states = meta.get("states") or {}
             budget = {"low": 1, "medium": 2, "high": 3}.get(sw.get("context_budget", "medium"), 2)
             result.append({"route_type": "flow", "route": name, "statework_id": sid,
                            "eligibility_conditions": {"operations": sorted(operations),
@@ -1435,11 +1562,13 @@ def select_statework_runtime(
     preferred_specialists = set(preferred_specialists or ())
     suppressed_flows = set(suppressed_flows or ())
     if flow_paths:
+        _validate_statework_flow_contracts(cow_root, sid)
         named: Dict[str, Path] = {
             path.parent.name: path for path in flow_paths
         }
         import yaml
         selectors: Dict[str, Dict[str, Any]] = {}
+        fallback_names: list[str] = []
         for name, path in named.items():
             if name in suppressed_flows:
                 continue
@@ -1454,6 +1583,12 @@ def select_statework_runtime(
                     f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
             if not isinstance(meta, dict):
                 raise PacketDependencyError(f"StateWork {sid!r} flow {name!r} frontmatter must be a mapping")
+            states = meta.get("states") or {}
+            has_selector = bool(meta.get("operations") or meta.get("triggers")
+                                or meta.get("task_shapes") or meta.get("domain_tags")
+                                or (isinstance(states, Mapping) and states.get("from")))
+            if meta.get("fallback") is True:
+                fallback_names.append(name)
             selectors[name] = meta
         tags = set(domain_tags or ())
         scored: List[Tuple[int, str]] = []
@@ -1464,6 +1599,10 @@ def select_statework_runtime(
             shapes = set(meta.get("task_shapes") or [])
             flow_tags = set(meta.get("domain_tags") or [])
             states = meta.get("states") or {}
+            has_selector = bool(operations or triggers or shapes or flow_tags
+                                or (isinstance(states, dict) and states.get("from")))
+            if not has_selector and meta.get("fallback") is True:
+                continue
             if operation is not None:
                 if operations and operation not in operations:
                     continue
@@ -1486,17 +1625,21 @@ def select_statework_runtime(
             scored.append((score, name))
         if requested_flow:
             eligible_names = {name for _score, name in scored}
+            if not scored and fallback_names:
+                eligible_names.add(fallback_names[0])
             if requested_flow not in eligible_names:
                 raise PacketDependencyError(
                     f"StateWork {sid!r} requested flow {requested_flow!r} is not eligible "
                     f"for operation={operation!r}, trigger={trigger!r}, "
                     f"shape={task_shape!r}, state={current_state!r}")
             selected_flow_path = named[requested_flow]
-        elif not scored:
-            raise PacketDependencyError(
-                f"StateWork {sid!r} has no flow matching operation={operation!r}, "
-                f"trigger={trigger!r}, shape={task_shape!r}, state={current_state!r}")
         else:
+            if not scored and fallback_names:
+                scored = [(-1, fallback_names[0])]
+            elif not scored:
+                raise PacketDependencyError(
+                    f"StateWork {sid!r} has no flow matching operation={operation!r}, "
+                    f"trigger={trigger!r}, shape={task_shape!r}, state={current_state!r}")
             scored.sort(key=lambda pair: (-pair[0], pair[1]))
             if len(scored) > 1 and scored[0][0] == scored[1][0]:
                 raise PacketDependencyError(
@@ -1574,7 +1717,8 @@ def select_statework_runtime(
                 key: frontmatter.get(key)
                 for key in ("flow", "operations", "triggers", "task_shapes",
                             "domain_tags", "states", "framework_requirements",
-                            "required_specialists", "optional_specialists")
+                            "required_specialists", "optional_specialists",
+                            "completion", "fallback")
                 if key in frontmatter
             }
     for index, (path, content_hash) in enumerate(specialists):
@@ -1666,6 +1810,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             phase: Optional[str] = None,
             operation: Optional[str] = None,
             observation_context: Optional[Mapping[str, Any]] = None,
+            goal_contract: Any = None,
             agent_id: str = "agent",
             application_id: str = "cognitiveframeworks-runtime",
             application_version: Optional[str] = None,
@@ -1724,6 +1869,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         harness_version = request.harness_version
         toolset = request.toolset
         observation_context = dict(request.observation_context)
+        goal_contract = request.goal_contract
         if action_registry is None:
             action_registry = request.action_registry
     else:
@@ -1747,6 +1893,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         policy_revocation_revision = 0
         revocation_mode = "deferred"
         routing_experiment_plan = {}
+        goal_contract = None
         application_instance_id = application_instance_id or application_id
         model_id = model_id or model
     application_id = str(application_id or "")
@@ -1760,6 +1907,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     model = model_id
     task_id = str(task_id)
     agent_id = str(agent_id or "agent")
+    goal_contract_dict = goal_contract.to_dict() if goal_contract is not None else {}
+    goal_contract_hash = goal_contract.contract_hash if goal_contract is not None else ""
     effective_actions = effective_action_registry(action_registry)
     domains = list(domains or [])
     pipeline = load_pipeline()
@@ -1791,6 +1940,13 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "model": model, "harness": harness, "harness_id": harness,
         "harness_version": harness_version, "toolset": toolset,
         "task_family": shape, "task_shape": shape, "domain_tags": domains,
+        "work_mode": goal_contract_dict.get("work_mode"),
+        "deliverable_kind": goal_contract_dict.get("deliverable_kind"),
+        "goal_contract_hash": goal_contract_hash,
+        "acceptance_criterion_kinds": sorted({
+            item.get("kind") for item in goal_contract_dict.get("acceptance_criteria", [])
+            if item.get("kind")}),
+        "verification_policy": goal_contract_dict.get("verification_policy"),
         "phase": phase, "environment": os.environ.get("CFW_ENVIRONMENT", "runtime"),
         "statework_versions": {str(item.get("id")): str(item.get("version"))
                                 for item in load_stateworks(cow_root)},
@@ -2174,6 +2330,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         runtime_kernel_hash=kernel_hash,
         calibration_hash=sispis_calibration_hash,
         subject_ref=subject_ref,
+        goal_contract_hash=goal_contract_hash,
         signal_schema_hash=sha256(signal_schema_path),
         signal_registry_hash=sha256(signal_registry_path),
         behavior_event_schema_hash=sha256(behavior_event_schema_path),
@@ -2251,6 +2408,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         frozen_at=frozen_at,
         policy_hash=policy_hash,
         subject_ref=subject_ref,
+        goal_contract=goal_contract_dict,
+        goal_contract_hash=goal_contract_hash,
         agent_id=agent_id,
         phase=phase,
         domain_tags=tuple(domains),

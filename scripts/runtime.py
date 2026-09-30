@@ -49,7 +49,8 @@ from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
                                         EvidenceAttestation, EvidenceLedger,
                                         EvidenceRecord, StateSegment, TerminationPermit,
                                         completion_claim_digest)
-from runtime_contract.convergence import (ConvergenceController, ConvergenceIdentity,
+from runtime_contract.convergence import (AttemptDescriptor, ConvergenceController,
+                                           ConvergenceIdentity, SharedBranchLedger,
                                            TERMINAL_DISPOSITIONS)
 from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema_contract
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
@@ -83,6 +84,7 @@ OPTIONAL_EVENT_FIELDS = {
     "delegate_agent_id", "delegation_id", "role",
     "application_version", "provider_id", "model_id", "model_revision",
     "model_capability_hash", "harness_id", "harness_version",
+    "goal_contract_hash",
 }
 
 _BEHAVIOR_SCHEMA_VALIDATOR = None
@@ -160,6 +162,7 @@ class GateDecision(Enum):
     REQUIRE_REINSPECTION = "require_reinspection"
     REQUIRE_RECOVERY = "require_recovery"
     REQUIRE_CHANGED_HYPOTHESIS = "require_changed_hypothesis"
+    REQUIRE_GOAL_REANCHOR = "require_goal_reanchor"
 
 
 DEFAULT_ACTION_REGISTRY: Dict[str, ActionDescriptor] = default_action_registry()
@@ -171,26 +174,36 @@ class LifecycleController:
     def __init__(self, bundle: resolve_runtime.RuntimeBundle) -> None:
         self.bundle = bundle
         self.specs = {item["stage"]: item for item in bundle.kernel_instructions}
-        # Three lifetimes, not one: task activation, segment-visible
-        # context, and per-action/per-response activation.
+        # Each declared frequency has a matching storage lifetime. In
+        # particular, temporary wrappers never enter task_active.
         self.task_active: set[str] = set()
         self.segment_active: set[str] = set()
+        self.action_active: set[str] = set()
+        self.artifact_active: set[str] = set()
+        self.response_active: set[str] = set()
         self.counts: Dict[str, int] = {}
 
     @property
     def active(self) -> set[str]:
         """Everything currently visible to the model in this segment."""
-        return self.segment_active | self.task_active
+        return (self.task_active | self.segment_active | self.action_active
+                | self.artifact_active | self.response_active)
 
     def activate(self, stage: str, reason: str) -> None:
         spec = self.specs.get(stage)
         if spec is None:
             return
         frequency = spec.get("frequency")
-        if frequency in {"per_task", "per_response"} and self.counts.get(stage, 0):
+        if frequency == "per_task" and self.counts.get(stage, 0):
             return
-        self.segment_active.add(stage)
-        self.task_active.add(stage)
+        target = {
+            "per_task": self.task_active,
+            "per_action": self.action_active,
+            "per_artifact": self.artifact_active,
+            "per_edit": self.artifact_active,
+            "per_response": self.response_active,
+        }.get(frequency, self.segment_active)
+        target.add(stage)
         self.counts[stage] = self.counts.get(stage, 0) + 1
 
     @staticmethod
@@ -208,7 +221,7 @@ class LifecycleController:
         if predicate == "action.untrusted":
             return bool(context.get("untrusted"))
         if predicate == "task.nontrivial":
-            return True
+            return context.get("task_complexity") in {"standard", "complex"}
         if predicate.endswith(".any"):
             return True
         return False
@@ -231,10 +244,11 @@ class LifecycleController:
         """
         payload = dict(context or {})
         for stage, spec in self.specs.items():
-            if spec.get("execution_mode") == "preflight":
+            predicates = spec.get("activation_predicates") or []
+            if predicates:
+                self.activate_predicates(stage, "task_start", payload)
+            elif spec.get("execution_mode") == "preflight":
                 self.activate(stage, "task_start")
-        for stage in self.specs:
-            self.activate_predicates(stage, "task_start", payload)
 
     def reset_for_segment(self) -> None:
         """Start a fresh model subcall without re-running task activation.
@@ -243,27 +257,33 @@ class LifecycleController:
         Task-scoped activation and counts survive segment boundaries; only
         per-action/per-response visibility is rebuilt.
         """
-        # Reinjection is not re-execution: task-scoped activation persists
-        # across segments; per-action/per-response visibility is rebuilt.
+        # Reinjection is not re-execution: task-scoped activation persists;
+        # ephemeral stages belong only to their current boundary.
         self.segment_active = {stage for stage in self.task_active
                               if self.specs.get(stage, {}).get("frequency") == "per_task"}
+        self.action_active.clear()
+        self.artifact_active.clear()
+        self.response_active.clear()
 
     def on_model_call(self, *, tool_capable: bool = False,
-                      action_hint: Optional[ActionDescriptor] = None) -> None:
+                      action_hint: Optional[ActionDescriptor] = None,
+                      task_complexity: Optional[str] = None) -> None:
         """Boundary before model generation.
 
-        A tool-capable generation must activate FUSE before the model chooses
-        an action.  Pure reasoning generations retain the smaller preflight
-        surface.
+        Model capability is not action intent. Explicit host dispatch through
+        on_tool_planning activates action wrappers when a tool decision begins.
         """
-        self.on_task_start()
-        if tool_capable:
-            self.on_tool_planning(action_hint)
+        self.on_task_start({"task_complexity": task_complexity})
 
     def on_tool_planning(self, descriptor: Optional[ActionDescriptor] = None) -> None:
-        """Expose planning-time FUSE; defer WARD until host classification."""
+        """Expose temporary action guidance only at an explicit planning boundary."""
+        self.action_active.clear()
         self.activate_predicates("fuse", "action", {
             "mutability": "read", "action_planning": True})
+        # WARD's host enforcement is always applied after request
+        # classification; its compact rule is useful while selecting any
+        # action and expires with the same action boundary.
+        self.activate("ward", "action_planning")
         if descriptor is not None:
             self.activate_predicates("ward", "action", descriptor.__dict__)
 
@@ -276,9 +296,13 @@ class LifecycleController:
         if decision != GateDecision.ALLOW:
             self.activate("ward", "action_gate")
 
+    def on_action_complete(self) -> None:
+        self.action_active.clear()
+
     def on_artifact(self, *, flow_triggered: bool = False,
                     durable_contract_changed: bool = False,
                     state_changed: bool = True) -> None:
+        self.artifact_active.clear()
         if flow_triggered:
             self.activate("flow", "artifact_trigger")
         if durable_contract_changed:
@@ -286,8 +310,15 @@ class LifecycleController:
         if state_changed:
             self.activate("anchor_closeout", "artifact_state")
 
+    def on_artifact_processed(self) -> None:
+        self.artifact_active.clear()
+
     def on_completion(self) -> None:
+        self.response_active.clear()
         self.activate("sispis", "completion")
+
+    def on_response_complete(self) -> None:
+        self.response_active.clear()
 
 
 class HostTelemetry:
@@ -373,6 +404,7 @@ class HostTelemetry:
                    delegate_agent_id: Optional[str] = None,
                    delegation_id: Optional[str] = None,
                    role: Optional[str] = None,
+                   goal_contract_hash: Optional[str] = None,
                    subject: Optional[str] = None, evidence_refs=None,
                    invalidates: Optional[str] = None,
                    parent_event: Optional[str] = None,
@@ -411,6 +443,8 @@ class HostTelemetry:
                 "harness_version": self.harness_version}.items():
             if value is not None:
                 event[key] = value
+        if goal_contract_hash:
+            event["goal_contract_hash"] = goal_contract_hash
         if subject:
             event["subject"] = subject
         if parent_event:
@@ -538,6 +572,7 @@ class HostTelemetry:
             delegate_agent_id=event.get("delegate_agent_id", self.delegate_agent_id),
             delegation_id=event.get("delegation_id", self.delegation_id),
             role=event.get("role", self.role),
+            goal_contract_hash=event.get("goal_contract_hash"),
             subject=event.get("subject"),
             evidence_refs=event.get("evidence_refs"),
             invalidates=event.get("invalidates"),
@@ -568,6 +603,7 @@ class HostTelemetry:
             delegate_agent_id=event.get("delegate_agent_id", self.delegate_agent_id),
             delegation_id=event.get("delegation_id", self.delegation_id),
             role=event.get("role", self.role),
+            goal_contract_hash=event.get("goal_contract_hash"),
             evidence_refs=event.get("evidence_refs"), invalidates=event.get("invalidates"),
             parent_event=event.get("parent_event"), input_state=event.get("input_state"),
             output_state=event.get("output_state"), uncertainty=event.get("uncertainty"),
@@ -611,6 +647,42 @@ class HostIngress:
                             subject_ref: Optional[str] = None, **kwargs: Any) -> str:
         """Explicit alias matching the host interceptor contract."""
         return self.record_tool_result(tool_type, result_class, subject_ref, **kwargs)
+
+    def complete_action(self) -> None:
+        self._session._complete_action(self._capability)
+
+    def begin_attempt(self, *, attempt_ref: str, cause_id: str,
+                      premise_digest: str, action_plan: Mapping[str, Any],
+                      parent_attempt_ref: Optional[str] = None) -> AttemptDescriptor:
+        return self._session._begin_attempt(
+            self._capability, attempt_ref=attempt_ref, cause_id=cause_id,
+            premise_digest=premise_digest, action_plan=action_plan,
+            parent_attempt_ref=parent_attempt_ref)
+
+    def record_attempt_failure(self, *, attempt_ref: str,
+                               evidence_ref: str) -> None:
+        self._session._record_attempt_failure(
+            self._capability, attempt_ref=attempt_ref, evidence_ref=evidence_ref)
+
+    def record_reinspection(self, *, cause_id: str, revision: int) -> None:
+        self._session._record_reinspection(
+            self._capability, cause_id=cause_id, revision=revision)
+
+    def record_goal_progress(self, *, cause_id: str, evidence_ref: str,
+                             criterion_id: Optional[str] = None,
+                             progress_class: str = "GOAL_PROGRESS") -> None:
+        self._session._record_goal_progress(
+            self._capability, cause_id=cause_id, evidence_ref=evidence_ref,
+            criterion_id=criterion_id, progress_class=progress_class)
+
+    def record_recovery_epoch(self, *, cause_id: str, reason: str) -> None:
+        self._session._record_recovery_epoch(
+            self._capability, cause_id=cause_id, reason=reason)
+
+    def reject_investigative_path(self, *, attempt_ref: str,
+                                  evidence_ref: str) -> None:
+        self._session._reject_investigative_path(
+            self._capability, attempt_ref=attempt_ref, evidence_ref=evidence_ref)
 
     def record_validator_result(self, validator_id: str, invocation_id: str,
                                 result: Mapping[str, Any],
@@ -887,7 +959,7 @@ class CSWStateAuthority(StateAuthority):
             expected_revision=expected_revision)
         if not decision.allowed:
             raise ValueError(f"CSW authority blocked transition: {decision.reason}")
-        return controller.inspect()
+        return {**controller.inspect(), "transition": decision.progress_facts()}
 
 
 @dataclass
@@ -961,6 +1033,9 @@ class RuntimeSession:
     _ledger_token: Any = field(default_factory=object, init=False, repr=False, compare=False)
     route_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     route_outcomes: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
+    attempt_descriptors: Dict[str, AttemptDescriptor] = field(default_factory=dict, repr=False)
+    attempt_failures: set[str] = field(default_factory=set, repr=False)
+    shared_branch_ledger: Optional[SharedBranchLedger] = field(default=None, repr=False)
 
     def _host_ingress(self) -> HostIngress:
         """Return the host-only channel to the adapter implementation.
@@ -986,7 +1061,8 @@ class RuntimeSession:
                 "policy_revocation_authority", "membership_authority", "operator_read_model",
                 "convergence",
                 "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
-                "runtime_mode"}:
+                "runtime_mode", "attempt_descriptors", "attempt_failures",
+                "shared_branch_ledger"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -1027,18 +1103,28 @@ class RuntimeSession:
         strategy = self._action_strategy()
         if not strategy["eligible_actions"]:
             return ""
-        ordered = ", ".join(strategy["eligible_actions"][:12])
-        return ("\n===== ACTION STRATEGY =====\n"
-                f"Authorized candidates, in advisory priority order: {ordered}. "
-                "This ordering does not grant permission; every action still passes the host gate.")
+        preferred = [action for action, _priority in sorted(
+            strategy["priorities"].items(), key=lambda pair: pair[1])]
+        if not preferred:
+            return ""
+        other = [action for action in strategy["eligible_actions"] if action not in preferred]
+        lines = ["\n===== ACTION STRATEGY =====",
+                 f"Preferred when relevant: {', '.join(preferred[:12])}."]
+        if other:
+            lines.append(f"Other authorized actions: {', '.join(other[:12])}.")
+        lines.append("Preferences do not grant permission; every action still passes the host gate.")
+        return "\n".join(lines)
 
     def before_model_call(self, *, tool_capable: bool = False,
                           action_hint: Optional[Mapping[str, Any]] = None) -> str:
         if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
+            complexity = (self.bundle.pinned.get("goal_contract") or {}).get(
+                "task_complexity", "standard" if self.bundle.profile != "quick" else "trivial")
             self.lifecycle.on_model_call(tool_capable=tool_capable,
-                                         action_hint=descriptor)
+                                         action_hint=descriptor,
+                                         task_complexity=complexity)
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
             self._emit_lifecycle_activations(prior)
@@ -1053,6 +1139,12 @@ class RuntimeSession:
             self.lifecycle_counts = dict(self.lifecycle.counts)
             self._emit_lifecycle_activations(prior)
         return context_for(self)
+
+    def artifact_processed(self) -> None:
+        if self.lifecycle is not None:
+            self.lifecycle.on_artifact_processed()
+            self.active_lifecycle = set(self.lifecycle.active)
+            self.lifecycle_counts = dict(self.lifecycle.counts)
 
     def _emit_lifecycle_activations(self, prior: set[str]) -> None:
         for stage in sorted(self.active_lifecycle - prior):
@@ -1114,6 +1206,8 @@ class RuntimeSession:
                     "model_capability_hash", "harness_id", "harness_version"):
             if key in self.bundle.pinned and self.bundle.pinned.get(key) is not None:
                 event.setdefault(key, self.bundle.pinned[key])
+        event.setdefault("goal_contract_hash",
+                         self.bundle.pinned.get("goal_contract_hash") or None)
         event.setdefault("agent_instance_id", self.agent_instance_id)
         event.setdefault("session_id", self.session_id)
         event.setdefault("attempt_id", self.attempt_id)
@@ -1221,8 +1315,9 @@ class RuntimeSession:
             GateDecision.REQUIRE_CONFIRMATION: 1,
             GateDecision.REQUIRE_REINSPECTION: 2,
             GateDecision.REQUIRE_CHANGED_HYPOTHESIS: 3,
-            GateDecision.REQUIRE_RECOVERY: 4,
-            GateDecision.BLOCK: 5,
+            GateDecision.REQUIRE_GOAL_REANCHOR: 4,
+            GateDecision.REQUIRE_RECOVERY: 5,
+            GateDecision.BLOCK: 6,
         }
         return left if rank[left] >= rank[right] else right
 
@@ -1337,8 +1432,9 @@ class RuntimeSession:
                 current = str(snapshot.get("state") or contract.get("initial_state") or "")
                 self.statework_states[key] = current
                 self.statework_entry_times[key] = str(snapshot.get("updated_at") or "")
-                self.authority_revision = max(
-                    self.authority_revision, int(snapshot.get("revision", 0) or 0))
+                object.__setattr__(
+                    self, "authority_revision",
+                    max(self.authority_revision, int(snapshot.get("revision", 0) or 0)))
             return True
         except Exception as exc:
             self._emit_runtime({"category": "blocker", "event_type": "state_authority_unavailable",
@@ -1355,6 +1451,19 @@ class RuntimeSession:
             return GateDecision.BLOCK
         descriptor = self._descriptor(request)
         decision = self._decision(request)
+        verification = ((self.bundle.pinned.get("goal_contract") or {}).get(
+            "verification_policy") or {})
+        if (decision == GateDecision.ALLOW
+                and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"
+                and descriptor.tool_type.lower() in {
+                    "read", "inspect", "test", "validate", "verify", "render",
+                    "search", "grep", "diagnose"}
+                and self.convergence is not None
+                and self.convergence.needs_goal_reanchor(
+                    cause_id="primary-objective",
+                    support_limit=int(verification.get(
+                        "support_actions_before_goal_reanchor", 5) or 5))):
+            decision = GateDecision.REQUIRE_GOAL_REANCHOR
         strategy = self._action_strategy()
         self._emit_runtime({"category": "action", "event_type": "action_requested",
                    "subject": request.subject_ref,
@@ -1397,11 +1506,24 @@ class RuntimeSession:
             if handler and "before_retry" in getattr(handler, "hooks", ()):
                 result = handler.before_retry(self, action, enforcement)
                 if result == "block":
+                    attempt_ref = str(action.arguments.get("attempt_ref") or "")
+                    descriptor = self.attempt_descriptors.get(attempt_ref)
+                    if (descriptor is not None and self.convergence is not None
+                            and self.convergence.state(descriptor.cause_id).disposition == "BLOCKED"):
+                        state = self.convergence.state(descriptor.cause_id)
+                        self.request_termination(
+                            self._host_capability, disposition="BLOCKED",
+                            reason="Autonomous recovery limit reached without primary-goal progress.",
+                            cause_id=descriptor.cause_id,
+                            evidence_refs=([state.last_failure_evidence_ref]
+                                           if state.last_failure_evidence_ref else ()))
                     return GateDecision.BLOCK
                 if result == "require_reinspection":
                     return GateDecision.REQUIRE_REINSPECTION
                 if result == "require_changed_hypothesis":
                     return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
+                if result == "require_goal_reanchor":
+                    return GateDecision.REQUIRE_GOAL_REANCHOR
         return GateDecision.ALLOW
 
     def request_termination(self, capability: _HostCapability, *,
@@ -1534,6 +1656,25 @@ class RuntimeSession:
             return
         self._journal("convergence_recorded", reason=reason,
                       convergence=self.convergence.export())
+
+    def _shared_branch_exhausted(self, descriptor: AttemptDescriptor,
+                                 recovery_limit: int) -> bool:
+        membership = self.shared_workflow_membership or {}
+        if self.shared_branch_ledger is None or not membership.get("workflow_id"):
+            return False
+        count = self.shared_branch_ledger.recovery_count(
+            namespace_id=str(membership.get("namespace_id") or ""),
+            application_instance_id=str(membership.get("application_instance_id") or ""),
+            workflow_id=str(membership.get("workflow_id") or ""),
+            cause_id=descriptor.cause_id, premise_digest=descriptor.premise_digest)
+        if count < recovery_limit:
+            return False
+        if self.convergence is not None:
+            state = self.convergence.state(descriptor.cause_id)
+            state.disposition = "BLOCKED"
+            state.terminated_reason = "shared_premise_recovery_limit"
+            self._record_convergence("shared_premise_recovery_limit")
+        return True
 
     def _journal(self, event_type: str, **fields: Any) -> None:
         """Commit SQLite/WAL authority first, then derive NDJSON.
@@ -1926,7 +2067,32 @@ class RuntimeSession:
                           json.dumps(dict(actual_result or {}), sort_keys=True,
                                      separators=(",", ":"), default=str).encode("utf-8")
                       ).hexdigest())
+        if (self.convergence is not None
+                and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"
+                and tool_type.lower() in {
+                    "read", "inspect", "test", "validate", "verify", "render",
+                    "search", "grep", "diagnose"}):
+            state = self.convergence.record_support_action(cause_id="primary-objective")
+            self._record_convergence("support_action")
+            self._emit_runtime({
+                "category": "tool_result", "event_type": "support_action_recorded",
+                "subject": subject_ref, "evidence_refs": [evidence_id],
+                "payload": {"summary": "support work recorded separately from goal progress",
+                            "result_class": "support_progress",
+                            "progress_class": "DIAGNOSTIC_PROGRESS",
+                            "support_actions_since_goal_progress":
+                                state.support_actions_since_goal_progress}})
+        self._complete_action(capability)
         return evidence_id
+
+    def _complete_action(self, capability: _HostCapability) -> None:
+        self._require_host(capability)
+        if self.lifecycle is not None:
+            prior = set(self.active_lifecycle)
+            self.lifecycle.on_action_complete()
+            self.active_lifecycle = set(self.lifecycle.active)
+            self.lifecycle_counts = dict(self.lifecycle.counts)
+            self._emit_lifecycle_activations(prior)
 
     def record_tool_result(self, *_: Any, **__: Any) -> str:
         raise PermissionError("tool evidence must come from the host execution adapter")
@@ -1959,7 +2125,7 @@ class RuntimeSession:
         if subject_ref is not None and invocation["subject_ref"] not in (None, subject_ref):
             raise ValueError("validator subject does not match the invocation")
         subject_ref = subject_ref or invocation["subject_ref"]
-        return self._record_attestation(
+        evidence_id = self._record_attestation(
             evidence_type=evidence_type, subject_ref=subject_ref,
             issuer=f"validator:{validator_id}",
             event={"category": "validation",
@@ -1975,6 +2141,16 @@ class RuntimeSession:
                      "result": typed_result},
             claim_digest=claim_digest, schema_id=f"validator-result:{evidence_type}",
             validator_id=validator_id)
+        if self.convergence is not None:
+            self.convergence.record_progress(
+                cause_id="primary-objective",
+                progress_digest=hashlib.sha256(json.dumps({
+                    "validator_id": validator_id, "evidence_id": evidence_id,
+                    "result_class": evidence_type,
+                }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+                progress_class="VERIFICATION_PROGRESS", evidence_ref=evidence_id)
+            self._record_convergence("verification_progress")
+        return evidence_id
 
     def record_state_transition(self, statework_id: str, subject_ref: str,
                                 output_state: str, *,
@@ -2060,6 +2236,7 @@ class RuntimeSession:
             return GateDecision.BLOCK
         decision = engine.transition(subject_ref, origin, output_state, trigger=trigger,
                                      evidence_refs=verified_evidence)
+        transition_facts = decision.progress_facts()
         self._emit_runtime({"category": "state_transition", "event_type": "transition_attempted",
                    "subject": subject_ref, "input_state": origin, "output_state": output_state,
                    "payload": {"summary": decision.reason,
@@ -2079,6 +2256,7 @@ class RuntimeSession:
                            "payload": {"summary": str(exc)[:512], "result_class": "re-inspection required"}})
                 return GateDecision.REQUIRE_REINSPECTION
             authoritative_revision = int(committed.get("revision", authoritative_revision + 1) or authoritative_revision + 1)
+            transition_facts = dict(committed.get("transition") or transition_facts)
         self.statework_states[state_key] = output_state
         entry_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.statework_entry_times[state_key] = entry_time
@@ -2093,10 +2271,38 @@ class RuntimeSession:
             output_state=state_segment.output_state,
             evidence_refs=state_segment.evidence_refs,
             recorded_at=state_segment.recorded_at, statework_id=state_segment.statework_id))
+        progress_class = str(transition_facts.get("progress_class") or "LATERAL")
+        if self.convergence is not None:
+            progress_digest = hashlib.sha256(json.dumps({
+                "statework_id": statework_id, "subject_ref": subject_ref,
+                "input_state": origin, "output_state": output_state,
+                "edge_id": transition_facts.get("edge_id"),
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            if progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
+                self.convergence.record_recovery_epoch(cause_id="primary-objective")
+            else:
+                self.convergence.record_progress(
+                    cause_id="primary-objective", progress_digest=progress_digest,
+                    progress_class="VERIFICATION_PROGRESS",
+                    evidence_ref=(verified_evidence[-1]["ref"] if verified_evidence else None))
         self._journal("state_transition_allowed", statework_id=statework_id,
                       subject_ref=subject_ref, input_state=origin,
                       output_state=output_state, evidence_refs=[item["ref"] for item in verified_evidence],
-                      recorded_at=entry_time, segment_id=state_segment.segment_id)
+                      recorded_at=entry_time, segment_id=state_segment.segment_id,
+                      transition=transition_facts,
+                      progress_class=progress_class)
+        self._record_convergence("state_transition_progress")
+        self._emit_runtime({
+            "category": "state_transition", "event_type": "state_transition_progress",
+            "subject": subject_ref,
+            "input_state": origin, "output_state": output_state,
+            "evidence_refs": [item["ref"] for item in verified_evidence],
+            "payload": {"summary": "CSW transition progress is tracked separately from task-goal progress",
+                        "result_class": progress_class.lower(),
+                        "progress_class": (
+                            "RECOVERY_PROGRESS" if progress_class in {
+                                "RECOVERY", "INVALIDATION", "REGRESSION"}
+                            else "VERIFICATION_PROGRESS")}})
         return GateDecision.ALLOW
 
     def _publish_handoff(self, capability: _HostCapability, packet: Dict[str, Any], *,
@@ -2242,6 +2448,174 @@ class RuntimeSession:
             ).hexdigest()), writer_token=self._ledger_token)
         return contradiction_id
 
+    def _begin_attempt(self, capability: _HostCapability, *, attempt_ref: str,
+                       cause_id: str, premise_digest: str,
+                       action_plan: Mapping[str, Any],
+                       parent_attempt_ref: Optional[str] = None) -> AttemptDescriptor:
+        self._require_host(capability)
+        if self.convergence is None:
+            raise PermissionError("attempt tracking requires the host convergence controller")
+        if not isinstance(action_plan, Mapping):
+            raise TypeError("action_plan must be host-accepted structured data")
+        encoded = json.dumps(dict(action_plan), sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, default=str)
+        if len(encoded.encode("utf-8")) > 8192:
+            raise ValueError("action_plan exceeds the bounded attempt contract")
+        descriptor = AttemptDescriptor(
+            attempt_ref=attempt_ref, cause_id=cause_id,
+            premise_digest=premise_digest,
+            action_plan_digest=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+            parent_attempt_ref=parent_attempt_ref)
+        prior = self.attempt_descriptors.get(attempt_ref)
+        if prior is not None and prior != descriptor:
+            raise ValueError("attempt_ref is already bound to a different plan")
+        self.attempt_descriptors[attempt_ref] = descriptor
+        self._journal("attempt_descriptor_recorded", descriptor=descriptor.to_dict())
+        return descriptor
+
+    def _record_attempt_failure(self, capability: _HostCapability, *,
+                                attempt_ref: str, evidence_ref: str) -> None:
+        self._require_host(capability)
+        if self.convergence is None:
+            raise PermissionError("attempt tracking requires the host convergence controller")
+        descriptor = self.attempt_descriptors.get(attempt_ref)
+        record = self.ledger.get(evidence_ref)
+        if descriptor is None or record is None or record.invalidated:
+            raise ValueError("attempt failure requires a registered attempt and current evidence")
+        if attempt_ref in self.attempt_failures:
+            return
+        membership = self.shared_workflow_membership or {}
+        if self.shared_branch_ledger is not None and membership.get("workflow_id"):
+            self.shared_branch_ledger.record_failure(
+                namespace_id=str(membership["namespace_id"]),
+                application_instance_id=str(membership["application_instance_id"]),
+                workflow_id=str(membership["workflow_id"]),
+                cause_id=descriptor.cause_id,
+                premise_digest=descriptor.premise_digest,
+                action_plan_fingerprint=descriptor.action_plan_digest,
+                evidence_ref=evidence_ref, attempt_ref=attempt_ref)
+        self.convergence.record_failure(
+            cause_id=descriptor.cause_id,
+            action_fingerprint=descriptor.action_plan_digest,
+            hypothesis_fingerprint=descriptor.premise_digest,
+            evidence_ref=evidence_ref, premise_digest=descriptor.premise_digest)
+        self.attempt_failures.add(attempt_ref)
+        self._journal("attempt_failure_recorded", attempt_ref=attempt_ref,
+                      cause_id=descriptor.cause_id, evidence_ref=evidence_ref,
+                      convergence=self.convergence.export())
+        self._record_convergence("attempt_failure")
+        self._emit_runtime({
+            "category": "retry", "event_type": "attempt_failure_recorded",
+            "subject": record.subject_ref,
+            "evidence_refs": [evidence_ref],
+            "payload": {"summary": "host observed an unsuccessful attempt",
+                        "result_class": "failure",
+                        "premise_digest": descriptor.premise_digest,
+                        "action_fingerprint": descriptor.action_plan_digest[:64]}})
+        return None
+
+    def _record_reinspection(self, capability: _HostCapability, *,
+                             cause_id: str, revision: int) -> None:
+        self._require_host(capability)
+        if self.convergence is None or revision < 1:
+            raise ValueError("reinspection requires convergence state and a positive revision")
+        self.convergence.record_reinspection(cause_id=cause_id, revision=revision)
+        self._record_convergence("reinspection")
+        self._emit_runtime({
+            "category": "observation", "event_type": "reinspection_recorded",
+            "subject": self.bundle.policy.subject_ref,
+            "payload": {"summary": "host recorded a fresh inspection revision",
+                        "result_class": "reinspection",
+                        "revision": revision}})
+
+    def _record_goal_progress(self, capability: _HostCapability, *,
+                              cause_id: str, evidence_ref: str,
+                              criterion_id: Optional[str] = None,
+                              progress_class: str = "GOAL_PROGRESS") -> None:
+        self._require_host(capability)
+        if self.convergence is None:
+            raise PermissionError("goal progress requires the host convergence controller")
+        if progress_class not in {"GOAL_PROGRESS", "BLOCKER_REMOVED"}:
+            raise ValueError("goal progress must be GOAL_PROGRESS or BLOCKER_REMOVED")
+        record = self.ledger.get(evidence_ref)
+        if record is None or record.invalidated:
+            raise ValueError("goal progress requires current host-attested evidence")
+        criteria = {
+            str(item.get("criterion_id")) for item in
+            (self.bundle.pinned.get("goal_contract") or {}).get("acceptance_criteria", ())
+        }
+        if criterion_id is not None and criterion_id not in criteria:
+            raise ValueError("goal progress references an unknown acceptance criterion")
+        digest = hashlib.sha256(json.dumps({
+            "evidence_ref": evidence_ref, "criterion_id": criterion_id,
+            "content_digest": record.content_digest,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        progress_causes = {cause_id}
+        if (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery":
+            progress_causes.add("primary-objective")
+        for progress_cause in progress_causes:
+            self.convergence.record_progress(
+                cause_id=progress_cause, progress_digest=digest,
+                progress_class=progress_class, evidence_ref=evidence_ref)
+        self._record_convergence("goal_progress")
+        self._emit_runtime({
+            "category": "decision", "event_type": "goal_progress_recorded",
+            "subject": record.subject_ref, "evidence_refs": [evidence_ref],
+            "payload": {"summary": "host attested progress on the primary objective",
+                        "result_class": "goal_progress",
+                        "progress_class": progress_class,
+                        "criterion_id": criterion_id or ""}})
+
+    def _record_recovery_epoch(self, capability: _HostCapability, *,
+                               cause_id: str, reason: str) -> None:
+        self._require_host(capability)
+        if self.convergence is None:
+            raise PermissionError("recovery tracking requires the host convergence controller")
+        state = self.convergence.record_recovery_epoch(cause_id=cause_id)
+        self._record_convergence("recovery_epoch")
+        self._emit_runtime({
+            "category": "retry", "event_type": "recovery_epoch_recorded",
+            "subject": self.bundle.policy.subject_ref,
+            "payload": {"summary": reason[:512],
+                        "result_class": "recovery",
+                        "progress_class": "RECOVERY_PROGRESS",
+                        "recovery_epochs_since_goal_progress":
+                            state.recovery_epochs_since_goal_progress}})
+        if state.recovery_epochs_since_goal_progress >= int(
+                ((self.bundle.pinned.get("goal_contract") or {}).get(
+                    "verification_policy") or {}).get(
+                        "max_recovery_epochs_without_goal_progress", 3)):
+            self.request_termination(
+                capability, disposition="BLOCKED",
+                reason=(reason or "Recovery limit reached without primary-goal progress.")[:512],
+                cause_id=cause_id,
+                evidence_refs=([state.last_failure_evidence_ref]
+                               if state.last_failure_evidence_ref else ()))
+
+    def _reject_investigative_path(self, capability: _HostCapability, *,
+                                   attempt_ref: str, evidence_ref: str) -> None:
+        self._require_host(capability)
+        if self.convergence is None:
+            raise PermissionError("path rejection requires the host convergence controller")
+        descriptor = self.attempt_descriptors.get(attempt_ref)
+        record = self.ledger.get(evidence_ref)
+        if descriptor is None or record is None or record.invalidated:
+            raise ValueError("path rejection requires a registered attempt and current evidence")
+        self.convergence.reject_path(
+            cause_id=descriptor.cause_id,
+            action_fingerprint=descriptor.action_plan_digest,
+            hypothesis_fingerprint=descriptor.premise_digest,
+            evidence_ref=evidence_ref, premise_digest=descriptor.premise_digest,
+            observed_at=record.observed_at)
+        self._record_convergence("investigative_path_rejected")
+        self._emit_runtime({
+            "category": "correction", "event_type": "investigative_path_rejected",
+            "subject": record.subject_ref, "evidence_refs": [evidence_ref],
+            "payload": {"summary": "host rejected an investigative branch",
+                        "result_class": "rejected",
+                        "premise_digest": descriptor.premise_digest,
+                        "action_fingerprint": descriptor.action_plan_digest[:64]}})
+
     def _record_decision(self, capability: _HostCapability, event_type: str,
                          subject_ref: Optional[str], result_class: str) -> str:
         """Record a typed host-observed decision outcome."""
@@ -2294,6 +2668,47 @@ class RuntimeSession:
                    "payload": {"summary": contradiction_id[:512], "result_class": "resolved"}})
         return GateDecision.ALLOW
 
+    def _criterion_evidence_kinds(self, kind: str) -> set[str]:
+        defaults = {
+            "static_visual": {"rendered_observation"},
+            "visual_static": {"rendered_observation"},
+            "responsive_layout": {"rendered_viewport_matrix"},
+            "interaction": {"interaction_validation"},
+            "terminal_lifecycle": {"pty_validation"},
+            "legibility": {"rendered_observation"},
+            "code_behavior": {"tool_result"},
+            "test_suite": {"tool_result"},
+        }
+        canonical_kind = "static_visual" if kind == "visual_static" else kind
+        required = set(defaults.get(canonical_kind, ()))
+        for statework in self.bundle.stateworks:
+            metadata = statework.get("flow_metadata") or {}
+            completion = metadata.get("completion") or {}
+            claim_classes = completion.get("claim_classes") or {}
+            item = claim_classes.get(canonical_kind)
+            if isinstance(item, Mapping):
+                required.update(str(value) for value in item.get("evidence_kinds") or ())
+        return required
+
+    def _validate_criterion_proofs(self, criterion_ids: Iterable[str],
+                                   criterion_evidence_refs: Iterable[tuple[str, Iterable[str]]],
+                                   subject_ref: Optional[str]) -> None:
+        goal = self.bundle.pinned.get("goal_contract") or {}
+        criteria = {str(item.get("criterion_id")): item
+                    for item in goal.get("acceptance_criteria", ())}
+        proofs = {str(key): tuple(refs) for key, refs in criterion_evidence_refs}
+        if set(proofs) - set(criteria):
+            raise ValueError("criterion evidence references an unknown criterion")
+        for criterion_id in criterion_ids:
+            criterion = criteria.get(str(criterion_id))
+            refs = proofs.get(str(criterion_id), ())
+            if criterion is None or not refs:
+                raise ValueError(f"criterion {criterion_id!r} lacks host-attested evidence")
+            expected_kinds = self._criterion_evidence_kinds(str(criterion.get("kind") or ""))
+            self.ledger.resolve(
+                list(refs), subject_ref=subject_ref,
+                allowed_kinds=expected_kinds or None)
+
     def record_completion_claim(self, subject: Optional[str], evidence_refs: List[str],
                                 *, boundary_type: str = "completion",
                                 boundary_target: str = "task",
@@ -2319,6 +2734,43 @@ class RuntimeSession:
                        "subject": subject, "evidence_refs": evidence_refs,
                        "payload": {"summary": "completion requires an explicit claim binding",
                                    "result_class": "boundary evidence required"}})
+            return GateDecision.REQUIRE_REINSPECTION
+        goal_contract = self.bundle.pinned.get("goal_contract") or {}
+        expected_goal_hash = str(self.bundle.pinned.get("goal_contract_hash") or "")
+        required_criterion_ids = {
+            str(item.get("criterion_id"))
+            for item in goal_contract.get("acceptance_criteria", ())
+            if item.get("required", True)}
+        known_criterion_ids = {
+            str(item.get("criterion_id"))
+            for item in goal_contract.get("acceptance_criteria", ())}
+        claim_criterion_ids = set(claim.criterion_ids)
+        if not expected_goal_hash or not required_criterion_ids:
+            self._emit_runtime({
+                "category": "blocker", "event_type": "completion_blocked_by_goal_contract",
+                "subject": subject,
+                **({"evidence_refs": evidence_refs} if evidence_refs else {}),
+                "payload": {"summary": "successful completion requires a pinned task goal contract",
+                            "result_class": "task goal contract required"}})
+            return GateDecision.REQUIRE_REINSPECTION
+        if (claim.goal_contract_hash != expected_goal_hash
+                or not required_criterion_ids.issubset(claim_criterion_ids)
+                or not claim_criterion_ids.issubset(known_criterion_ids)):
+            self._emit_runtime({
+                "category": "blocker", "event_type": "completion_blocked_by_claim",
+                "subject": subject, "evidence_refs": evidence_refs,
+                "payload": {"summary": "completion claim does not cover the pinned task criteria",
+                            "result_class": "task contract criteria required"}})
+            return GateDecision.REQUIRE_REINSPECTION
+        try:
+            self._validate_criterion_proofs(
+                claim_criterion_ids, claim.criterion_evidence_refs, subject)
+        except ValueError as exc:
+            self._emit_runtime({
+                "category": "blocker", "event_type": "completion_blocked_by_criterion_evidence",
+                "subject": subject,
+                "payload": {"summary": str(exc)[:512],
+                            "result_class": "criterion evidence required"}})
             return GateDecision.REQUIRE_REINSPECTION
         authoritative_subject = self.bundle.policy.subject_ref
         if (not subject or (authoritative_subject is not None
@@ -2349,7 +2801,8 @@ class RuntimeSession:
                 if (claim.task_id != self.bundle.task_id or claim.subject_ref != subject
                         or claim.boundary_type != boundary_type
                         or claim.boundary_target != boundary_target
-                        or claim.expected_validator != expected_validator):
+                        or claim.expected_validator != expected_validator
+                        or claim.goal_contract_hash != expected_goal_hash):
                     raise ValueError("completion claim identity does not match this task")
                 if claim.invocation_id not in {
                         record.invocation_id for record in boundary_records}:
@@ -2357,7 +2810,9 @@ class RuntimeSession:
             for record in boundary_records:
                 expected = completion_claim_digest(
                     self.bundle.task_id, subject, boundary_type, boundary_target,
-                    expected_validator, record.invocation_id or "")
+                    expected_validator, record.invocation_id or "",
+                    expected_goal_hash, tuple(claim.criterion_ids),
+                    tuple(claim.criterion_evidence_refs))
                 if claim_digest is None:
                     claim_digest = record.claim_digest
                 if record.claim_digest != claim_digest or record.claim_digest != expected:
@@ -2370,7 +2825,11 @@ class RuntimeSession:
         self._emit_runtime({"category": "completion", "event_type": "completion_attempted",
                    "subject": subject, "evidence_refs": evidence_refs,
                    "payload": {"summary": "completion claim validated",
-                               "evidence_reference": claim_digest or ""}})
+                               "evidence_reference": claim_digest or "",
+                               "criterion_ids": sorted(claim_criterion_ids),
+                               "completion_criterion_coverage": (
+                                   len(required_criterion_ids & claim_criterion_ids)
+                                   / max(1, len(required_criterion_ids)))}})
         object.__setattr__(self, "_completion_permit", CompletionPermit(
             task_id=self.bundle.task_id,
             policy_hash=self.bundle.pinned["policy_hash"],
@@ -2381,14 +2840,22 @@ class RuntimeSession:
             session_nonce=self.session_nonce,
             authority_revision=self.authority_revision,
             boundary_type=boundary_type, boundary_target=boundary_target,
-            expected_validator=expected_validator))
+            expected_validator=expected_validator,
+            goal_contract_hash=expected_goal_hash,
+            criterion_ids=tuple(sorted(claim_criterion_ids)),
+            criterion_evidence_refs=tuple(claim.criterion_evidence_refs)))
         self._journal("completion_permit_issued", claim_digest=claim_digest,
                       evidence_refs=list(evidence_refs), subject_ref=subject,
                       issued_at=self._completion_permit.issued_at,
                       authority_revision=self.authority_revision,
                       boundary_type=boundary_type,
                       boundary_target=boundary_target,
-                      expected_validator=expected_validator)
+                      expected_validator=expected_validator,
+                      goal_contract_hash=expected_goal_hash,
+                      criterion_ids=sorted(claim_criterion_ids),
+                      criterion_evidence_refs=[
+                          [key, list(refs)]
+                          for key, refs in claim.criterion_evidence_refs])
         return GateDecision.ALLOW
 
     def emit_signal(self, envelope: Dict[str, Any]) -> None:
@@ -2435,6 +2902,8 @@ class RuntimeSession:
             self.lifecycle.on_completion()
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
+            self.lifecycle.on_response_complete()
+            self.active_lifecycle = set(self.lifecycle.active)
         return result
 
     def preview_output(self, output: Optional[Dict[str, Any]] = None,
@@ -2475,7 +2944,8 @@ class RuntimeSession:
                 expected = completion_claim_digest(
                     self.bundle.task_id, permit.subject_ref, permit.boundary_type,
                     permit.boundary_target, permit.expected_validator,
-                    record.invocation_id or "")
+                    record.invocation_id or "", permit.goal_contract_hash,
+                    tuple(permit.criterion_ids), tuple(permit.criterion_evidence_refs))
                 if record.claim_digest != permit.claim_digest or record.claim_digest != expected:
                     raise ValueError("completion permit evidence claim binding changed")
         except ValueError as exc:
@@ -2486,10 +2956,49 @@ class RuntimeSession:
             self._segment_status[self.current_segment.segment_id] = SegmentStatus.COMPLETED
         if any(status != SegmentStatus.COMPLETED for status in self._segment_status.values()):
             raise PermissionError("cannot finalize before every execution segment completes")
+        goal_contract = self.bundle.pinned.get("goal_contract") or {}
+        required_criterion_ids = {
+            str(item.get("criterion_id"))
+            for item in goal_contract.get("acceptance_criteria", ())
+            if item.get("required", True)}
+        if (permit.goal_contract_hash != self.bundle.pinned.get("goal_contract_hash", "")
+                or not required_criterion_ids.issubset(set(permit.criterion_ids))):
+            raise PermissionError("completion permit does not prove the pinned task contract")
+        try:
+            self._validate_criterion_proofs(
+                permit.criterion_ids, permit.criterion_evidence_refs, permit.subject_ref)
+        except ValueError as exc:
+            raise PermissionError(f"completion permit criterion evidence is invalid: {exc}") from exc
         for statework in self.bundle.stateworks:
             statework_id = statework.get("id")
             contract = statework.get("transitions_contract") or {}
             completion_states = set(contract.get("completion_states") or ())
+            flow_completion = ((statework.get("flow_metadata") or {}).get(
+                "completion") or {}).get("claim_classes") or {}
+            goal_criteria = [
+                item for item in (goal_contract.get("acceptance_criteria") or ())
+                if item.get("required", True)]
+            applicable = [flow_completion.get(
+                "static_visual" if str(item.get("kind") or "") == "visual_static"
+                else str(item.get("kind") or ""))
+                          for item in goal_criteria]
+            applicable = [item for item in applicable if isinstance(item, Mapping)]
+            if applicable:
+                required_states = [str(item.get("minimum_state") or "")
+                                   for item in applicable if item.get("minimum_state")]
+                normal_rank = {str(state): index for index, state in enumerate(
+                    contract.get("normal_path") or ())}
+                minimum_rank = max((normal_rank.get(state, 0) for state in required_states),
+                                   default=0)
+                required_state = max(required_states,
+                                     key=lambda state: normal_rank.get(state, 0),
+                                     default="")
+                current_state = self.statework_states.get(
+                    (statework_id, permit.subject_ref))
+                if current_state is None or normal_rank.get(current_state, -1) < minimum_rank:
+                    raise PermissionError(
+                        f"cannot finalize before StateWork {statework_id!r} reaches {required_state!r}")
+                continue
             if not completion_states:
                 continue
             state = self.statework_states.get((statework_id, permit.subject_ref))
@@ -2633,6 +3142,8 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
         agent_instance_id=session.agent_instance_id,
         session_id=session.session_id, task_id=bundle.task_id,
         attempt_id=session.attempt_id, interaction_id=session.interaction_id)
+    verification_policy = ((bundle.pinned.get("goal_contract") or {}).get(
+        "verification_policy") or {})
     session.convergence = ConvergenceController(identity={
         "namespace_id": session.execution_identity.namespace_id,
         "application_instance_id": session.execution_identity.application_instance_id,
@@ -2642,7 +3153,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
         "attempt_id": session.execution_identity.attempt_id,
         "interaction_id": session.execution_identity.interaction_id,
     }, max_recovery_epochs_without_progress=int(
-        bundle.pinned.get("max_recovery_epochs_without_progress", 3) or 3))
+        verification_policy.get("max_recovery_epochs_without_goal_progress", 3) or 3),
+        max_same_approach_retries=int(
+            verification_policy.get("max_same_approach_retries", 2) or 2))
     if runtime_mode == "combined_enforcing":
         if state_authority is None:
             raise ValueError("combined_enforcing requires an injected shared StateAuthority")
@@ -2675,6 +3188,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                 application_id=bundle.pinned["application_id"],
                 application_instance_id=bundle.pinned["application_instance_id"],
                 workflow_id=workflow_id)
+            if bundle.pinned.get("shared_workflow_membership"):
+                shared_branch_path = resolve_runtime.runtime_state_dir() / "shared-branches.sqlite3"
+                session.shared_branch_ledger = SharedBranchLedger(shared_branch_path)
     if runtime_mode == "standalone_advisory" and state_authority is not None:
         raise ValueError("standalone_advisory cannot combine with shared StateWork authority")
     session.state_authority = state_authority
@@ -2704,7 +3220,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     session.active_statework_ids = ({session.current_segment.statework_id}
                                     if session.current_segment.statework_id else set())
     session.lifecycle = LifecycleController(bundle)
-    session.lifecycle.on_task_start()
+    session.lifecycle.on_task_start({
+        "task_complexity": (bundle.pinned.get("goal_contract") or {}).get(
+            "task_complexity", "standard" if bundle.profile != "quick" else "trivial")})
     session.active_lifecycle = set(session.lifecycle.active)
     session.lifecycle_counts = dict(session.lifecycle.counts)
     if telemetry_sink is not None:
@@ -2921,6 +3439,25 @@ def _restore_session(session: RuntimeSession) -> None:
                 input_state=str(record["input_state"]), output_state=str(record["output_state"]),
                 evidence_refs=tuple(record.get("evidence_refs") or ()),
                 recorded_at=session.statework_entry_times[key], statework_id=key[0]))
+            transition = record.get("transition") or {}
+            progress_class = str(transition.get("progress_class")
+                                 or record.get("progress_class") or "LATERAL")
+            if session.convergence is not None:
+                progress_digest = hashlib.sha256(json.dumps({
+                    "statework_id": key[0], "subject_ref": key[1],
+                    "input_state": record.get("input_state"),
+                    "output_state": record.get("output_state"),
+                    "edge_id": transition.get("edge_id"),
+                }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                if progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
+                    session.convergence.record_recovery_epoch(
+                        cause_id="primary-objective")
+                else:
+                    evidence_refs = list(record.get("evidence_refs") or ())
+                    session.convergence.record_progress(
+                        cause_id="primary-objective", progress_digest=progress_digest,
+                        progress_class="VERIFICATION_PROGRESS",
+                        evidence_ref=evidence_refs[-1] if evidence_refs else None)
         elif event_type == "handoff_attested":
             session.handoffs[str(record["packet_id"])] = {
                 "packet_id": record["packet_id"], "producer": record.get("producer"),
@@ -2942,7 +3479,17 @@ def _restore_session(session: RuntimeSession) -> None:
                 boundary_type=str(record.get("boundary_type") or "completion"),
                 boundary_target=str(record.get("boundary_target") or "task"),
                 expected_validator=str(record.get("expected_validator") or
-                                      "completion-boundary-v1")))
+                                      "completion-boundary-v1"),
+                goal_contract_hash=str(record.get("goal_contract_hash") or ""),
+                criterion_ids=tuple(record.get("criterion_ids") or ()),
+                criterion_evidence_refs=tuple(
+                    (str(key), tuple(refs))
+                    for key, refs in record.get("criterion_evidence_refs") or ())))
+        elif event_type == "attempt_descriptor_recorded":
+            descriptor = AttemptDescriptor(**dict(record.get("descriptor") or {}))
+            session.attempt_descriptors[descriptor.attempt_ref] = descriptor
+        elif event_type == "attempt_failure_recorded":
+            session.attempt_failures.add(str(record.get("attempt_ref") or ""))
     current = session.current_segment
     session.active_statework_ids = ({current.statework_id}
                                     if current.statework_id else set())
@@ -2993,6 +3540,39 @@ def context_for(session: RuntimeSession) -> str:
     capsules + guard rules. This is what measuring 'the final prompt
     actually injected' means — not the bundle JSON file."""
     parts: List[str] = []
+    goal = session.bundle.pinned.get("goal_contract") or {}
+    if goal:
+        criteria = list(goal.get("acceptance_criteria") or ())
+        required = [item for item in criteria if item.get("required", True)]
+        parts.append(
+            "===== TASK CONTRACT =====\n"
+            f"Primary outcome: {goal.get('objective', '')}\n"
+            f"Deliverable: {goal.get('deliverable_kind', 'unspecified')}; "
+            f"work mode: {goal.get('work_mode', 'delivery')}\n"
+            "Required criteria: " + ("; ".join(
+                f"{item.get('criterion_id')}: {item.get('claim')}" for item in required
+            ) or "none specified") + "\n"
+            "Support work is subordinate to these criteria.\n"
+            f"Contract hash: {session.bundle.pinned.get('goal_contract_hash', '')}")
+        non_goals = list(goal.get("non_goals") or ())
+        if non_goals:
+            parts.append("Non-goals: " + "; ".join(str(item) for item in non_goals))
+    else:
+        parts.append(
+            "===== TASK CONTRACT =====\n"
+            "The host did not supply a structured task contract. Preserve the "
+            "user's requested outcome; framework workflow is support work.")
+    verification = goal.get("verification_policy") or {}
+    support_limit = int(verification.get("support_actions_before_goal_reanchor", 5) or 5)
+    if (goal.get("work_mode") == "delivery" and session.convergence is not None
+            and session.convergence.needs_goal_reanchor(
+                cause_id="primary-objective", support_limit=support_limit)):
+        support_count = session.convergence.state("primary-objective").support_actions_since_goal_progress
+        parts.append(
+            "===== GOAL REANCHOR REQUIRED =====\n"
+            f"No primary-deliverable progress in {support_count} support actions. "
+            f"Primary outcome: {goal.get('objective', '')}\n"
+            "Next action must advance a required criterion or establish a concrete blocker.")
     active_stages = [stage for stage in session.bundle.kernel
                      if stage in session.active_lifecycle]
     if not active_stages:

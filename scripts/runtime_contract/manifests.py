@@ -76,6 +76,15 @@ def build_task_manifest(bundle: Any, *, session_id: str = "prestart",
         "suppressed_guard_keys": list(bundle.guard_pack.get("suppressed_guard_keys", [])),
         "task_family": bundle.profile,
         "task_shape": bundle.pinned.get("task_shape", bundle.profile),
+        "goal_contract": _thaw(bundle.pinned.get("goal_contract", {})),
+        "goal_contract_hash": bundle.pinned.get("goal_contract_hash", ""),
+        "work_mode": (bundle.pinned.get("goal_contract") or {}).get("work_mode"),
+        "deliverable_kind": (bundle.pinned.get("goal_contract") or {}).get("deliverable_kind"),
+        "acceptance_criterion_kinds": sorted({
+            item.get("kind") for item in (bundle.pinned.get("goal_contract") or {}).get(
+                "acceptance_criteria", []) if item.get("kind")}),
+        "verification_policy": _thaw((bundle.pinned.get("goal_contract") or {}).get(
+            "verification_policy", {})),
         "phase": bundle.pinned.get("phase"),
         "domain_tags": list(bundle.pinned.get("domain_tags", [])),
         "operation": bundle.pinned.get("operation"),

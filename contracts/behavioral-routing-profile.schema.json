@@ -220,6 +220,20 @@
             "null"
           ]
         },
+        "work_mode": { "type": ["string", "null"] },
+        "deliverable_kind": { "type": ["string", "null"] },
+        "acceptance_criterion_kinds": {
+          "type": "array", "items": { "type": "string" }, "uniqueItems": true
+        },
+        "verification_policy": {
+          "type": ["object", "null"],
+          "properties": {
+            "support_actions_before_goal_reanchor": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_recovery_epochs_without_goal_progress": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_same_approach_retries": { "type": "integer", "minimum": 1, "maximum": 100 }
+          },
+          "additionalProperties": false
+        },
         "domain_tags": {
           "type": "array",
           "items": {

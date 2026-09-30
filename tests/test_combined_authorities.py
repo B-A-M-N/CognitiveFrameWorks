@@ -57,9 +57,8 @@ def test_independent_cfw_tasks_share_csw_subject_revision(tmp_path):
     assert snapshot["revision"] == 3
 
 
-def test_action_preference_orders_but_does_not_authorize(tmp_path, monkeypatch):
+def test_action_preference_orders_but_does_not_authorize():
     resolve, runtime = _runtime_modules()
-    resolve.runtime_state_dir = lambda: tmp_path / "runtime"
 
     class Advisor:
         def advice_for_task(self, *, static_policy, **kwargs):
@@ -116,15 +115,29 @@ def test_shared_authority_identity_uses_task_origin(tmp_path):
 
 def test_authority_unavailable_blocks_consequential_action(tmp_path):
     resolve, runtime = _runtime_modules()
+
+    class InterruptibleAuthority:
+        unavailable = False
+
+        def inspect(self, **_kwargs):
+            if self.unavailable:
+                raise RuntimeError("offline")
+            return {"state": "UNKNOWN", "revision": 0}
+
+        def commit(self, **_kwargs):
+            if self.unavailable:
+                raise RuntimeError("offline")
+            return {"state": "UNKNOWN", "revision": 0}
+
     request = resolve.TaskRequest(
         task_id="authority-loss", namespace_id="ns", application_id="app",
         application_instance_id="instance", subject_ref="repo:shared",
         shape="quick", domain_tags=("terminal interface",),
     )
     bundle = resolve.resolve(request, cow_root=COW, requested_flows={"tuid": "discover"})
-    authority = runtime.CSWStateAuthority(COW, state_path=tmp_path / "s.json", evidence_path=tmp_path / "e.json")
+    authority = InterruptibleAuthority()
     session = runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing", state_authority=authority)
-    authority.inspect = lambda **_: (_ for _ in ()).throw(RuntimeError("offline"))
+    authority.unavailable = True
     assert session.before_action({"tool_binding_id": "read", "arguments": {}, "subject_ref": "repo:shared"}) == runtime.GateDecision.BLOCK
 
 

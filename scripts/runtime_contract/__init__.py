@@ -11,7 +11,8 @@ from .evidence import (CompletionClaim, CompletionPermit, EvidenceAttestation,
 from .validators import VALIDATOR_REGISTRY, evaluate_validator, validator_registry_hash
 from .handlers import SUPPORTED_HANDLERS, enforcement_for_guard, validate_enforcement
 from .stateworks import ExecutionSegment, SegmentStatus
-from .task import TaskRequest
+from .task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
+                  VerificationPolicy)
 
 __all__ = [
     "ActionDescriptor", "AgentActionRequest", "ConfirmationGrant", "HostExecutionContext",
@@ -22,4 +23,5 @@ __all__ = [
     "ExecutionSegment",
     "SegmentStatus",
     "TaskRequest",
+    "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy",
 ]

@@ -544,7 +544,14 @@ def main() -> int:
               "tuid", "ui:tuid", "MODELED", input_state="UNKNOWN", trigger="model",
               evidence_refs=[transition_session._host_ingress().record_observation("state_model", "ui:tuid")]) ==
           runtime.GateDecision.REQUIRE_REINSPECTION)
-    contradiction_session = runtime.start(resolve.resolve("contradiction", "quick"), telemetry_disabled=True)
+    completion_goal = resolve.TaskGoalContract(
+        objective="Confirm that the host validates the task result before completion.",
+        deliverable_kind="code_behavior", work_mode="delivery",
+        acceptance_criteria=(resolve.AcceptanceCriterion(
+            "C1", "The host observes a passing test result.", "code_behavior"),))
+    contradiction_session = runtime.start(resolve.resolve(resolve.TaskRequest(
+        task_id="contradiction", application_id="cfw-test", subject_ref="ui:tuid",
+        shape="quick", goal_contract=completion_goal)), telemetry_disabled=True)
     contradiction_id = contradiction_session._host_ingress().record_operator_observation(
         "ui:tuid", "operator says UI is stale")
     check("completion blocked by unresolved contradiction",
@@ -560,7 +567,9 @@ def main() -> int:
     boundary_claim = runtime.CompletionClaim.create(
         claim_id="claim-boundary", task_id=contradiction_session.bundle.task_id,
         subject_ref="ui:tuid", boundary_type="completion", boundary_target="task",
-        expected_validator="completion-boundary-v1", invocation_id="inv-boundary")
+        expected_validator="completion-boundary-v1", invocation_id="inv-boundary",
+        goal_contract_hash=completion_goal.contract_hash, criterion_ids=("C1",),
+        criterion_evidence_refs={"C1": [fresh]})
     boundary = contradiction_session._host_ingress().record_validator_result(
         "completion-boundary-v1", "inv-boundary", {"status": "pass"}, "ui:tuid",
         claim_digest=boundary_claim.claim_digest)

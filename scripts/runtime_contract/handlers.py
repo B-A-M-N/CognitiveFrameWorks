@@ -45,17 +45,25 @@ class RetryHypothesisGateV2:
             # No host convergence state: fail closed to reinspection rather
             # than granting an unbounded retry loop.
             return "require_reinspection"
-        parameters = dict(enforcement.get("parameters") or {})
-        cause_id = str(parameters.get("cause_id")
-                       or getattr(request, "binding_id", None)
-                       or getattr(session.bundle.task_id, "__str__", lambda: "task")())
-        parameters.setdefault("max_recovery_epochs_without_progress", 3)
+        attempt_ref = str(getattr(request, "arguments", {}).get("attempt_ref") or "")
+        descriptor = getattr(session, "attempt_descriptors", {}).get(attempt_ref)
+        if descriptor is None:
+            # Tool identity is not causal identity. Retrying requires a
+            # host-created descriptor that binds cause, premise, and plan.
+            return "require_reinspection"
+        goal = session.bundle.pinned.get("goal_contract") or {}
+        verification = goal.get("verification_policy") or {}
+        recovery_limit = int(verification.get(
+            "max_recovery_epochs_without_goal_progress", 3) or 3)
+        if session._shared_branch_exhausted(descriptor, recovery_limit):
+            return "block"
         return controller.evaluate_retry(
-            cause_id=cause_id,
-            action_fingerprint=str(getattr(request, "binding_id", "") or ""),
-            hypothesis_fingerprint=str(parameters.get("hypothesis_fingerprint") or ""),
-            premise_digest=parameters.get("premise_digest"),
-            failure_digest=parameters.get("failure_digest"))
+            cause_id=descriptor.cause_id,
+            action_fingerprint=descriptor.action_plan_digest,
+            hypothesis_fingerprint=descriptor.premise_digest,
+            premise_digest=descriptor.premise_digest,
+            support_action_limit=int(verification.get(
+                "support_actions_before_goal_reanchor", 5) or 5))
 
 
 class ContradictionReinspectionGateV1:
@@ -145,14 +153,7 @@ HANDLER_PARAMETER_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "type": "object", "properties": {}, "additionalProperties": False,
     },
     "retry.changed_hypothesis": {
-        "type": "object",
-        "properties": {
-            "cause_id": {"type": "string", "minLength": 1, "maxLength": 256},
-            "hypothesis_fingerprint": {"type": "string", "maxLength": 256},
-            "premise_digest": {"type": ["string", "null"], "maxLength": 256},
-            "failure_digest": {"type": ["string", "null"], "maxLength": 256},
-            "max_recovery_epochs_without_progress": {"type": "integer", "minimum": 1},
-        },
+        "type": "object", "properties": {},
         "additionalProperties": False,
     },
 }

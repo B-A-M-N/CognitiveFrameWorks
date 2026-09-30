@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 from cognitive_runtime import CognitiveRuntime
-from resolve_runtime import TaskRequest
+from resolve_runtime import AcceptanceCriterion, TaskGoalContract, TaskRequest
 from runtime import GateDecision
 
 
@@ -17,7 +17,13 @@ def main() -> int:
         runtime = CognitiveRuntime(telemetry_disabled=True)
         request = TaskRequest(task_id="public-api", application_id="cfw-public-api",
                               subject_ref="artifact:public",
-                              shape="quick")
+                              shape="quick",
+                              goal_contract=TaskGoalContract(
+                                  objective="Verify the public runtime API can validate and finish a task.",
+                                  deliverable_kind="code_behavior", work_mode="delivery",
+                                  acceptance_criteria=(AcceptanceCriterion(
+                                      "C1", "The host validates the completed task result.",
+                                      "code_behavior"),)))
         session = runtime.begin_task(request)
         agent = runtime.agent_handle(session)
         host = runtime.host_handle(session)
@@ -25,12 +31,13 @@ def main() -> int:
         # The fake agent can request work but cannot produce its own evidence.
         assert agent.preview_output({"status": "draft"})["status"] == "draft"
         invocation_id = "public-boundary-invocation"
-        host.after_tool(tool_type="test", result_class="pass",
-                        subject_ref="artifact:public", invocation_id=invocation_id,
-                        actual_result={"status": "pass"})
+        task_evidence = host.after_tool(tool_type="test", result_class="pass",
+                                        subject_ref="artifact:public", invocation_id=invocation_id,
+                                        actual_result={"status": "pass"})
         decision = host.validate_completion_boundary(
             subject_ref="artifact:public", validator_id="completion-boundary-v1",
-            invocation_id=invocation_id, result={"status": "pass"})
+            invocation_id=invocation_id, result={"status": "pass"},
+            criterion_evidence_refs={"C1": [task_evidence]})
         assert decision is GateDecision.ALLOW, decision
         finished = host.finish_task({"status": "complete"})
         assert finished["status"] == "complete"

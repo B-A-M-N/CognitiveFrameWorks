@@ -68,7 +68,8 @@ def test_objective_progress_resets_no_progress_budget():
     controller.record_recovery_epoch(cause_id="c1")
     assert controller.state("c1").no_progress_epochs == 1
     # Genuine host-observed progress resets the no-progress budget.
-    controller.record_progress(cause_id="c1", progress_digest="p1")
+    controller.record_progress(cause_id="c1", progress_digest="p1",
+                               progress_class="GOAL_PROGRESS")
     assert controller.state("c1").no_progress_epochs == 0
     assert controller.state("c1").recovery_epochs == 0
 
