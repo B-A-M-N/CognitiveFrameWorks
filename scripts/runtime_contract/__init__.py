@@ -12,7 +12,7 @@ from .validators import VALIDATOR_REGISTRY, evaluate_validator, validator_regist
 from .handlers import SUPPORTED_HANDLERS, enforcement_for_guard, validate_enforcement
 from .stateworks import ExecutionSegment, SegmentStatus
 from .task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
-                  VerificationPolicy)
+                  VerificationPolicy, SystemOnePolicy)
 
 __all__ = [
     "ActionDescriptor", "AgentActionRequest", "ConfirmationGrant", "HostExecutionContext",
@@ -23,5 +23,5 @@ __all__ = [
     "ExecutionSegment",
     "SegmentStatus",
     "TaskRequest",
-    "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy",
+    "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy", "SystemOnePolicy",
 ]

@@ -59,7 +59,8 @@ from runtime_contract.pipeline import load_pipeline_document
 from runtime_contract.policy import freeze_contracts as _freeze_contracts
 from runtime_contract.policy import stable_hash as _stable_contract_hash
 from runtime_contract.stateworks import current_packet as _current_packet
-from runtime_contract.task import AcceptanceCriterion, TaskGoalContract, TaskRequest
+from runtime_contract.task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
+                                   SystemOnePolicy)
 from runtime_contract.advisor import BehavioralAdvisor, bounded_adjustments, validate_advice_transaction
 from runtime_contract.manifests import build_task_manifest
 from runtime_contract.handlers import (enforcement_for_guard, handler_registry_hash,
@@ -993,6 +994,7 @@ class PolicySnapshot:
     contracts: Mapping[str, Any] = field(default_factory=dict)
     goal_contract: Mapping[str, Any] = field(default_factory=dict)
     goal_contract_hash: str = ""
+    system_one_policy: Mapping[str, Any] = field(default_factory=dict)
     phase: Optional[str] = None
     domain_tags: Tuple[str, ...] = ()
     task_shape: str = "implement"
@@ -1021,6 +1023,7 @@ class PolicySnapshot:
     def __post_init__(self) -> None:
         object.__setattr__(self, "contracts", _freeze_contracts(self.contracts))
         object.__setattr__(self, "goal_contract", _freeze_contracts(self.goal_contract))
+        object.__setattr__(self, "system_one_policy", _freeze_contracts(self.system_one_policy))
         object.__setattr__(self, "shared_evidence_refs", tuple(self.shared_evidence_refs))
         object.__setattr__(self, "adopted_profile_hashes", tuple(self.adopted_profile_hashes))
 
@@ -1050,6 +1053,7 @@ class PolicySnapshot:
             "subject_ref": self.subject_ref,
             "goal_contract": _thaw(self.goal_contract),
             "goal_contract_hash": self.goal_contract_hash,
+            "system_one_policy": _thaw(self.system_one_policy),
             "agent_id": self.agent_id,
             "agent_instance_id": self.agent_instance_id,
             "attempt_id": self.attempt_id,
@@ -1168,6 +1172,7 @@ class EffectivePolicy:
     pipeline_hash: str
     runtime_kernel_hash: str
     calibration_hash: str
+    system_one_policy: Mapping[str, Any] = field(default_factory=dict)
     subject_ref: Optional[str] = None
     goal_contract_hash: str = ""
     signal_schema_hash: str = ""
@@ -1190,7 +1195,7 @@ class EffectivePolicy:
     shared_workflow_membership: Optional[Mapping[str, Any]] = None
     policy_revocation_revision: int = 0
     revocation_mode: str = "deferred"
-    policy_contract_version: str = "2.1.0"
+    policy_contract_version: str = "2.2.0"
 
     def canonical(self) -> Dict[str, Any]:
         return {
@@ -1215,6 +1220,7 @@ class EffectivePolicy:
             "pipeline_hash": self.pipeline_hash,
             "runtime_kernel_hash": self.runtime_kernel_hash,
             "calibration_hash": self.calibration_hash,
+            "system_one_policy": _thaw(self.system_one_policy),
             "subject_ref": self.subject_ref,
             "goal_contract_hash": self.goal_contract_hash,
             "signal_schema_hash": self.signal_schema_hash,
@@ -1824,7 +1830,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             action_registry: Optional[Mapping[str, Any]] = None,
             routing_profile_path: Optional[Path] = None,
             behavioral_advisor: Optional[BehavioralAdvisor] = None,
-            sharing_verifier: Optional[Callable[[Mapping[str, Any], str, str], bool]] = None) -> RuntimeBundle:
+            sharing_verifier: Optional[Callable[[Mapping[str, Any], str, str], bool]] = None,
+            system_one_policy: Optional[Union[SystemOnePolicy, Mapping[str, Any]]] = None) -> RuntimeBundle:
     """Pure library entry point: TaskRequest -> RuntimeBundle. No source-tree
     writes (the CLI snapshot writer is separate and out-of-tree)."""
     if isinstance(task_id, TaskRequest):
@@ -1870,6 +1877,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         toolset = request.toolset
         observation_context = dict(request.observation_context)
         goal_contract = request.goal_contract
+        system_one_policy = request.system_one_policy
         if action_registry is None:
             action_registry = request.action_registry
     else:
@@ -1894,6 +1902,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         revocation_mode = "deferred"
         routing_experiment_plan = {}
         goal_contract = None
+        system_one_policy = system_one_policy or SystemOnePolicy()
         application_instance_id = application_instance_id or application_id
         model_id = model_id or model
     application_id = str(application_id or "")
@@ -1909,6 +1918,11 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     agent_id = str(agent_id or "agent")
     goal_contract_dict = goal_contract.to_dict() if goal_contract is not None else {}
     goal_contract_hash = goal_contract.contract_hash if goal_contract is not None else ""
+    if not isinstance(system_one_policy, SystemOnePolicy):
+        if not isinstance(system_one_policy, Mapping):
+            raise ValueError("system_one_policy must be a SystemOnePolicy or mapping")
+        system_one_policy = SystemOnePolicy(**dict(system_one_policy))
+    system_one_policy_dict = system_one_policy.to_dict()
     effective_actions = effective_action_registry(action_registry)
     domains = list(domains or [])
     pipeline = load_pipeline()
@@ -2329,6 +2343,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         trigger=trigger, pipeline_hash=pipeline_hash,
         runtime_kernel_hash=kernel_hash,
         calibration_hash=sispis_calibration_hash,
+        system_one_policy=system_one_policy_dict,
         subject_ref=subject_ref,
         goal_contract_hash=goal_contract_hash,
         signal_schema_hash=sha256(signal_schema_path),
@@ -2410,6 +2425,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         subject_ref=subject_ref,
         goal_contract=goal_contract_dict,
         goal_contract_hash=goal_contract_hash,
+        system_one_policy=system_one_policy_dict,
         agent_id=agent_id,
         phase=phase,
         domain_tags=tuple(domains),

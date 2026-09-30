@@ -13,6 +13,10 @@ from typing import Any, Dict, Mapping, Optional
 
 
 _GRANT_SECRET = secrets.token_bytes(32)
+GOAL_RELATIONS = frozenset({
+    "advances_primary_goal", "removes_concrete_blocker",
+    "required_verification", "diagnostic_support", "unrelated", "ambiguous",
+})
 
 
 def _canonical(value: Any) -> str:
@@ -135,6 +139,16 @@ class ActionDescriptor:
     required_authority: Optional[str] = None
     allowed_authorities: tuple[str, ...] = ()
     required_capabilities: tuple[str, ...] = ()
+    goal_relation: str = "ambiguous"
+    goal_intent: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.goal_relation not in GOAL_RELATIONS:
+            raise ValueError("goal_relation has an unsupported value")
+        if self.goal_intent is not None and (
+                not isinstance(self.goal_intent, str) or not self.goal_intent.strip()
+                or len(self.goal_intent) > 256):
+            raise ValueError("goal_intent must be bounded host-authored text")
 
     def for_request(self, request: "AgentActionRequest") -> "ActionDescriptor":
         """Return a target-sensitive classification derived by the host."""
@@ -168,7 +182,8 @@ def action_contract_hash(registry: Optional[Mapping[str, ActionDescriptor]] = No
                 "tool_type", "mutability", "target_subject", "trust_boundary",
                 "blast_radius", "reversibility", "secret_access", "network_effect",
                 "destructive", "outside_scope", "untrusted", "required_authority",
-                "allowed_authorities", "required_capabilities",
+                "allowed_authorities", "required_capabilities", "goal_relation",
+                "goal_intent",
             )
         }
         for key, descriptor in sorted(source.items())

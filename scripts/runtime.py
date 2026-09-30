@@ -56,6 +56,12 @@ from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
 from runtime_contract.operator_events import OperatorEvent
 from runtime_contract.stateworks import ExecutionSegment, SegmentStatus
+from runtime_contract.behavioral_fusion import (advisory_guidance,
+                                                fuse_action_relation)
+from runtime_contract.system_one import (BehavioralJudge, SystemOneFrame,
+                                         SystemOneIdentity, SystemOneJudgment,
+                                         SystemOnePolicy)
+from runtime_contract.system_one_state import SystemOneStateProjector
 from runtime_contract.validators import evaluate_validator, validator_registry_hash
 if "resolve_runtime" in sys.modules:
     resolve_runtime = sys.modules["resolve_runtime"]
@@ -70,7 +76,7 @@ _STATEWORK_TRANSITIONS = None
 _STATEWORK_TRANSITION_MODULES: Dict[str, Any] = {}
 
 TelemetrySink = Callable[[Dict[str, Any]], None]
-SCHEMA_VERSION = "2.2.0"
+SCHEMA_VERSION = "2.3.0"
 CATEGORIES = {
     "observation", "assumption", "inference", "decision", "action",
     "tool_result", "validation", "correction", "contradiction", "retry",
@@ -637,10 +643,12 @@ class HostIngress:
                            subject_ref: Optional[str] = None,
                            *, invocation_id: Optional[str] = None,
                            result_digest: Optional[str] = None,
+                           action_digest: Optional[str] = None,
                            actual_result: Optional[Mapping[str, Any]] = None) -> str:
         return self._session._record_tool_result(
             self._capability, tool_type, result_class, subject_ref,
             invocation_id=invocation_id, result_digest=result_digest,
+            action_digest_value=action_digest,
             actual_result=actual_result)
 
     def record_tool_outcome(self, tool_type: str, result_class: str,
@@ -674,6 +682,20 @@ class HostIngress:
         self._session._record_goal_progress(
             self._capability, cause_id=cause_id, evidence_ref=evidence_ref,
             criterion_id=criterion_id, progress_class=progress_class)
+
+    def system_one_decision_for_action(self, action_digest: str) -> Optional[str]:
+        """Host-only correlation lookup for a later independent outcome."""
+        return self._session._system_one_decision_for_action(
+            self._capability, action_digest)
+
+    def record_system_one_outcome(self, *, decision_id: str, label: str,
+                                  value: str, evidence_ref: str,
+                                  authority: str,
+                                  criterion_id: Optional[str] = None) -> str:
+        return self._session._record_system_one_outcome(
+            self._capability, decision_id=decision_id, label=label, value=value,
+            evidence_ref=evidence_ref, authority=authority,
+            criterion_id=criterion_id)
 
     def record_recovery_epoch(self, *, cause_id: str, reason: str) -> None:
         self._session._record_recovery_epoch(
@@ -1036,6 +1058,14 @@ class RuntimeSession:
     attempt_descriptors: Dict[str, AttemptDescriptor] = field(default_factory=dict, repr=False)
     attempt_failures: set[str] = field(default_factory=set, repr=False)
     shared_branch_ledger: Optional[SharedBranchLedger] = field(default=None, repr=False)
+    system_one_judge: Optional[BehavioralJudge] = field(default=None, repr=False)
+    system_one_projector: SystemOneStateProjector = field(
+        default_factory=SystemOneStateProjector, repr=False)
+    system_one_sequence: int = 0
+    system_one_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
+    system_one_outcomes: set[str] = field(default_factory=set, repr=False)
+    system_one_action_relations: Dict[str, str] = field(default_factory=dict, repr=False)
+    system_one_advisories: List[str] = field(default_factory=list, repr=False)
 
     def _host_ingress(self) -> HostIngress:
         """Return the host-only channel to the adapter implementation.
@@ -1062,7 +1092,9 @@ class RuntimeSession:
                 "convergence",
                 "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
                 "runtime_mode", "attempt_descriptors", "attempt_failures",
-                "shared_branch_ledger"}:
+                "shared_branch_ledger", "system_one_judge", "system_one_projector",
+                "system_one_sequence", "system_one_decisions", "system_one_outcomes",
+                "system_one_action_relations", "system_one_advisories"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -1248,6 +1280,155 @@ class RuntimeSession:
             self._emit(event)
         if self._telemetry_exporter is not None:
             self._telemetry_exporter.enqueue()
+
+    def _system_one_policy(self) -> SystemOnePolicy:
+        return SystemOnePolicy(**dict(self.bundle.pinned.get("system_one_policy") or {}))
+
+    def _system_one_query(self, *, questions: tuple[str, ...],
+                          candidate: Mapping[str, str],
+                          subject_ref: Optional[str] = None,
+                          action_digest_value: Optional[str] = None,
+                          descriptor: Optional[ActionDescriptor] = None) -> Optional[SystemOneJudgment]:
+        """Query only after the caller's deterministic eligibility gate."""
+        policy = self._system_one_policy()
+        if policy.mode == "disabled":
+            return None
+        goal = self.bundle.pinned.get("goal_contract") or {}
+        if not goal.get("objective"):
+            return None
+        object.__setattr__(self, "system_one_sequence", self.system_one_sequence + 1)
+        self._journal("system_one_sequence", sequence=self.system_one_sequence)
+        identity = SystemOneIdentity(
+            namespace_id=self.execution_identity.namespace_id,
+            application_id=str(self.bundle.pinned.get("application_id") or "unknown-application"),
+            application_instance_id=self.execution_identity.application_instance_id,
+            agent_id=str(self.bundle.pinned.get("agent_id") or "agent"),
+            agent_instance_id=self.execution_identity.agent_instance_id,
+            session_id=self.execution_identity.session_id,
+            task_id=self.execution_identity.task_id,
+            attempt_id=self.execution_identity.attempt_id,
+            interaction_id=self.execution_identity.interaction_id)
+        convergence_state = self.convergence.state("primary-objective") if self.convergence else None
+        convergence = {
+            "support_actions_since_goal_progress": int(
+                convergence_state.support_actions_since_goal_progress if convergence_state else 0),
+            "recovery_epochs_since_goal_progress": int(
+                convergence_state.recovery_epochs_since_goal_progress if convergence_state else 0),
+            "same_approach_retries": int(
+                convergence_state.same_approach_retries if convergence_state else 0),
+        }
+        frame = self.system_one_projector.project(
+            identity=identity, sequence=self.system_one_sequence,
+            policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
+            policy=policy, questions=questions, goal_contract=goal,
+            convergence=convergence, candidate=candidate)
+        status = "fallback"
+        calibrated = False
+        judgment: Optional[SystemOneJudgment] = None
+        if self.system_one_judge is not None:
+            try:
+                raw = self.system_one_judge.judge(frame, mode=policy.mode)
+                if hasattr(raw, "judgment"):
+                    status = str(getattr(raw, "status", "fallback"))
+                    calibrated = bool(getattr(raw, "calibrated", False))
+                    raw = getattr(raw, "judgment", None)
+                if raw is not None:
+                    if hasattr(raw, "to_dict"):
+                        raw = raw.to_dict()
+                    judgment = (raw if isinstance(raw, SystemOneJudgment)
+                                else SystemOneJudgment.from_mapping(raw))
+                    if judgment.identity != frame.identity:
+                        raise ValueError("System-1 identity mismatch")
+                    if (judgment.request_id != frame.request_id
+                            or judgment.sequence != frame.sequence
+                            or judgment.state_digest != frame.state_digest):
+                        raise ValueError("System-1 response is stale or miscorrelated")
+                    if (judgment.policy_hash != frame.policy_hash
+                            or judgment.backend_id != policy.backend_id
+                            or judgment.model_id != policy.model_id
+                            or judgment.calibration_hash != policy.calibration_hash
+                            or judgment.protocol_version != policy.protocol_version
+                            or judgment.protocol_hash != policy.protocol_hash):
+                        raise ValueError("System-1 response policy identity mismatch")
+                    if any(getattr(judgment, question) is None for question in questions):
+                        raise ValueError("System-1 response omitted a requested label")
+                    if (judgment.route_preference is not None
+                            and judgment.route_preference not in frame.route_candidates):
+                        raise ValueError("System-1 route preference is outside eligible candidates")
+                    if self.system_one_sequence != frame.sequence:
+                        raise ValueError("System-1 response arrived after a newer frame")
+                    if status == "fallback":
+                        status = "ok"
+            except Exception:
+                judgment = None
+                calibrated = False
+                status = "fallback"
+        relation = None
+        influenced = False
+        if descriptor is not None and "action_relation" in questions:
+            fused = fuse_action_relation(
+                descriptor, judgment=judgment, policy=policy, calibrated=calibrated)
+            relation = fused.relation
+        guidance = advisory_guidance(
+            judgment=judgment, policy=policy, calibrated=calibrated)
+        influenced = bool(guidance)
+        question_hash = hashlib.sha256(json.dumps(
+            list(questions), separators=(",", ":")).encode("utf-8")).hexdigest()
+        decision_id = frame.request_id
+        decision = {
+            "decision_id": decision_id, "subject_ref": subject_ref,
+            "action_digest": action_digest_value, "sequence": frame.sequence,
+            "state_digest": frame.state_digest, "question_hash": question_hash,
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "judgment": judgment.to_dict() if judgment else {},
+            "status": status, "influenced": influenced,
+            "fused_action_relation": relation,
+            "advisories": list(guidance),
+        }
+        self.system_one_advisories.extend(guidance)
+        del self.system_one_advisories[:-4]
+        self.system_one_decisions[decision_id] = decision
+        while len(self.system_one_decisions) > 512:
+            oldest = next(iter(self.system_one_decisions))
+            self.system_one_decisions.pop(oldest)
+            self.system_one_outcomes.difference_update(
+                key for key in tuple(self.system_one_outcomes)
+                if key.startswith(f"{oldest}:"))
+        self._journal("system_one_decision_recorded", decision=decision)
+        payload = {
+            "summary": "bounded System-1 semantic judgment" if judgment else "System-1 fallback",
+            "system_one_decision_id": decision_id,
+            "system_one_mode": policy.mode,
+            "system_one_backend_id": policy.backend_id,
+            "system_one_model_id": policy.model_id,
+            "system_one_protocol_version": policy.protocol_version,
+            "system_one_protocol_hash": policy.protocol_hash,
+            "system_one_calibration_hash": policy.calibration_hash,
+            "system_one_sequence": frame.sequence,
+            "system_one_state_digest": frame.state_digest,
+            "system_one_question_bundle_hash": question_hash,
+            "system_one_status": status,
+            "system_one_influenced": influenced,
+        }
+        if relation is not None:
+            payload["system_one_fused_action_relation"] = relation
+        if judgment is not None:
+            payload["system_one_confidence"] = float(judgment.confidence)
+            for source, target in (
+                    ("action_relation", "system_one_action_relation"),
+                    ("progress_relation", "system_one_progress_relation"),
+                    ("retry_relation", "system_one_retry_relation"),
+                    ("goal_drift", "system_one_goal_drift"),
+                    ("route_preference", "system_one_route_preference")):
+                value = getattr(judgment, source)
+                if value is not None:
+                    payload[target] = value
+        self._emit_runtime({"category": "decision", "event_type": "system_one_decision",
+                            "subject": subject_ref,
+                            "uncertainty": (1.0 - float(judgment.confidence)
+                                            if judgment else 1.0),
+                            "payload": payload})
+        return judgment
 
     def _request(self, action: Mapping[str, Any] | AgentActionRequest) -> AgentActionRequest:
         return action if isinstance(action, AgentActionRequest) else AgentActionRequest.from_mapping(action)
@@ -1451,14 +1632,19 @@ class RuntimeSession:
             return GateDecision.BLOCK
         descriptor = self._descriptor(request)
         decision = self._decision(request)
+        if request.digest:
+            self.system_one_action_relations[request.digest] = descriptor.goal_relation
+            while len(self.system_one_action_relations) > 128:
+                self.system_one_action_relations.pop(next(iter(self.system_one_action_relations)))
+        self.system_one_projector.record_activity(
+            "action", f"{descriptor.tool_type[:64]}:{descriptor.goal_relation}")
         verification = ((self.bundle.pinned.get("goal_contract") or {}).get(
             "verification_policy") or {})
         if (decision == GateDecision.ALLOW
                 and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"
-                and descriptor.tool_type.lower() in {
-                    "read", "inspect", "test", "validate", "verify", "render",
-                    "search", "grep", "diagnose"}
                 and self.convergence is not None
+                and descriptor.goal_relation not in {
+                    "advances_primary_goal", "removes_concrete_blocker"}
                 and self.convergence.needs_goal_reanchor(
                     cause_id="primary-objective",
                     support_limit=int(verification.get(
@@ -1491,6 +1677,17 @@ class RuntimeSession:
         if decision == GateDecision.ALLOW and confirmation is not None:
             self._consumed_grant_ids.add(confirmation.grant_id)
             self._journal("confirmation_consumed", grant_id=confirmation.grant_id)
+        goal = self.bundle.pinned.get("goal_contract") or {}
+        if (decision == GateDecision.ALLOW and goal
+                and descriptor.goal_relation == "ambiguous"):
+            self._system_one_query(
+                questions=("action_relation", "goal_drift"),
+                candidate={"binding_id": request.binding_id,
+                           "tool_type": descriptor.tool_type,
+                           "goal_relation": descriptor.goal_relation,
+                           "goal_intent": descriptor.goal_intent or ""},
+                subject_ref=request.subject_ref,
+                action_digest_value=request.digest, descriptor=descriptor)
         return decision
 
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
@@ -1524,6 +1721,20 @@ class RuntimeSession:
                     return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
                 if result == "require_goal_reanchor":
                     return GateDecision.REQUIRE_GOAL_REANCHOR
+        action_digest_value = action.digest
+        attempt_ref = str(action.arguments.get("attempt_ref") or "")
+        attempt = self.attempt_descriptors.get(attempt_ref)
+        if (attempt is not None and self._system_one_policy().mode != "disabled"):
+            self._system_one_query(
+                questions=("retry_relation",),
+                candidate={"binding_id": action.binding_id,
+                           "cause_id": attempt.cause_id,
+                           "premise_digest": attempt.premise_digest,
+                           "action_plan_digest": attempt.action_plan_digest},
+                subject_ref=action.subject_ref,
+                action_digest_value=action_digest_value)
+        self.system_one_projector.record_activity(
+            "retry", attempt.cause_id if attempt is not None else "untracked")
         return GateDecision.ALLOW
 
     def request_termination(self, capability: _HostCapability, *,
@@ -1656,6 +1867,102 @@ class RuntimeSession:
             return
         self._journal("convergence_recorded", reason=reason,
                       convergence=self.convergence.export())
+
+    def _system_one_decision_for_action(self, capability: _HostCapability,
+                                        action_digest_value: str) -> Optional[str]:
+        self._require_host(capability)
+        if not isinstance(action_digest_value, str) or not re.fullmatch(
+                r"[0-9a-f]{64}", action_digest_value):
+            raise ValueError("action_digest must be a SHA-256 digest")
+        matches = [decision for decision in self.system_one_decisions.values()
+                   if decision.get("action_digest") == action_digest_value
+                   and decision.get("judgment")]
+        if not matches:
+            return None
+        matches.sort(key=lambda item: int(item.get("sequence", 0)))
+        return str(matches[-1]["decision_id"])
+
+    def _record_system_one_outcome(self, capability: _HostCapability, *,
+                                   decision_id: str, label: str, value: str,
+                                   evidence_ref: str, authority: str,
+                                   criterion_id: Optional[str] = None) -> str:
+        """Append T2 ground truth only from later host-attested evidence."""
+        self._require_host(capability)
+        decision = self.system_one_decisions.get(decision_id)
+        if decision is None or not decision.get("judgment"):
+            raise ValueError("System-1 outcome requires a recorded prediction")
+        outcome_key = f"{decision_id}:{label}"
+        if outcome_key in self.system_one_outcomes:
+            raise ValueError("System-1 outcome already recorded for this label")
+        label_values = {
+            "action_relation": {"advances_primary_goal", "removes_concrete_blocker",
+                                "required_verification", "diagnostic_support", "unrelated"},
+            "progress_relation": {"goal_progress", "blocker_removed", "diagnostic_progress",
+                                  "verification_progress", "recovery_progress", "no_progress"},
+            "retry_relation": {"materially_new", "same_premise_new_action",
+                               "equivalent_retry", "unrelated"},
+            "goal_drift": {"yes", "no"},
+        }
+        if label not in label_values or value not in label_values[label]:
+            raise ValueError("unsupported System-1 ground-truth label")
+        if decision["judgment"].get(label) is None:
+            raise ValueError("outcome label was not included in the prediction")
+        if authority not in {"host_evidence", "validator", "csw_fact", "operator"}:
+            raise ValueError("unsupported System-1 outcome authority")
+        record = self.ledger.get(evidence_ref)
+        if record is None or record.invalidated:
+            raise ValueError("System-1 outcome requires current host-attested evidence")
+        expected_subject = decision.get("subject_ref") or self.bundle.policy.subject_ref
+        if expected_subject and record.subject_ref != expected_subject:
+            raise ValueError("System-1 outcome evidence subject does not match its decision")
+        issuer = str(record.issuer or "")
+        issuer_prefixes = {
+            "host_evidence": ("host:", "runtime:"),
+            "validator": ("validator:",),
+            "csw_fact": ("statework:", "csw:"),
+            "operator": ("operator:",),
+        }
+        if not issuer.startswith(issuer_prefixes[authority]):
+            raise PermissionError("evidence issuer does not match declared outcome authority")
+        observed = datetime.fromisoformat(str(record.observed_at).replace("Z", "+00:00"))
+        decided = datetime.fromisoformat(str(decision["timestamp"]).replace("Z", "+00:00"))
+        if observed <= decided:
+            raise ValueError("System-1 ground truth must be observed after its prediction")
+        if label == "progress_relation" and value in {"goal_progress", "blocker_removed"}:
+            criteria = {str(item.get("criterion_id")) for item in
+                        (self.bundle.pinned.get("goal_contract") or {}).get(
+                            "acceptance_criteria", ())}
+            if not criterion_id or criterion_id not in criteria:
+                raise ValueError("goal progress outcome must match a pinned acceptance criterion")
+        elif criterion_id is not None:
+            criteria = {str(item.get("criterion_id")) for item in
+                        (self.bundle.pinned.get("goal_contract") or {}).get(
+                            "acceptance_criteria", ())}
+            if criterion_id not in criteria:
+                raise ValueError("outcome references an unknown acceptance criterion")
+        self.system_one_outcomes.add(outcome_key)
+        outcome_event_id = f"system-one-outcome-{uuid.uuid4()}"
+        self._journal("system_one_outcome_recorded", decision_id=decision_id,
+                      label=label, value=value, evidence_ref=evidence_ref,
+                      authority=authority, outcome_event_id=outcome_event_id)
+        label_key = {
+            "action_relation": "system_one_outcome_action_relation",
+            "progress_relation": "system_one_outcome_progress_relation",
+            "retry_relation": "system_one_outcome_retry_relation",
+            "goal_drift": "system_one_outcome_goal_drift",
+        }[label]
+        self._emit_runtime({
+            "event_id": outcome_event_id,
+            "category": "validation", "event_type": "system_one_outcome",
+            "subject": record.subject_ref, "evidence_refs": [evidence_ref],
+            "payload": {"summary": "independent System-1 evaluation outcome",
+                        "system_one_outcome_for": decision_id,
+                        label_key: value,
+                        "system_one_outcome_authority": authority,
+                        "system_one_outcome_evidence_ref": evidence_ref,
+                        "system_one_independent_outcome": True,
+                        "criterion_id": criterion_id or ""}})
+        return outcome_event_id
 
     def _shared_branch_exhausted(self, descriptor: AttemptDescriptor,
                                  recovery_limit: int) -> bool:
@@ -2040,6 +2347,7 @@ class RuntimeSession:
                             result_class: str, subject_ref: Optional[str] = None,
                             *, invocation_id: Optional[str] = None,
                             result_digest: Optional[str] = None,
+                            action_digest_value: Optional[str] = None,
                             actual_result: Optional[Mapping[str, Any]] = None) -> str:
         """Record a tool result from the host execution channel."""
         self._require_host(capability)
@@ -2067,23 +2375,39 @@ class RuntimeSession:
                           json.dumps(dict(actual_result or {}), sort_keys=True,
                                      separators=(",", ":"), default=str).encode("utf-8")
                       ).hexdigest())
+        self.system_one_projector.record_activity(
+            "tool_result", f"{tool_type[:64]}:{result_class[:32]}")
         if (self.convergence is not None
-                and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"
-                and tool_type.lower() in {
-                    "read", "inspect", "test", "validate", "verify", "render",
-                    "search", "grep", "diagnose"}):
-            state = self.convergence.record_support_action(cause_id="primary-objective")
-            self._record_convergence("support_action")
-            self._emit_runtime({
-                "category": "tool_result", "event_type": "support_action_recorded",
-                "subject": subject_ref, "evidence_refs": [evidence_id],
-                "payload": {"summary": "support work recorded separately from goal progress",
-                            "result_class": "support_progress",
-                            "progress_class": "DIAGNOSTIC_PROGRESS",
-                            "support_actions_since_goal_progress":
-                                state.support_actions_since_goal_progress}})
+                and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"):
+            host_relation = self.system_one_action_relations.pop(
+                action_digest_value or "", "ambiguous")
+            if host_relation not in {"advances_primary_goal", "removes_concrete_blocker"}:
+                # Unknown and ambiguous operations count conservatively as
+                # support. No tool-name list decides task relevance.
+                state = self.convergence.record_support_action(cause_id="primary-objective")
+                self._record_convergence("support_action")
+                self._record_support_action_event(
+                    evidence_id=evidence_id, subject_ref=subject_ref,
+                    support_count=state.support_actions_since_goal_progress)
+        if self._system_one_policy().mode != "disabled":
+            self._system_one_query(
+                questions=("progress_relation",),
+                candidate={"tool_type": tool_type[:64],
+                           "result_class": result_class[:64],
+                           "subject_match": str(subject_ref == self.bundle.policy.subject_ref).lower()},
+                subject_ref=subject_ref, action_digest_value=action_digest_value)
         self._complete_action(capability)
         return evidence_id
+
+    def _record_support_action_event(self, *, evidence_id: str,
+                                     subject_ref: Optional[str], support_count: int) -> None:
+        self._emit_runtime({
+            "category": "tool_result", "event_type": "support_action_recorded",
+            "subject": subject_ref, "evidence_refs": [evidence_id],
+            "payload": {"summary": "host-classified action tracked as support",
+                        "result_class": "support_progress",
+                        "progress_class": "DIAGNOSTIC_PROGRESS",
+                        "support_actions_since_goal_progress": support_count}})
 
     def _complete_action(self, capability: _HostCapability) -> None:
         self._require_host(capability)
@@ -2258,6 +2582,10 @@ class RuntimeSession:
             authoritative_revision = int(committed.get("revision", authoritative_revision + 1) or authoritative_revision + 1)
             transition_facts = dict(committed.get("transition") or transition_facts)
         self.statework_states[state_key] = output_state
+        self.system_one_projector.record_csw_fact(
+            statework_id=statework_id, subject_ref=subject_ref,
+            input_state=origin, output_state=output_state,
+            progress_class=str(transition_facts.get("progress_class") or "LATERAL"))
         entry_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.statework_entry_times[state_key] = entry_time
         state_segment = StateSegment(
@@ -2271,26 +2599,37 @@ class RuntimeSession:
             output_state=state_segment.output_state,
             evidence_refs=state_segment.evidence_refs,
             recorded_at=state_segment.recorded_at, statework_id=state_segment.statework_id))
-        progress_class = str(transition_facts.get("progress_class") or "LATERAL")
+        csw_progress_class = str(transition_facts.get("progress_class") or "LATERAL")
+        if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
+            progress_class = "RECOVERY_PROGRESS"
+        elif csw_progress_class == "TERMINAL":
+            progress_class = "VERIFICATION_PROGRESS"
+        elif csw_progress_class == "FORWARD_PROGRESS":
+            progress_class = "DIAGNOSTIC_PROGRESS"
+        else:
+            progress_class = "DIAGNOSTIC_PROGRESS"
         if self.convergence is not None:
             progress_digest = hashlib.sha256(json.dumps({
                 "statework_id": statework_id, "subject_ref": subject_ref,
                 "input_state": origin, "output_state": output_state,
                 "edge_id": transition_facts.get("edge_id"),
             }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-            if progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
+            if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
                 self.convergence.record_recovery_epoch(cause_id="primary-objective")
-            else:
+            elif csw_progress_class in {"FORWARD_PROGRESS", "TERMINAL"}:
                 self.convergence.record_progress(
                     cause_id="primary-objective", progress_digest=progress_digest,
-                    progress_class="VERIFICATION_PROGRESS",
+                    progress_class=progress_class,
                     evidence_ref=(verified_evidence[-1]["ref"] if verified_evidence else None))
+            else:
+                self.convergence.record_support_action(cause_id="primary-objective")
         self._journal("state_transition_allowed", statework_id=statework_id,
                       subject_ref=subject_ref, input_state=origin,
                       output_state=output_state, evidence_refs=[item["ref"] for item in verified_evidence],
                       recorded_at=entry_time, segment_id=state_segment.segment_id,
                       transition=transition_facts,
-                      progress_class=progress_class)
+                      progress_class=progress_class,
+                      csw_progress_class=csw_progress_class)
         self._record_convergence("state_transition_progress")
         self._emit_runtime({
             "category": "state_transition", "event_type": "state_transition_progress",
@@ -2299,10 +2638,8 @@ class RuntimeSession:
             "evidence_refs": [item["ref"] for item in verified_evidence],
             "payload": {"summary": "CSW transition progress is tracked separately from task-goal progress",
                         "result_class": progress_class.lower(),
-                        "progress_class": (
-                            "RECOVERY_PROGRESS" if progress_class in {
-                                "RECOVERY", "INVALIDATION", "REGRESSION"}
-                            else "VERIFICATION_PROGRESS")}})
+                        "progress_class": progress_class,
+                        "csw_progress_class": csw_progress_class}})
         return GateDecision.ALLOW
 
     def _publish_handoff(self, capability: _HostCapability, packet: Dict[str, Any], *,
@@ -2540,10 +2877,15 @@ class RuntimeSession:
         record = self.ledger.get(evidence_ref)
         if record is None or record.invalidated:
             raise ValueError("goal progress requires current host-attested evidence")
+        expected_subject = self.bundle.policy.subject_ref
+        if expected_subject and record.subject_ref != expected_subject:
+            raise ValueError("goal progress evidence subject does not match the active task")
         criteria = {
             str(item.get("criterion_id")) for item in
             (self.bundle.pinned.get("goal_contract") or {}).get("acceptance_criteria", ())
         }
+        if criteria and criterion_id is None:
+            raise ValueError("goal progress must match a pinned acceptance criterion")
         if criterion_id is not None and criterion_id not in criteria:
             raise ValueError("goal progress references an unknown acceptance criterion")
         digest = hashlib.sha256(json.dumps({
@@ -3028,6 +3370,7 @@ def _journal_identity_prefix(bundle: resolve_runtime.RuntimeBundle) -> str:
 def start(bundle: resolve_runtime.RuntimeBundle, *,
           telemetry_sink: Optional[TelemetrySink] = None,
           telemetry_exporter: Optional[DurableTelemetryExporter] = None,
+          behavioral_judge: Optional[BehavioralJudge] = None,
           state_authority: Optional[StateAuthority] = None,
           policy_revocation_authority: Optional[PolicyRevocationAuthority] = None,
           membership_authority: Optional["SharedWorkflowMembershipAuthority"] = None,
@@ -3052,6 +3395,24 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     if pinned_runtime_hash != resolve_runtime.runtime_behavior_hash():
         raise resolve_runtime.SnapshotIntegrityError(
             "runtime enforcement code changed after policy composition")
+    system_one_policy = SystemOnePolicy(**dict(bundle.pinned.get("system_one_policy") or {}))
+    if dict(bundle.policy.system_one_policy) != system_one_policy.to_dict():
+        raise resolve_runtime.SnapshotIntegrityError(
+            "System-1 policy differs from the task's pinned policy")
+    if behavioral_judge is not None:
+        for field_name, expected in (
+                ("backend_id", system_one_policy.backend_id),
+                ("model_id", system_one_policy.model_id),
+                ("calibration_hash", system_one_policy.calibration_hash)):
+            if getattr(behavioral_judge, field_name, None) != expected:
+                raise ValueError(f"injected System-1 {field_name} differs from pinned policy")
+        provider_cache_size = getattr(behavioral_judge, "cache_size", None)
+        if provider_cache_size is not None and int(provider_cache_size) != system_one_policy.cache_size:
+            raise ValueError("injected System-1 cache size differs from pinned policy")
+        provider_latency = getattr(behavioral_judge, "max_latency_ms", None)
+        if (provider_latency is not None
+                and int(provider_latency) > system_one_policy.max_latency_ms):
+            raise ValueError("injected System-1 provider exceeds pinned latency cap")
     if (session_nonce is not None and supplied_context.session_nonce
             and session_nonce != supplied_context.session_nonce):
         raise ValueError("session nonce supplied by host context and resume request differ")
@@ -3117,6 +3478,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
        ) or (ExecutionSegment("segment-0", 0, None, bundle.policy.subject_ref),),
        session_nonce=session_nonce,
        session_id=session_id,
+       system_one_judge=behavioral_judge,
        agent_instance_id=bundle.pinned.get("agent_instance_id", bundle.pinned.get("agent_id", "agent")),
        attempt_id=bundle.pinned.get("attempt_id", "attempt-1"),
        interaction_id=bundle.pinned.get("interaction_id"),
@@ -3381,6 +3743,22 @@ def _restore_session(session: RuntimeSession) -> None:
             event_id = str(record.get("event_id") or "")
             if event_id:
                 session.route_outcomes[event_id] = dict(record.get("outcome") or {})
+        elif event_type == "system_one_sequence":
+            session.system_one_sequence = max(
+                session.system_one_sequence, int(record.get("sequence", 0) or 0))
+        elif event_type == "system_one_decision_recorded":
+            decision = dict(record.get("decision") or {})
+            decision_id = str(decision.get("decision_id") or "")
+            if decision_id:
+                session.system_one_decisions[decision_id] = decision
+                session.system_one_sequence = max(
+                    session.system_one_sequence, int(decision.get("sequence", 0) or 0))
+                session.system_one_advisories.extend(
+                    str(item)[:256] for item in decision.get("advisories") or ())
+                del session.system_one_advisories[:-4]
+        elif event_type == "system_one_outcome_recorded":
+            session.system_one_outcomes.add(
+                f"{record.get('decision_id') or ''}:{record.get('label') or ''}")
         elif event_type == "evidence_attested":
             evidence_id = str(record["evidence_id"])
             session.ledger._records[evidence_id] = EvidenceRecord(
@@ -3440,8 +3818,20 @@ def _restore_session(session: RuntimeSession) -> None:
                 evidence_refs=tuple(record.get("evidence_refs") or ()),
                 recorded_at=session.statework_entry_times[key], statework_id=key[0]))
             transition = record.get("transition") or {}
-            progress_class = str(transition.get("progress_class")
-                                 or record.get("progress_class") or "LATERAL")
+            csw_progress_class = str(record.get("csw_progress_class")
+                                      or transition.get("progress_class")
+                                      or "LATERAL")
+            if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
+                progress_class = "RECOVERY_PROGRESS"
+            elif csw_progress_class == "TERMINAL":
+                progress_class = "VERIFICATION_PROGRESS"
+            else:
+                progress_class = "DIAGNOSTIC_PROGRESS"
+            session.system_one_projector.record_csw_fact(
+                statework_id=key[0], subject_ref=key[1],
+                input_state=str(record["input_state"]),
+                output_state=str(record["output_state"]),
+                progress_class=csw_progress_class)
             if session.convergence is not None:
                 progress_digest = hashlib.sha256(json.dumps({
                     "statework_id": key[0], "subject_ref": key[1],
@@ -3449,15 +3839,24 @@ def _restore_session(session: RuntimeSession) -> None:
                     "output_state": record.get("output_state"),
                     "edge_id": transition.get("edge_id"),
                 }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-                if progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
+                if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
                     session.convergence.record_recovery_epoch(
                         cause_id="primary-objective")
-                else:
+                elif csw_progress_class == "TERMINAL":
                     evidence_refs = list(record.get("evidence_refs") or ())
                     session.convergence.record_progress(
                         cause_id="primary-objective", progress_digest=progress_digest,
                         progress_class="VERIFICATION_PROGRESS",
                         evidence_ref=evidence_refs[-1] if evidence_refs else None)
+                elif csw_progress_class == "FORWARD_PROGRESS":
+                    evidence_refs = list(record.get("evidence_refs") or ())
+                    session.convergence.record_progress(
+                        cause_id="primary-objective", progress_digest=progress_digest,
+                        progress_class="DIAGNOSTIC_PROGRESS",
+                        evidence_ref=evidence_refs[-1] if evidence_refs else None)
+                else:
+                    session.convergence.record_support_action(
+                        cause_id="primary-objective")
         elif event_type == "handoff_attested":
             session.handoffs[str(record["packet_id"])] = {
                 "packet_id": record["packet_id"], "producer": record.get("producer"),
@@ -3573,6 +3972,11 @@ def context_for(session: RuntimeSession) -> str:
             f"No primary-deliverable progress in {support_count} support actions. "
             f"Primary outcome: {goal.get('objective', '')}\n"
             "Next action must advance a required criterion or establish a concrete blocker.")
+    if (session._system_one_policy().mode == "advisory"
+            and session.system_one_advisories):
+        parts.append("===== CALIBRATED SYSTEM-1 ADVISORY =====\n" +
+                     "\n".join(session.system_one_advisories[-4:]) +
+                     "\nHost permissions, evidence requirements, retry limits, and completion checks remain authoritative.")
     active_stages = [stage for stage in session.bundle.kernel
                      if stage in session.active_lifecycle]
     if not active_stages:

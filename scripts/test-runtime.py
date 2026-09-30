@@ -357,7 +357,7 @@ def main() -> int:
     schema_bundle = resolve.resolve("schema-pin", "quick")
     check("telemetry pins exact DP schema hash/version",
           telemetry.schema_hash == schema_bundle.policy.behavior_event_schema_hash and
-          telemetry.schema_version == "2.2.0")
+          telemetry.schema_version == "2.3.0")
     try:
         telemetry.emit({"category": "NOT_A_CATEGORY", "payload": {"secret": "leak"}})
         check("host telemetry schema bypass rejected", False, "invalid event persisted")

@@ -7,6 +7,60 @@ import json
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
+SYSTEM_ONE_PROTOCOL_VERSION = "1.0.0"
+SYSTEM_ONE_PROTOCOL_HASH = "abba6a690fab64dae9a7595d71209106fb14f285e7f490c2194476be19f3e048"
+
+
+@dataclass(frozen=True)
+class SystemOnePolicy:
+    """Pinned identity and mode for optional semantic judgments.
+
+    The default is shadow-only with an explicit null provider.  A host that
+    wants a real backend must declare its immutable identity before resolve().
+    """
+    mode: str = "shadow"
+    backend_id: str = "null"
+    model_id: str = "none"
+    protocol_version: str = SYSTEM_ONE_PROTOCOL_VERSION
+    protocol_hash: str = SYSTEM_ONE_PROTOCOL_HASH
+    calibration_hash: str = ""
+    max_latency_ms: int = 200
+    cache_size: int = 128
+    minimum_confidence: float = 0.9
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"disabled", "shadow", "advisory"}:
+            raise ValueError("System-1 mode must be disabled, shadow, or advisory")
+        for name in ("backend_id", "model_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or len(value) > 256:
+                raise ValueError(f"System-1 {name} must be bounded non-empty text")
+        if self.protocol_version != SYSTEM_ONE_PROTOCOL_VERSION:
+            raise ValueError("unsupported System-1 protocol version")
+        if self.protocol_hash != SYSTEM_ONE_PROTOCOL_HASH:
+            raise ValueError("unsupported System-1 protocol hash")
+        if self.calibration_hash and (
+                len(self.calibration_hash) != 64
+                or any(ch not in "0123456789abcdef" for ch in self.calibration_hash)):
+            raise ValueError("System-1 calibration_hash must be a lowercase SHA-256 digest")
+        if not isinstance(self.max_latency_ms, int) or not 1 <= self.max_latency_ms <= 250:
+            raise ValueError("System-1 max_latency_ms must be between 1 and 250")
+        if not isinstance(self.cache_size, int) or not 0 <= self.cache_size <= 4096:
+            raise ValueError("System-1 cache_size must be between 0 and 4096")
+        if not isinstance(self.minimum_confidence, (int, float)) or not 0 <= self.minimum_confidence <= 1:
+            raise ValueError("System-1 minimum_confidence must be between 0 and 1")
+        if self.mode == "advisory" and (
+                not self.calibration_hash or self.backend_id == "null" or self.model_id == "none"):
+            raise ValueError("advisory mode requires pinned backend, model, and calibration identities")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"mode": self.mode, "backend_id": self.backend_id,
+                "model_id": self.model_id, "protocol_version": self.protocol_version,
+                "protocol_hash": self.protocol_hash,
+                "calibration_hash": self.calibration_hash,
+                "max_latency_ms": self.max_latency_ms, "cache_size": self.cache_size,
+                "minimum_confidence": float(self.minimum_confidence)}
+
 
 @dataclass(frozen=True)
 class AcceptanceCriterion:
@@ -161,6 +215,7 @@ class TaskRequest:
     # The model-facing request cannot mutate this mapping after construction.
     action_registry: Mapping[str, Any] = field(default_factory=dict, repr=False)
     goal_contract: Optional[TaskGoalContract] = None
+    system_one_policy: SystemOnePolicy = field(default_factory=SystemOnePolicy)
 
     def __post_init__(self) -> None:
         for name in ("task_id", "application_id", "namespace_id"):
@@ -226,3 +281,9 @@ class TaskRequest:
             values["verification_policy"] = VerificationPolicy(**dict(values.get("verification_policy") or {}))
             contract = TaskGoalContract(**values)
         object.__setattr__(self, "goal_contract", contract)
+        system_one_policy = self.system_one_policy
+        if not isinstance(system_one_policy, SystemOnePolicy):
+            if not isinstance(system_one_policy, Mapping):
+                raise ValueError("system_one_policy must be a SystemOnePolicy or mapping")
+            system_one_policy = SystemOnePolicy(**dict(system_one_policy))
+        object.__setattr__(self, "system_one_policy", system_one_policy)
