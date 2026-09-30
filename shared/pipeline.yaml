@@ -50,6 +50,9 @@ stages:
     frequency: per_task
     suppression_condition: single-turn stateless answer
     runtime_cost_class: low
+    activation_predicates:
+      - event: task_start
+        predicate: task.nontrivial
   - id: dox_load
     owner: dox
     activation_rule: editing inside a DOX-enabled project

@@ -25,14 +25,37 @@ class CompletionBoundaryGateV1:
         return None if claim is not None else "require_reinspection"
 
 
-class RetryHypothesisGateV1:
-    version = "1"
+class RetryHypothesisGateV2:
+    """Bounded, host-state convergence gate.
+
+    V1 required reinspection before *every* retry forever, which cannot be
+    satisfied and turns a reasonable harness loop into an endless
+    reinspect/retry cycle. V2 asks the host-owned convergence ledger whether
+    fresh evidence and a materially different hypothesis exist.
+    """
+
+    version = "2"
     hooks = ("before_retry",)
 
     @staticmethod
-    def before_retry(_session: Any, _request: Any,
-                     _enforcement: Mapping[str, Any]) -> Optional[Any]:
-        return "require_reinspection"
+    def before_retry(session: Any, request: Any,
+                     enforcement: Mapping[str, Any]) -> Optional[Any]:
+        controller = getattr(session, "convergence", None)
+        if controller is None:
+            # No host convergence state: fail closed to reinspection rather
+            # than granting an unbounded retry loop.
+            return "require_reinspection"
+        parameters = dict(enforcement.get("parameters") or {})
+        cause_id = str(parameters.get("cause_id")
+                       or getattr(request, "binding_id", None)
+                       or getattr(session.bundle.task_id, "__str__", lambda: "task")())
+        parameters.setdefault("max_recovery_epochs_without_progress", 3)
+        return controller.evaluate_retry(
+            cause_id=cause_id,
+            action_fingerprint=str(getattr(request, "binding_id", "") or ""),
+            hypothesis_fingerprint=str(parameters.get("hypothesis_fingerprint") or ""),
+            premise_digest=parameters.get("premise_digest"),
+            failure_digest=parameters.get("failure_digest"))
 
 
 class ContradictionReinspectionGateV1:
@@ -77,7 +100,7 @@ STRUCTURAL_HANDLERS = {
     "stale_model.reinspect": ContradictionReinspectionGateV1,
     "completion.boundary_evidence": CompletionBoundaryGateV1,
     "contradiction.reinspect": ContradictionReinspectionGateV1,
-    "retry.changed_hypothesis": RetryHypothesisGateV1,
+    "retry.changed_hypothesis": RetryHypothesisGateV2,
     "authority.boundaries": AuthorityBoundariesGateV1,
     "tool_gate.bad_action": AuthorityBoundariesGateV1,
 }
@@ -122,7 +145,15 @@ HANDLER_PARAMETER_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "type": "object", "properties": {}, "additionalProperties": False,
     },
     "retry.changed_hypothesis": {
-        "type": "object", "properties": {}, "additionalProperties": False,
+        "type": "object",
+        "properties": {
+            "cause_id": {"type": "string", "minLength": 1, "maxLength": 256},
+            "hypothesis_fingerprint": {"type": "string", "maxLength": 256},
+            "premise_digest": {"type": ["string", "null"], "maxLength": 256},
+            "failure_digest": {"type": ["string", "null"], "maxLength": 256},
+            "max_recovery_epochs_without_progress": {"type": "integer", "minimum": 1},
+        },
+        "additionalProperties": False,
     },
 }
 

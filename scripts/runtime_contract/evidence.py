@@ -60,6 +60,35 @@ class CompletionPermit:
 
 
 @dataclass(frozen=True)
+class TerminationPermit:
+    """Terminal disposition for work that must stop without faking success.
+
+    Separate from ``CompletionPermit`` on purpose: completing a task and
+    legitimately stopping one are different claims with different evidence.
+    """
+
+    task_id: str
+    policy_hash: str
+    subject_ref: Optional[str]
+    disposition: str
+    cause_id: str
+    reason: str
+    claim_digest: str
+    evidence_refs: tuple[str, ...]
+    issued_at: str
+    session_nonce: str
+    authority_revision: int = 0
+    last_verified_state: Optional[str] = None
+    unresolved_blockers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.disposition not in {"BLOCKED", "FAILED", "HANDOFF"}:
+            raise ValueError("termination permit disposition must be BLOCKED, FAILED or HANDOFF")
+        if not self.reason or len(self.reason) > 512:
+            raise ValueError("termination permit requires a bounded reason")
+
+
+@dataclass(frozen=True)
 class EvidenceAttestation:
     """Host-issued provenance for an observation.
 

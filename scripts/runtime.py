@@ -47,8 +47,10 @@ from runtime_contract.actions import (
 )
 from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
                                         EvidenceAttestation, EvidenceLedger,
-                                        EvidenceRecord, StateSegment,
+                                        EvidenceRecord, StateSegment, TerminationPermit,
                                         completion_claim_digest)
+from runtime_contract.convergence import (ConvergenceController, ConvergenceIdentity,
+                                           TERMINAL_DISPOSITIONS)
 from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema_contract
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
 from runtime_contract.operator_events import OperatorEvent
@@ -157,6 +159,7 @@ class GateDecision(Enum):
     REQUIRE_CONFIRMATION = "require_confirmation"
     REQUIRE_REINSPECTION = "require_reinspection"
     REQUIRE_RECOVERY = "require_recovery"
+    REQUIRE_CHANGED_HYPOTHESIS = "require_changed_hypothesis"
 
 
 DEFAULT_ACTION_REGISTRY: Dict[str, ActionDescriptor] = default_action_registry()
@@ -168,8 +171,16 @@ class LifecycleController:
     def __init__(self, bundle: resolve_runtime.RuntimeBundle) -> None:
         self.bundle = bundle
         self.specs = {item["stage"]: item for item in bundle.kernel_instructions}
-        self.active: set[str] = set()
+        # Three lifetimes, not one: task activation, segment-visible
+        # context, and per-action/per-response activation.
+        self.task_active: set[str] = set()
+        self.segment_active: set[str] = set()
         self.counts: Dict[str, int] = {}
+
+    @property
+    def active(self) -> set[str]:
+        """Everything currently visible to the model in this segment."""
+        return self.segment_active | self.task_active
 
     def activate(self, stage: str, reason: str) -> None:
         spec = self.specs.get(stage)
@@ -178,7 +189,8 @@ class LifecycleController:
         frequency = spec.get("frequency")
         if frequency in {"per_task", "per_response"} and self.counts.get(stage, 0):
             return
-        self.active.add(stage)
+        self.segment_active.add(stage)
+        self.task_active.add(stage)
         self.counts[stage] = self.counts.get(stage, 0) + 1
 
     @staticmethod
@@ -209,10 +221,32 @@ class LifecycleController:
                 str(item.get("predicate")), context) for item in predicates):
             self.activate(stage, f"predicate:{event}")
 
-    def on_task_start(self) -> None:
+    def on_task_start(self, context: Optional[Mapping[str, Any]] = None) -> None:
+        """Dispatch declared activation, not an implicit execution mode.
+
+        ``execution_mode`` describes how a stage behaves once active. Whether
+        an event activates it is declared separately by ``activation_predicates``
+        (or by the preflight convention). Conflating the two made
+        ``anchor_open`` — declared ``state`` + ``task_start`` — never activate.
+        """
+        payload = dict(context or {})
         for stage, spec in self.specs.items():
             if spec.get("execution_mode") == "preflight":
                 self.activate(stage, "task_start")
+        for stage in self.specs:
+            self.activate_predicates(stage, "task_start", payload)
+
+    def reset_for_segment(self) -> None:
+        """Start a fresh model subcall without re-running task activation.
+
+        Re-injecting context into a new segment is not re-executing the task.
+        Task-scoped activation and counts survive segment boundaries; only
+        per-action/per-response visibility is rebuilt.
+        """
+        # Reinjection is not re-execution: task-scoped activation persists
+        # across segments; per-action/per-response visibility is rebuilt.
+        self.segment_active = {stage for stage in self.task_active
+                              if self.specs.get(stage, {}).get("frequency") == "per_task"}
 
     def on_model_call(self, *, tool_capable: bool = False,
                       action_hint: Optional[ActionDescriptor] = None) -> None:
@@ -233,16 +267,6 @@ class LifecycleController:
         if descriptor is not None:
             self.activate_predicates("ward", "action", descriptor.__dict__)
 
-    def reset_for_segment(self) -> None:
-        """Start a fresh model subcall without carrying visible activation.
-
-        A segment is an immutable prompt boundary.  Its lifecycle state must
-        not leak from the preceding StateWork, otherwise a supposedly
-        exclusive prerequisite chain becomes a single mixed context.
-        """
-        self.active.clear()
-        self.counts.clear()
-        self.on_task_start()
 
     def on_action(self, decision: GateDecision,
                   descriptor: Optional[ActionDescriptor] = None) -> None:
@@ -654,6 +678,19 @@ class HostIngress:
             evaluator_id=evaluator_id, evidence_refs=evidence_refs,
             subject_ref=subject_ref)
 
+    def request_termination(self, *, disposition: str, reason: str, cause_id: str,
+                           evidence_refs: Iterable[str] = (),
+                           last_verified_state: Optional[str] = None,
+                           unresolved_blockers: Iterable[str] = ()) -> TerminationPermit:
+        return self._session.request_termination(
+            self._capability, disposition=disposition, reason=reason, cause_id=cause_id,
+            evidence_refs=evidence_refs, last_verified_state=last_verified_state,
+            unresolved_blockers=unresolved_blockers)
+
+    def finish_task_terminated(self, output: Optional[Dict[str, Any]] = None,
+                               *, permit: Optional[TerminationPermit] = None) -> Dict[str, Any]:
+        return self._session.finish_task_terminated(output, permit=permit)
+
     def publish_handoff(self, packet: Dict[str, Any], *,
                         observation_context: Optional[Mapping[str, Any]] = None) -> str:
         return self._session._publish_handoff(
@@ -886,6 +923,9 @@ class RuntimeSession:
     policy_revocation_authority: Optional[PolicyRevocationAuthority] = None
     membership_authority: Optional[SharedWorkflowMembershipAuthority] = None
     operator_read_model: Optional[Any] = None
+    convergence: Optional[ConvergenceController] = None
+    termination_disposition: str = "RUNNING"
+    termination_permit: Optional[Any] = None
     _operator_sequence: int = 0
     runtime_mode: str = "standalone_enforcing"
     host_context: HostExecutionContext = field(default_factory=HostExecutionContext)
@@ -944,6 +984,7 @@ class RuntimeSession:
                 "shared_evidence_refs", "delegation_topology", "premise_digest", "failure_attribution",
                 "adopted_profile_hashes", "execution_identity", "shared_workflow_membership", "policy_revocation_revision", "revocation_mode",
                 "policy_revocation_authority", "membership_authority", "operator_read_model",
+                "convergence",
                 "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
                 "runtime_mode"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
@@ -1179,8 +1220,9 @@ class RuntimeSession:
             GateDecision.ALLOW: 0,
             GateDecision.REQUIRE_CONFIRMATION: 1,
             GateDecision.REQUIRE_REINSPECTION: 2,
-            GateDecision.REQUIRE_RECOVERY: 3,
-            GateDecision.BLOCK: 4,
+            GateDecision.REQUIRE_CHANGED_HYPOTHESIS: 3,
+            GateDecision.REQUIRE_RECOVERY: 4,
+            GateDecision.BLOCK: 5,
         }
         return left if rank[left] >= rank[right] else right
 
@@ -1345,6 +1387,9 @@ class RuntimeSession:
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
         """Dispatch retry-specific structural handlers at the host boundary."""
         action = self._request(request)
+        if self.termination_disposition in TERMINAL_DISPOSITIONS:
+            # A terminated task must not be revived by a retry request.
+            return GateDecision.BLOCK
         for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
             if enforcement.get("mode") != "structural":
                 continue
@@ -1355,7 +1400,92 @@ class RuntimeSession:
                     return GateDecision.BLOCK
                 if result == "require_reinspection":
                     return GateDecision.REQUIRE_REINSPECTION
+                if result == "require_changed_hypothesis":
+                    return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
         return GateDecision.ALLOW
+
+    def request_termination(self, capability: _HostCapability, *,
+                           disposition: str, reason: str, cause_id: str,
+                           evidence_refs: Iterable[str] = (),
+                           last_verified_state: Optional[str] = None,
+                           unresolved_blockers: Iterable[str] = ()) -> TerminationPermit:
+        """Terminate as blocked/failed/handoff without claiming success."""
+        self._require_host(capability)
+        if disposition not in {"BLOCKED", "FAILED", "HANDOFF"}:
+            raise ValueError("termination disposition must be BLOCKED, FAILED or HANDOFF")
+        if self.termination_disposition == "SUCCEEDED":
+            raise PermissionError("a completed task cannot be re-terminated")
+        resolved_refs: list[str] = []
+        for ref in evidence_refs:
+            record = self.ledger.get(str(ref))
+            if record is None or record.invalidated:
+                continue
+            resolved_refs.append(str(ref))
+        claim_digest = hashlib.sha256(json.dumps({
+            "task_id": self.bundle.task_id, "policy_hash": self.bundle.pinned["policy_hash"],
+            "subject_ref": self.bundle.policy.subject_ref, "disposition": disposition,
+            "cause_id": cause_id, "reason": reason, "evidence_refs": sorted(resolved_refs),
+            "last_verified_state": last_verified_state,
+            "unresolved_blockers": sorted(str(item) for item in unresolved_blockers),
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+        permit = TerminationPermit(
+            task_id=self.bundle.task_id, policy_hash=self.bundle.pinned["policy_hash"],
+            subject_ref=self.bundle.policy.subject_ref, disposition=disposition,
+            cause_id=cause_id, reason=reason, claim_digest=claim_digest,
+            evidence_refs=tuple(sorted(resolved_refs)),
+            issued_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            session_nonce=self.session_nonce, authority_revision=self.authority_revision,
+            last_verified_state=last_verified_state,
+            unresolved_blockers=tuple(sorted(str(item) for item in unresolved_blockers)))
+        self.termination_disposition = disposition
+        self.termination_permit = permit
+        if self.convergence is not None:
+            self.convergence.terminate(disposition=disposition, reason=reason)
+            self._record_convergence(f"termination:{disposition}")
+        self._journal("task_terminated", disposition=disposition, reason=reason,
+                      cause_id=cause_id, claim_digest=claim_digest,
+                      evidence_refs=list(permit.evidence_refs),
+                      last_verified_state=last_verified_state,
+                      unresolved_blockers=list(permit.unresolved_blockers))
+        # behavior-event.schema.json forbids extra top-level fields, so causal
+        # lineage travels in the bounded payload rather than a new column.
+        event = {"category": "blocker", "event_type": "task_terminated",
+                 "subject": self.bundle.policy.subject_ref,
+                 "payload": {"summary": reason, "result_class": disposition,
+                             # cause lineage travels in the bounded `reason`
+                             # field; the payload schema is closed.
+                             "reason": cause_id}}
+        # A blocker may legitimately have no evidence refs; the schema requires
+        # a non-empty list when the field is present, so omit it rather than
+        # inventing a reference.
+        if permit.evidence_refs:
+            event["evidence_refs"] = list(permit.evidence_refs)
+        self._emit_runtime(event)
+        return permit
+
+    def finish_task_terminated(self, output: Optional[Dict[str, Any]] = None,
+                               *, permit: Optional[TerminationPermit] = None) -> Dict[str, Any]:
+        """Finalize a blocked/failed/handoff task using its TerminationPermit."""
+        permit = permit or self.termination_permit
+        if permit is None or not isinstance(permit, TerminationPermit):
+            raise PermissionError("termination requires a host-issued TerminationPermit")
+        if permit.task_id != self.bundle.task_id or permit.policy_hash != self.bundle.pinned["policy_hash"]:
+            raise PermissionError("termination permit is not bound to this task/policy")
+        if permit.session_nonce != self.session_nonce or permit is not self.termination_permit:
+            raise PermissionError("termination permit is not bound to this runtime session")
+        if permit.disposition != self.termination_disposition:
+            raise PermissionError("termination permit disposition disagrees with the runtime")
+        if permit.authority_revision != self.authority_revision:
+            raise PermissionError("termination permit predates a later authority revision")
+        return self._render_output({
+            **(dict(output) if output else {}),
+            "status": permit.disposition.lower(),
+            "reason": permit.reason,
+            "cause_id": permit.cause_id,
+            "completed": False,
+            "last_verified_state": permit.last_verified_state,
+            "unresolved_blockers": list(permit.unresolved_blockers),
+        }, complete=True)
 
     def on_artifact(self, *, flow_triggered: bool = False,
                     durable_contract_changed: bool = False,
@@ -1397,6 +1527,13 @@ class RuntimeSession:
             else:
                 self._emit(event)
         return event.get("event_id", "")
+
+    def _record_convergence(self, reason: str) -> None:
+        """Persist convergence state so resume cannot erase the budget."""
+        if self.convergence is None:
+            return
+        self._journal("convergence_recorded", reason=reason,
+                      convergence=self.convergence.export())
 
     def _journal(self, event_type: str, **fields: Any) -> None:
         """Commit SQLite/WAL authority first, then derive NDJSON.
@@ -1654,15 +1791,20 @@ class RuntimeSession:
         if evaluator_id != expected_evaluator:
             raise ValueError(f"unknown route evaluator {evaluator_id!r}")
         resolved = self.ledger.resolve(list(evidence_refs), subject_ref=self.bundle.policy.subject_ref)
-        outcome = "bad"
+        # Tri-state: absence of success evidence is NOT failure evidence.
+        outcome = "not_applicable"
         for ref in resolved:
             record = self.ledger.get(ref["ref"])
             if record is None or record.kind != "validation_result":
                 continue
             invocation = self.host_invocations.get(record.invocation_id or "", {})
             actual = invocation.get("actual_result") or {}
-            if str(actual.get("status") or actual.get("result") or "").lower() in {"pass", "passed", "success", "ok"}:
+            status = str(actual.get("status") or actual.get("result") or "").lower()
+            if status in {"pass", "passed", "success", "ok"}:
                 outcome = "good"
+                break
+            if status in {"fail", "failed", "failure", "error"}:
+                outcome = "bad"
                 break
         event_id = f"evt-{uuid.uuid4()}"
         outcome_payload = {
@@ -1685,12 +1827,31 @@ class RuntimeSession:
             "routing_cohort": decision.get("routing_cohort"),
             "policy_identity": decision.get("policy_identity"),
         }.items() if value is not None})
+        # An outcome needs an origin and an intended subject: "task-123 got a
+        # retry failure" is ambiguous when several agents share that task.
         self.route_outcomes[event_id] = {
             "event_id": event_id,
             "route_decision_id": route_decision_id,
             "evaluator_id": evaluator_id,
             "outcome": outcome,
             "evidence_refs": list(evidence_refs),
+            "origin": {
+                "agent_instance_id": self.agent_instance_id,
+                "session_id": self.session_id,
+                "attempt_id": self.attempt_id,
+                "delegation_id": self.delegation_id,
+                "interaction_id": self.interaction_id,
+                "parent_decision_ref": self.parent_decision_ref,
+                "premise_digest": self.premise_digest,
+                "failure_attribution": self.failure_attribution,
+            },
+            "target": {
+                "scope": (self.shared_workflow_membership or {}).get("workflow_id")
+                          and "shared_workflow" or "agent_private",
+                "workflow_id": (self.shared_workflow_membership or {}).get("workflow_id"),
+                "interaction_id": self.interaction_id,
+                "agent_instance_id": self.agent_instance_id,
+            },
         }
         self._journal("route_outcome_recorded", event_id=event_id,
                       outcome=dict(self.route_outcomes[event_id]))
@@ -2472,6 +2633,16 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
         agent_instance_id=session.agent_instance_id,
         session_id=session.session_id, task_id=bundle.task_id,
         attempt_id=session.attempt_id, interaction_id=session.interaction_id)
+    session.convergence = ConvergenceController(identity={
+        "namespace_id": session.execution_identity.namespace_id,
+        "application_instance_id": session.execution_identity.application_instance_id,
+        "agent_instance_id": session.execution_identity.agent_instance_id,
+        "session_id": session.execution_identity.session_id,
+        "task_id": session.execution_identity.task_id,
+        "attempt_id": session.execution_identity.attempt_id,
+        "interaction_id": session.execution_identity.interaction_id,
+    }, max_recovery_epochs_without_progress=int(
+        bundle.pinned.get("max_recovery_epochs_without_progress", 3) or 3))
     if runtime_mode == "combined_enforcing":
         if state_authority is None:
             raise ValueError("combined_enforcing requires an injected shared StateAuthority")
@@ -2681,6 +2852,9 @@ def _restore_session(session: RuntimeSession) -> None:
                 session.policy_revocation_revision,
                 int(record.get("policy_revocation_revision", 0) or 0))
             session.revocation_mode = str(record.get("revocation_mode") or session.revocation_mode)
+        elif event_type == "convergence_recorded":
+            if session.convergence is not None:
+                session.convergence.restore(record.get("convergence") or {})
         elif event_type == "route_decision_recorded":
             decision_id = str(record.get("decision_id") or record.get("route_decision_id") or "")
             if decision_id:
@@ -2859,6 +3033,13 @@ def context_for(session: RuntimeSession) -> str:
         active_handoff = handoff[min(session.current_segment_index, len(handoff) - 1)]
         parts.append("\n===== ACTIVE HANDOFF =====\n" +
                      f"- {active_handoff['producer']} -> {active_handoff['packet']}")
+    if session.convergence is not None:
+        blocks = [state.compact_state_block(
+            max_recovery_epochs_without_progress=session.convergence.max_recovery_epochs_without_progress)
+                  for state in session.convergence.states()]
+        blocks = [block for block in blocks if block]
+        if blocks:
+            parts.append("\n===== CONVERGENCE =====\n" + "\n\n".join(blocks))
     action_hint = session._action_strategy_hint()
     if action_hint:
         parts.append(action_hint)

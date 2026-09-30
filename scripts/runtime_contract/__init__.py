@@ -16,7 +16,7 @@ from .task import TaskRequest
 __all__ = [
     "ActionDescriptor", "AgentActionRequest", "ConfirmationGrant", "HostExecutionContext",
     "EvidenceAttestation", "EvidenceLedger", "EvidenceRecord", "StateSegment",
-    "CompletionClaim", "CompletionPermit", "completion_claim_digest",
+    "CompletionClaim", "CompletionPermit", "TerminationPermit", "completion_claim_digest",
     "VALIDATOR_REGISTRY", "evaluate_validator", "validator_registry_hash",
     "SUPPORTED_HANDLERS", "enforcement_for_guard", "validate_enforcement",
     "ExecutionSegment",

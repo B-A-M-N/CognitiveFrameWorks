@@ -260,3 +260,53 @@ def test_shared_profile_artifact_requires_host_verifier(tmp_path):
         path, sharing_verifier=lambda decision, scope, candidate: authority.verify_decision(
             decision, target_scope=scope, candidate_hash=candidate))
     assert loaded[0]["profile_hash"] == shared["profile_hash"]
+
+
+def test_every_declared_activation_predicate_has_a_dispatch_path():
+    """Execution mode and activation condition are separate concepts."""
+    import yaml
+    from pathlib import Path as _Path
+    manifest = yaml.safe_load((_Path(__file__).resolve().parents[1] / "shared" / "pipeline.yaml").read_text())
+    events = {"task_start", "action", "artifact", "completion"}
+    for stage in manifest["stages"]:
+        for predicate in stage.get("activation_predicates") or []:
+            assert predicate.get("event") in events, (stage["id"], predicate)
+
+
+def test_state_execution_mode_stages_can_still_activate_on_declared_events(tmp_path, monkeypatch):
+    from tests.test_combined_authorities import _runtime_modules
+    resolve, runtime = _runtime_modules()
+    monkeypatch.setattr(resolve, "runtime_state_dir", lambda: tmp_path)
+    bundle = resolve.resolve("state-mode-activation", "implement")
+    session = runtime.start(bundle, session_nonce="state-mode", telemetry_disabled=True)
+    # A model call is what dispatches action/artifact/completion predicates.
+    session.before_model_call(tool_capable=True)
+    controller = session.lifecycle
+    declared = {stage for stage, spec in controller.specs.items()
+                if spec.get("activation_predicates")}
+    assert declared & controller.active, "declared activation predicates never dispatched"
+
+
+def test_route_outcome_never_defaults_to_failure_without_evidence(tmp_path, monkeypatch):
+    """Absence of success evidence must not become failure evidence."""
+    from tests.test_combined_authorities import _runtime_modules
+    resolve, runtime = _runtime_modules()
+    monkeypatch.setattr(resolve, "runtime_state_dir", lambda: tmp_path)
+    session = runtime.start(resolve.resolve("tri-state", "implement"),
+                            session_nonce="tri-state", telemetry_disabled=True)
+    host = session._host_ingress()
+    decision_id = host.record_route_decision(
+        route="owl", route_type="stage", selection_reason="host_selected")
+    invocation_id = "inv-tri-state"
+    host.record_tool_outcome("fixture", "pass", "subject",
+                             invocation_id=invocation_id,
+                             actual_result={"fresh": True, "status": "pass"})
+    evidence_ref = host.record_validator_result(
+        "reinspection-v1", invocation_id,
+        {"fresh": True, "status": "pass"}, "subject")
+    host.evaluate_route_outcome(route_decision_id=decision_id,
+                                evaluator_id="route-success-v1",
+                                evidence_refs=[evidence_ref])
+    outcomes = [item["outcome"] for item in session.route_outcomes.values()]
+    assert outcomes == ["good"], outcomes
+    assert "bad" not in outcomes
