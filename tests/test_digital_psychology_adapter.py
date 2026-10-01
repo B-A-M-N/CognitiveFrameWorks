@@ -38,31 +38,77 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
         "scope": "dp-runtime-" + "a" * 64, "expires_after_actions": 3,
         "intervention_id": "intv-dp-test",
     }
-    prepared = adapter.prepare_behavior_directives((directive,))
+    fuse_directive = {
+        **directive,
+        "directive_id": "dir-dp-fuse-test",
+        "target": "fuse",
+        "value": "constrained",
+    }
+    prepared = adapter.prepare_behavior_directives((directive, fuse_directive))
     behavior_state = {
         "revision": 1,
         "cognitive_mode": "RECOVER",
-        "framework_modes": {"owl": "off", "anchor": "passive", "fuse": "normal",
+        "framework_modes": {"owl": "off", "anchor": "passive", "fuse": "constrained",
                              "ward": "mandatory", "flow": "off", "sispis": "normal",
                              "dox": "off"},
         "active_stateworks": [], "focus_criteria": [],
+        "attention_lease": None, "attention_last_seen": {},
         "verification_intensity": "normal", "exploration_budget": "normal",
         "retry_policy": "normal", "recovery_level": 0,
         "context_strategy": "standard", "response_strategy": "direct",
         "active_interventions": [], "intervention_history": [],
     }
 
-    assert adapter.apply_behavior_directives(prepared, behavior_state) == ("dir-dp-test",)
+    assert adapter.apply_behavior_directives(prepared, behavior_state) == (
+        "dir-dp-test", "dir-dp-fuse-test")
+    assert adapter._session.external_behavior_state["framework_modes"]["fuse"] == "constrained"
     context = adapter.before_model_call("DP behavior projection", tool_capable=True)
     assert "APPLIED DIGITAL PSYCHOLOGY CONTROLS" in context
     assert "set_framework owl=off" in context
+    assert "set_framework fuse=constrained" in context
     assert "DP behavior projection" in context
     assert "ACTIVE PIPELINE: owl" not in context
     assert "===== OWL =====" not in context
     assert "===== WARD =====" in context
+
+    malformed = dict(behavior_state)
+    malformed["revision"] = 2
+    malformed["focus_criteria"] = ["one", "two", "three", "four"]
+    malformed["attention_lease"] = {
+        "lease_id": "attn-test", "criterion_ids": malformed["focus_criteria"],
+        "issued_revision": 2, "goal_set_revision": 1, "start_action": 1,
+        "max_actions": 3, "reason": "test",
+    }
+    try:
+        adapter._session.apply_external_behavior_state(malformed)
+    except ValueError as exc:
+        assert "attention lease" in str(exc)
+    else:
+        raise AssertionError("CFW accepted an attention lease wider than three criteria")
 
     adapter.rollback_behavior_directives(prepared)
     restored = adapter.before_model_call("DP behavior projection")
     assert "set_framework owl=off" not in restored
     assert "===== OWL =====" in restored
     task.close()
+
+
+def test_cfw_criterion_ledger_keeps_more_than_eight_items_and_rejects_overflow():
+    from runtime_contract.metacognition import MetacognitiveState
+
+    state = MetacognitiveState()
+    state.ensure_criteria({"acceptance_criteria": [{
+        "criterion_id": f"criterion-{index}", "claim": f"Claim {index}",
+        "kind": "functional",
+    } for index in range(12)]})
+    assert len(state.criteria) == 12
+
+    try:
+        state.ensure_criteria({"acceptance_criteria": [{
+            "criterion_id": f"overflow-{index}", "claim": f"Claim {index}",
+            "kind": "functional",
+        } for index in range(257)]})
+    except ValueError as exc:
+        assert "256-criterion" in str(exc)
+    else:
+        raise AssertionError("CFW accepted a task set beyond the runtime contract")

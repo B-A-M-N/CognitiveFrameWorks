@@ -109,7 +109,6 @@ class CFWBehaviorAdapter:
         if not isinstance(behavior_state, Mapping):
             raise TypeError("DP behavior state must be a mapping")
         self._validate_directive_state(prepared.directives, behavior_state)
-        self._session.apply_external_behavior_state(behavior_state)
         controls = dict(self._controls)
         for directive in prepared.directives:
             applied = dict(directive)
@@ -118,6 +117,7 @@ class CFWBehaviorAdapter:
             controls[self._target_key(directive)] = applied
         if len(controls) > 16:
             raise ValueError("CFW active behavior-control set exceeds its bound")
+        self._session.apply_external_behavior_state(behavior_state)
         self._controls = controls
         self._behavior_state = json.loads(
             json.dumps(dict(behavior_state), sort_keys=True))
@@ -133,14 +133,16 @@ class CFWBehaviorAdapter:
     def rollback_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch) -> None:
         if not isinstance(prepared, PreparedBehaviorDirectiveBatch):
             raise TypeError("CFW directive batch was not prepared by this adapter")
-        self._controls = {key: dict(value)
-                          for key, value in prepared.prior_controls.items()}
         if prepared.prior_behavior_state is None:
             self._session.restore_external_behavior_startup()
             self._behavior_state = None
         else:
-            self._session.apply_external_behavior_state(prepared.prior_behavior_state)
+            self._session.rollback_external_behavior_state(
+                prepared.prior_behavior_state,
+                expected_current_revision=self._session.external_behavior_revision)
             self._behavior_state = dict(prepared.prior_behavior_state)
+        self._controls = {key: dict(value)
+                          for key, value in prepared.prior_controls.items()}
 
     def render_behavior_context(self, context: str, *,
                                 active_statework_ids: Sequence[str] = ()) -> str:

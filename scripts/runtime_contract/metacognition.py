@@ -418,7 +418,10 @@ class MetacognitiveState:
 
     def ensure_criteria(self, goal_contract: Mapping[str, Any]) -> None:
         """Initialize CFW's criterion ledger independently of provider availability."""
-        for item in list(goal_contract.get("acceptance_criteria") or ())[:8]:
+        declared = list(goal_contract.get("acceptance_criteria") or ())
+        if len(declared) > 256:
+            raise ValueError("CFW goal contract exceeds the 256-criterion task-set bound")
+        for item in declared:
             criterion_id = str(item.get("criterion_id") or "")[:128]
             if not criterion_id:
                 continue

@@ -1392,15 +1392,31 @@ class RuntimeSession:
         object.__setattr__(self, "external_behavior_authority", True)
         return self.available_component_ids()
 
+    @property
+    def external_behavior_revision(self) -> int:
+        return int(self.external_behavior_state.get("revision", -1))
+
     def apply_external_behavior_state(self, value: Mapping[str, Any]) -> None:
         """Materialize a DP-owned behavior state through CFW's declared API."""
+        self._materialize_external_behavior_state(value, allow_rollback=False)
+
+    def rollback_external_behavior_state(
+            self, value: Mapping[str, Any], *, expected_current_revision: int) -> None:
+        """Restore a prepared prior overlay with an exact revision guard."""
+        if expected_current_revision != self.external_behavior_revision:
+            raise RuntimeError("CFW behavior rollback revision changed; re-inspect required")
+        self._materialize_external_behavior_state(value, allow_rollback=True)
+
+    def _materialize_external_behavior_state(
+            self, value: Mapping[str, Any], *, allow_rollback: bool) -> None:
         if not self.external_behavior_authority:
             raise RuntimeError("external behavior authority has not been bound")
         if not isinstance(value, Mapping) or len(value) > 24:
             raise ValueError("DP behavior state must be a bounded mapping")
         expected_fields = {
             "revision", "cognitive_mode", "framework_modes", "active_stateworks",
-            "focus_criteria", "verification_intensity", "exploration_budget",
+            "focus_criteria", "attention_lease", "attention_last_seen",
+            "verification_intensity", "exploration_budget",
             "retry_policy", "recovery_level", "context_strategy",
             "response_strategy", "active_interventions", "intervention_history",
         }
@@ -1409,6 +1425,12 @@ class RuntimeSession:
         revision = value.get("revision")
         if type(revision) is not int or revision < 0:
             raise ValueError("DP behavior revision must be a non-negative integer")
+        prior_revision = self.external_behavior_revision
+        if not allow_rollback and revision < prior_revision:
+            raise ValueError("CFW rejects a stale DP behavior revision")
+        if (not allow_rollback and revision == prior_revision
+                and dict(value) != self.external_behavior_state):
+            raise ValueError("same DP behavior revision cannot carry different state")
         mode = value.get("cognitive_mode")
         behavior_modes = {"RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
                           "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}
@@ -1456,6 +1478,42 @@ class RuntimeSession:
                 or any(not isinstance(item, str) or not item or len(item) > 128
                        for item in focus)):
             raise ValueError("DP focus criteria are malformed")
+        attention_lease = value.get("attention_lease")
+        if attention_lease is not None:
+            lease_fields = {"lease_id", "criterion_ids", "issued_revision",
+                            "goal_set_revision", "start_action", "max_actions", "reason"}
+            lease_criteria = (attention_lease.get("criterion_ids")
+                              if isinstance(attention_lease, Mapping) else None)
+            if (not isinstance(attention_lease, Mapping)
+                    or set(attention_lease) != lease_fields
+                    or not isinstance(lease_criteria, (tuple, list))
+                    or tuple(lease_criteria) != tuple(focus)
+                    or len(focus) == 0
+                    or len(focus) > 3
+                    or len(focus) != len(set(focus))
+                    or not isinstance(attention_lease.get("lease_id"), str)
+                    or not attention_lease["lease_id"]
+                    or len(attention_lease["lease_id"]) > 128
+                    or type(attention_lease.get("issued_revision")) is not int
+                    or attention_lease["issued_revision"] < 0
+                    or attention_lease["issued_revision"] > revision
+                    or type(attention_lease.get("goal_set_revision")) is not int
+                    or attention_lease["goal_set_revision"] < 0
+                    or type(attention_lease.get("start_action")) is not int
+                    or attention_lease["start_action"] < 0
+                    or type(attention_lease.get("max_actions")) is not int
+                    or not 1 <= attention_lease["max_actions"] <= 8
+                    or not isinstance(attention_lease.get("reason"), str)
+                    or not attention_lease["reason"]
+                    or len(attention_lease["reason"]) > 128):
+                raise ValueError("DP attention lease is malformed or inconsistent")
+        attention_last_seen = value.get("attention_last_seen")
+        if (not isinstance(attention_last_seen, Mapping)
+                or len(attention_last_seen) > 256
+                or any(not isinstance(key, str) or not key or len(key) > 128
+                       or type(item) is not int or item < 0
+                       for key, item in attention_last_seen.items())):
+            raise ValueError("DP attention history is malformed")
 
         available = self.available_component_ids()
         stages_by_owner: dict[str, list[str]] = {}
@@ -5707,12 +5765,25 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
     if goal:
         criteria = list(goal.get("acceptance_criteria") or ())
         required = [item for item in criteria if item.get("required", True)]
+        if session.external_behavior_authority:
+            focus = set(session.external_behavior_state.get("focus_criteria") or ())
+            visible = [item for item in required
+                       if str(item.get("criterion_id") or "") in focus]
+            task_set_line = (
+                f"Complete required criterion set: {len(required)} items. "
+                "The host tracks every item; details below show only the current DP attention window.\n")
+            required = visible
+            criteria_label = "Required criteria in current attention window: "
+        else:
+            task_set_line = ""
+            criteria_label = "Required criteria: "
         parts.append(
             "===== TASK CONTRACT =====\n"
             f"Primary outcome: {goal.get('objective', '')}\n"
             f"Deliverable: {goal.get('deliverable_kind', 'unspecified')}; "
             f"work mode: {goal.get('work_mode', 'delivery')}\n"
-            "Required criteria: " + ("; ".join(
+            + task_set_line
+            + criteria_label + ("; ".join(
                 f"{item.get('criterion_id')}: {item.get('claim')}" for item in required
             ) or "none specified") + "\n"
             "Support work is subordinate to these criteria.\n"

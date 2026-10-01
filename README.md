@@ -22,7 +22,7 @@ Over time, that grew from a collection of behavioral protocols into a host-integ
 CognitiveFrameWorks is implemented as task-local enforcement and a component policy compiler:
 
 - **Task policy resolution** freezes an immutable policy snapshot for each task.
-- **Capability composition** supports CFW-only, CFW + CSW, and CFW + DP deployments. A missing StateWork checkout does not prevent an ordinary CFW-only task from resolving.
+- **Capability composition** supports CFW-only, CFW + CSW, CFW + DP, and the full CFW + CSW + DP deployment. A missing StateWork checkout does not prevent an ordinary CFW-only task from resolving.
 - **Safe adaptive advice** is applied only after the host computes eligible choices. Mandatory stages such as `WARD` cannot be suppressed, and malformed or ineligible advice is rejected as a whole.
 - **Action authority** remains host-owned. `ActionStrategy` provides bounded preference hints, but every action still passes the structural action gate.
 - **Evidence and telemetry** are separated: the runtime keeps local NDJSON telemetry, while the optional exporter provides bounded, cursor-based, event-ID-idempotent delivery to an external service.
@@ -56,6 +56,7 @@ The example resolves an `implement` task, shows the host action gate decision, a
 
 - **CFW alone:** required for the example above. No CSW or DP installation is loaded.
 - **CFW + CSW:** point `--statework-root` at a CognitiveStateWorks checkout. CSW owns workflow selection, state, evidence, and legal transitions; CFW supplies compatible component context and action gates.
+- **CFW + CSW + DP:** CFW and CSW keep those same authorities; DP uses their declared ports to coordinate bounded behavioral interventions and measures outcomes using host evidence.
 - **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, `RuntimeTaskHandle.digital_psychology_adapter()` exposes bounded CFW signals, reversible directives, and context projection to DP's runtime host. CFW still enforces permissions and mandatory stages.
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
