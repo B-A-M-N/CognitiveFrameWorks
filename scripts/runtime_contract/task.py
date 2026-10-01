@@ -7,24 +7,33 @@ import json
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
-SYSTEM_ONE_PROTOCOL_VERSION = "1.0.0"
-SYSTEM_ONE_PROTOCOL_HASH = "abba6a690fab64dae9a7595d71209106fb14f285e7f490c2194476be19f3e048"
+from .protocol_artifact import (PROTOCOL_HASH as SYSTEM_ONE_PROTOCOL_HASH,
+                                PROTOCOL_VERSION as SYSTEM_ONE_PROTOCOL_VERSION,
+                                QUESTION_REGISTRY_HASH,
+                                STATE_PROJECTION_SCHEMA_HASH)
+
+MAX_SYSTEM_ONE_LATENCY_MS = 30000
 
 
 @dataclass(frozen=True)
 class SystemOnePolicy:
     """Pinned identity and mode for optional semantic judgments.
 
-    The default is shadow-only with an explicit null provider.  A host that
+    The default is disabled with an explicit null provider.  A host that
     wants a real backend must declare its immutable identity before resolve().
     """
-    mode: str = "shadow"
+    mode: str = "disabled"
     backend_id: str = "null"
     model_id: str = "none"
+    model_revision: str = ""
+    model_content_hash: str = ""
+    provider_protocol_hash: str = ""
     protocol_version: str = SYSTEM_ONE_PROTOCOL_VERSION
     protocol_hash: str = SYSTEM_ONE_PROTOCOL_HASH
-    calibration_hash: str = ""
-    max_latency_ms: int = 200
+    question_registry_hash: str = QUESTION_REGISTRY_HASH
+    state_projection_schema_hash: str = STATE_PROJECTION_SCHEMA_HASH
+    calibration_bundle_hash: str = ""
+    max_latency_ms: int = MAX_SYSTEM_ONE_LATENCY_MS
     cache_size: int = 128
     minimum_confidence: float = 0.9
 
@@ -39,25 +48,40 @@ class SystemOnePolicy:
             raise ValueError("unsupported System-1 protocol version")
         if self.protocol_hash != SYSTEM_ONE_PROTOCOL_HASH:
             raise ValueError("unsupported System-1 protocol hash")
-        if self.calibration_hash and (
-                len(self.calibration_hash) != 64
-                or any(ch not in "0123456789abcdef" for ch in self.calibration_hash)):
-            raise ValueError("System-1 calibration_hash must be a lowercase SHA-256 digest")
-        if not isinstance(self.max_latency_ms, int) or not 1 <= self.max_latency_ms <= 250:
-            raise ValueError("System-1 max_latency_ms must be between 1 and 250")
+        for name in ("protocol_hash", "question_registry_hash", "state_projection_schema_hash"):
+            value = getattr(self, name)
+            if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+                raise ValueError(f"System-1 {name} must be a lowercase SHA-256 digest")
+        for name in ("model_content_hash", "provider_protocol_hash", "calibration_bundle_hash"):
+            value = getattr(self, name)
+            if value and (len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)):
+                raise ValueError(f"System-1 {name} must be a lowercase SHA-256 digest")
+        if self.model_revision and len(self.model_revision) > 256:
+            raise ValueError("System-1 model_revision is too long")
+        if (not isinstance(self.max_latency_ms, int)
+                or not 1 <= self.max_latency_ms <= MAX_SYSTEM_ONE_LATENCY_MS):
+            raise ValueError(
+                f"System-1 max_latency_ms must be between 1 and {MAX_SYSTEM_ONE_LATENCY_MS}")
         if not isinstance(self.cache_size, int) or not 0 <= self.cache_size <= 4096:
             raise ValueError("System-1 cache_size must be between 0 and 4096")
         if not isinstance(self.minimum_confidence, (int, float)) or not 0 <= self.minimum_confidence <= 1:
             raise ValueError("System-1 minimum_confidence must be between 0 and 1")
         if self.mode == "advisory" and (
-                not self.calibration_hash or self.backend_id == "null" or self.model_id == "none"):
-            raise ValueError("advisory mode requires pinned backend, model, and calibration identities")
+                not self.calibration_bundle_hash or not self.model_content_hash
+                or not self.provider_protocol_hash or not self.model_revision
+                or self.backend_id == "null" or self.model_id == "none"):
+            raise ValueError("advisory mode requires pinned provider, model, and calibration identities")
 
     def to_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "backend_id": self.backend_id,
-                "model_id": self.model_id, "protocol_version": self.protocol_version,
+                "model_id": self.model_id, "model_revision": self.model_revision,
+                "model_content_hash": self.model_content_hash,
+                "provider_protocol_hash": self.provider_protocol_hash,
+                "protocol_version": self.protocol_version,
                 "protocol_hash": self.protocol_hash,
-                "calibration_hash": self.calibration_hash,
+                "question_registry_hash": self.question_registry_hash,
+                "state_projection_schema_hash": self.state_projection_schema_hash,
+                "calibration_bundle_hash": self.calibration_bundle_hash,
                 "max_latency_ms": self.max_latency_ms, "cache_size": self.cache_size,
                 "minimum_confidence": float(self.minimum_confidence)}
 

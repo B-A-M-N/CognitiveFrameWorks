@@ -308,5 +308,5 @@ def test_route_outcome_never_defaults_to_failure_without_evidence(tmp_path, monk
                                 evaluator_id="route-success-v1",
                                 evidence_refs=[evidence_ref])
     outcomes = [item["outcome"] for item in session.route_outcomes.values()]
-    assert outcomes == ["good"], outcomes
-    assert "bad" not in outcomes
+    assert outcomes == ["PASS"], outcomes
+    assert "FAIL" not in outcomes

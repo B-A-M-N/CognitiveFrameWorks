@@ -141,6 +141,10 @@ class ActionDescriptor:
     required_capabilities: tuple[str, ...] = ()
     goal_relation: str = "ambiguous"
     goal_intent: Optional[str] = None
+    action_class: Optional[str] = None
+    target_kind: Optional[str] = None
+    target_scope: Optional[str] = None
+    affected_criterion_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.goal_relation not in GOAL_RELATIONS:
@@ -149,6 +153,15 @@ class ActionDescriptor:
                 not isinstance(self.goal_intent, str) or not self.goal_intent.strip()
                 or len(self.goal_intent) > 256):
             raise ValueError("goal_intent must be bounded host-authored text")
+        for name in ("action_class", "target_kind", "target_scope"):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()
+                                      or len(value) > 64):
+                raise ValueError(f"{name} must be bounded non-empty text")
+        if len(self.affected_criterion_ids) > 8 or any(
+                not isinstance(item, str) or not item or len(item) > 128
+                for item in self.affected_criterion_ids):
+            raise ValueError("affected_criterion_ids must contain at most eight bounded IDs")
 
     def for_request(self, request: "AgentActionRequest") -> "ActionDescriptor":
         """Return a target-sensitive classification derived by the host."""
@@ -183,7 +196,8 @@ def action_contract_hash(registry: Optional[Mapping[str, ActionDescriptor]] = No
                 "blast_radius", "reversibility", "secret_access", "network_effect",
                 "destructive", "outside_scope", "untrusted", "required_authority",
                 "allowed_authorities", "required_capabilities", "goal_relation",
-                "goal_intent",
+                "goal_intent", "action_class", "target_kind", "target_scope",
+                "affected_criterion_ids",
             )
         }
         for key, descriptor in sorted(source.items())

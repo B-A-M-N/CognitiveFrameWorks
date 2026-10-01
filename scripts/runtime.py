@@ -21,6 +21,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -56,11 +57,15 @@ from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
 from runtime_contract.operator_events import OperatorEvent
 from runtime_contract.stateworks import ExecutionSegment, SegmentStatus
-from runtime_contract.behavioral_fusion import (advisory_guidance,
-                                                fuse_action_relation)
-from runtime_contract.system_one import (BehavioralJudge, SystemOneFrame,
-                                         SystemOneIdentity, SystemOneJudgment,
-                                         SystemOnePolicy)
+from runtime_contract.behavioral_fusion import (
+    BehavioralDecision, BehavioralFusionController, fuse_action_relation,
+    fuse_progress_relation, fuse_retry_relation, render_behavior_control_directive,
+)
+from runtime_contract.system_one import (ActivityFact, AttemptSemanticDescriptor,
+                                         BehavioralJudge, SystemOneCapability,
+                                         SystemOneFrame, SystemOneIdentity,
+                                         SystemOneJudgment, SystemOnePolicy,
+                                         QUESTION_REGISTRY)
 from runtime_contract.system_one_state import SystemOneStateProjector
 from runtime_contract.validators import evaluate_validator, validator_registry_hash
 if "resolve_runtime" in sys.modules:
@@ -76,7 +81,7 @@ _STATEWORK_TRANSITIONS = None
 _STATEWORK_TRANSITION_MODULES: Dict[str, Any] = {}
 
 TelemetrySink = Callable[[Dict[str, Any]], None]
-SCHEMA_VERSION = "2.3.0"
+SCHEMA_VERSION = "2.4.0"
 CATEGORIES = {
     "observation", "assumption", "inference", "decision", "action",
     "tool_result", "validation", "correction", "contradiction", "retry",
@@ -169,6 +174,61 @@ class GateDecision(Enum):
     REQUIRE_RECOVERY = "require_recovery"
     REQUIRE_CHANGED_HYPOTHESIS = "require_changed_hypothesis"
     REQUIRE_GOAL_REANCHOR = "require_goal_reanchor"
+
+
+@dataclass(frozen=True)
+class ActionPreparation:
+    """One host authorization result and its unique request correlation ID."""
+
+    action_request_id: str
+    decision: GateDecision
+    descriptor: ActionDescriptor
+
+
+@dataclass(frozen=True)
+class RouteReplanRecommendation:
+    """A calibrated preference among child bundles already resolved by the host."""
+
+    route: str
+    decision_id: str
+    source_state_digest: str
+    request_digest: str
+    sequence: int
+    confidence: float
+    state_revision: int
+    target_statework_id: str
+    legal_children: Mapping[str, resolve_runtime.RuntimeBundle] = field(repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "legal_children",
+                           MappingProxyType(dict(self.legal_children)))
+
+
+@dataclass(frozen=True)
+class PolicyEpochRecord:
+    epoch_index: int
+    parent_policy_hash: str
+    child_policy_hash: str
+    reason: str
+    route_type: str
+    selected_route: str
+    system_one_decision_ref: str
+    state_revision: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"epoch_index": self.epoch_index,
+                "parent_policy_hash": self.parent_policy_hash,
+                "child_policy_hash": self.child_policy_hash,
+                "reason": self.reason, "route_type": self.route_type,
+                "selected_route": self.selected_route,
+                "system_one_decision_ref": self.system_one_decision_ref,
+                "state_revision": self.state_revision}
+
+
+@dataclass(frozen=True)
+class ChildPolicyEpoch:
+    record: PolicyEpochRecord
+    bundle: resolve_runtime.RuntimeBundle = field(repr=False)
 
 
 DEFAULT_ACTION_REGISTRY: Dict[str, ActionDescriptor] = default_action_registry()
@@ -643,12 +703,12 @@ class HostIngress:
                            subject_ref: Optional[str] = None,
                            *, invocation_id: Optional[str] = None,
                            result_digest: Optional[str] = None,
-                           action_digest: Optional[str] = None,
+                           action_request_id: Optional[str] = None,
                            actual_result: Optional[Mapping[str, Any]] = None) -> str:
         return self._session._record_tool_result(
             self._capability, tool_type, result_class, subject_ref,
             invocation_id=invocation_id, result_digest=result_digest,
-            action_digest_value=action_digest,
+            action_request_id=action_request_id,
             actual_result=actual_result)
 
     def record_tool_outcome(self, tool_type: str, result_class: str,
@@ -661,11 +721,13 @@ class HostIngress:
 
     def begin_attempt(self, *, attempt_ref: str, cause_id: str,
                       premise_digest: str, action_plan: Mapping[str, Any],
-                      parent_attempt_ref: Optional[str] = None) -> AttemptDescriptor:
+                      parent_attempt_ref: Optional[str] = None,
+                      semantic_descriptor: Optional[Mapping[str, Any]] = None) -> AttemptDescriptor:
         return self._session._begin_attempt(
             self._capability, attempt_ref=attempt_ref, cause_id=cause_id,
             premise_digest=premise_digest, action_plan=action_plan,
-            parent_attempt_ref=parent_attempt_ref)
+            parent_attempt_ref=parent_attempt_ref,
+            semantic_descriptor=semantic_descriptor)
 
     def record_attempt_failure(self, *, attempt_ref: str,
                                evidence_ref: str) -> None:
@@ -683,10 +745,10 @@ class HostIngress:
             self._capability, cause_id=cause_id, evidence_ref=evidence_ref,
             criterion_id=criterion_id, progress_class=progress_class)
 
-    def system_one_decision_for_action(self, action_digest: str) -> Optional[str]:
+    def system_one_decision_for_action(self, action_request_id: str) -> Optional[str]:
         """Host-only correlation lookup for a later independent outcome."""
         return self._session._system_one_decision_for_action(
-            self._capability, action_digest)
+            self._capability, action_request_id)
 
     def record_system_one_outcome(self, *, decision_id: str, label: str,
                                   value: str, evidence_ref: str,
@@ -696,6 +758,20 @@ class HostIngress:
             self._capability, decision_id=decision_id, label=label, value=value,
             evidence_ref=evidence_ref, authority=authority,
             criterion_id=criterion_id)
+
+    def rank_legal_routes(
+            self, legal_children: Mapping[str, resolve_runtime.RuntimeBundle], *,
+            state_revision: int, target_statework_id: str) -> Optional[RouteReplanRecommendation]:
+        return self._session._rank_legal_routes(
+            self._capability, legal_children=legal_children,
+            state_revision=state_revision, target_statework_id=target_statework_id)
+
+    def create_child_policy_epoch(
+            self, recommendation: RouteReplanRecommendation, *,
+            selected_route: str, current_state_revision: int) -> ChildPolicyEpoch:
+        return self._session._create_child_policy_epoch(
+            self._capability, recommendation, selected_route=selected_route,
+            current_state_revision=current_state_revision)
 
     def record_recovery_epoch(self, *, cause_id: str, reason: str) -> None:
         self._session._record_recovery_epoch(
@@ -1056,7 +1132,9 @@ class RuntimeSession:
     route_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     route_outcomes: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     attempt_descriptors: Dict[str, AttemptDescriptor] = field(default_factory=dict, repr=False)
+    attempt_semantics: Dict[str, AttemptSemanticDescriptor] = field(default_factory=dict, repr=False)
     attempt_failures: set[str] = field(default_factory=set, repr=False)
+    _semantic_retry_same: set[str] = field(default_factory=set, repr=False)
     shared_branch_ledger: Optional[SharedBranchLedger] = field(default=None, repr=False)
     system_one_judge: Optional[BehavioralJudge] = field(default=None, repr=False)
     system_one_projector: SystemOneStateProjector = field(
@@ -1064,8 +1142,13 @@ class RuntimeSession:
     system_one_sequence: int = 0
     system_one_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     system_one_outcomes: set[str] = field(default_factory=set, repr=False)
-    system_one_action_relations: Dict[str, str] = field(default_factory=dict, repr=False)
-    system_one_advisories: List[str] = field(default_factory=list, repr=False)
+    system_one_action_relations: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
+    behavioral_controller: BehavioralFusionController = field(
+        default_factory=BehavioralFusionController, repr=False)
+    behavioral_decision: BehavioralDecision = field(default_factory=BehavioralDecision, repr=False)
+    _pending_action_requests: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
+    policy_epoch_record: Optional[PolicyEpochRecord] = field(default=None, repr=False)
+    _system_one_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
 
     def _host_ingress(self) -> HostIngress:
         """Return the host-only channel to the adapter implementation.
@@ -1092,9 +1175,11 @@ class RuntimeSession:
                 "convergence",
                 "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
                 "runtime_mode", "attempt_descriptors", "attempt_failures",
+                "attempt_semantics", "_semantic_retry_same",
                 "shared_branch_ledger", "system_one_judge", "system_one_projector",
                 "system_one_sequence", "system_one_decisions", "system_one_outcomes",
-                "system_one_action_relations", "system_one_advisories"}:
+                "system_one_action_relations", "behavioral_controller", "behavioral_decision",
+                "_pending_action_requests", "policy_epoch_record"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -1284,20 +1369,25 @@ class RuntimeSession:
     def _system_one_policy(self) -> SystemOnePolicy:
         return SystemOnePolicy(**dict(self.bundle.pinned.get("system_one_policy") or {}))
 
-    def _system_one_query(self, *, questions: tuple[str, ...],
-                          candidate: Mapping[str, str],
+    def _system_one_query(self, *, questions: tuple[str, ...], candidate: ActivityFact,
                           subject_ref: Optional[str] = None,
-                          action_digest_value: Optional[str] = None,
-                          descriptor: Optional[ActionDescriptor] = None) -> Optional[SystemOneJudgment]:
-        """Query only after the caller's deterministic eligibility gate."""
+                          action_request_id: Optional[str] = None,
+                          action_invocation_id: Optional[str] = None,
+                          descriptor: Optional[ActionDescriptor] = None,
+                          route_candidates: tuple[str, ...] = (),
+                          route_state_revision: Optional[int] = None,
+                          route_statework_id: Optional[str] = None) -> Optional[SystemOneJudgment]:
+        """Query from a typed host snapshot after authority checks."""
         policy = self._system_one_policy()
         if policy.mode == "disabled":
             return None
         goal = self.bundle.pinned.get("goal_contract") or {}
-        if not goal.get("objective"):
+        if not goal.get("objective") or self.system_one_judge is None:
             return None
-        object.__setattr__(self, "system_one_sequence", self.system_one_sequence + 1)
-        self._journal("system_one_sequence", sequence=self.system_one_sequence)
+        with self._system_one_lock:
+            object.__setattr__(self, "system_one_sequence", self.system_one_sequence + 1)
+            sequence = self.system_one_sequence
+        self._journal("system_one_sequence", sequence=sequence)
         identity = SystemOneIdentity(
             namespace_id=self.execution_identity.namespace_id,
             application_id=str(self.bundle.pinned.get("application_id") or "unknown-application"),
@@ -1318,75 +1408,116 @@ class RuntimeSession:
                 convergence_state.same_approach_retries if convergence_state else 0),
         }
         frame = self.system_one_projector.project(
-            identity=identity, sequence=self.system_one_sequence,
+            identity=identity, sequence=sequence,
             policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
             policy=policy, questions=questions, goal_contract=goal,
-            convergence=convergence, candidate=candidate)
+            convergence=convergence, candidate=candidate,
+            phase=self.bundle.pinned.get("phase"),
+            active_segment=self.current_segment.segment_id,
+            active_statework=(self.current_segment.statework_id or None),
+            current_state=(self.statework_states.get((
+                self.current_segment.statework_id or "", self.current_segment.subject_ref or ""))),
+            failed_approaches=tuple(
+                self.attempt_semantics[attempt_ref]
+                for attempt_ref in self.attempt_descriptors
+                if attempt_ref in self.attempt_failures
+                and attempt_ref in self.attempt_semantics)[-4:],
+            legal_routes=route_candidates)
         status = "fallback"
-        calibrated = False
+        calibrated_questions: set[str] = set()
         judgment: Optional[SystemOneJudgment] = None
-        if self.system_one_judge is not None:
-            try:
-                raw = self.system_one_judge.judge(frame, mode=policy.mode)
-                if hasattr(raw, "judgment"):
-                    status = str(getattr(raw, "status", "fallback"))
-                    calibrated = bool(getattr(raw, "calibrated", False))
-                    raw = getattr(raw, "judgment", None)
-                if raw is not None:
-                    if hasattr(raw, "to_dict"):
-                        raw = raw.to_dict()
-                    judgment = (raw if isinstance(raw, SystemOneJudgment)
-                                else SystemOneJudgment.from_mapping(raw))
-                    if judgment.identity != frame.identity:
-                        raise ValueError("System-1 identity mismatch")
-                    if (judgment.request_id != frame.request_id
-                            or judgment.sequence != frame.sequence
-                            or judgment.state_digest != frame.state_digest):
-                        raise ValueError("System-1 response is stale or miscorrelated")
-                    if (judgment.policy_hash != frame.policy_hash
-                            or judgment.backend_id != policy.backend_id
-                            or judgment.model_id != policy.model_id
-                            or judgment.calibration_hash != policy.calibration_hash
-                            or judgment.protocol_version != policy.protocol_version
-                            or judgment.protocol_hash != policy.protocol_hash):
-                        raise ValueError("System-1 response policy identity mismatch")
-                    if any(getattr(judgment, question) is None for question in questions):
-                        raise ValueError("System-1 response omitted a requested label")
-                    if (judgment.route_preference is not None
-                            and judgment.route_preference not in frame.route_candidates):
-                        raise ValueError("System-1 route preference is outside eligible candidates")
-                    if self.system_one_sequence != frame.sequence:
-                        raise ValueError("System-1 response arrived after a newer frame")
-                    if status == "fallback":
-                        status = "ok"
-            except Exception:
-                judgment = None
-                calibrated = False
-                status = "fallback"
+        try:
+            resync = getattr(self.system_one_judge, "resync", None)
+            if callable(resync):
+                resync(frame)
+            raw = self.system_one_judge.judge(frame, mode=policy.mode)
+            if hasattr(raw, "judgment"):
+                status = str(getattr(raw, "status", "fallback"))
+                calibration_hint = bool(getattr(raw, "calibrated", False))
+                calibrated_questions.update(getattr(raw, "calibrated_question_ids", ()) or ())
+                raw = getattr(raw, "judgment", None)
+            else:
+                calibration_hint = False
+            if raw is not None:
+                judgment = (raw if isinstance(raw, SystemOneJudgment)
+                            else SystemOneJudgment.from_mapping(
+                                raw.to_dict() if hasattr(raw, "to_dict") else raw))
+                self._validate_system_one_judgment(frame, judgment)
+                if status in {"fallback", "provider_unavailable"}:
+                    status = "ok"
+                if calibration_hint and not calibrated_questions:
+                    calibrated_questions.update(frame.question_ids)
+                calibrated_questions = {
+                    question_id for question_id in calibrated_questions
+                    if question_id in frame.question_ids
+                    and (answer := judgment.answer(question_id)) is not None
+                    and answer.calibrated_probabilities is not None
+                    and answer.calibration_hash is not None
+                }
+        except Exception:
+            judgment, calibrated_questions, status = None, set(), "fallback"
+        if sequence != self.system_one_sequence:
+            judgment, calibrated_questions, status = None, set(), "stale_response"
+        calibrated = frozenset(calibrated_questions)
+
         relation = None
         influenced = False
         if descriptor is not None and "action_relation" in questions:
             fused = fuse_action_relation(
                 descriptor, judgment=judgment, policy=policy, calibrated=calibrated)
             relation = fused.relation
-        guidance = advisory_guidance(
-            judgment=judgment, policy=policy, calibrated=calibrated)
-        influenced = bool(guidance)
-        question_hash = hashlib.sha256(json.dumps(
-            list(questions), separators=(",", ":")).encode("utf-8")).hexdigest()
+            influenced = fused.model_influenced
+            if action_request_id:
+                self.system_one_action_relations[action_request_id] = {
+                    "relation": relation, "decision_id": frame.request_id,
+                    "sequence": sequence}
+                while len(self.system_one_action_relations) > 512:
+                    self.system_one_action_relations.pop(next(iter(self.system_one_action_relations)))
+        support_count = int(convergence_state.support_actions_since_goal_progress
+                            if convergence_state else 0)
+        support_limit = int(((goal.get("verification_policy") or {}).get(
+            "support_actions_before_goal_reanchor", 5) or 5))
+        deterministic_reanchor = bool(
+            self.convergence and self.convergence.needs_goal_reanchor(
+                cause_id="primary-objective", support_limit=support_limit))
+        criteria = self.system_one_projector.criteria
+        unmet_ids = tuple(item.criterion_id for item in criteria
+                          if item.status != "satisfied")
+        next_behavior = self.behavioral_controller.update(
+            judgment=judgment, policy=policy, calibrated=calibrated,
+            unmet_criterion_ids=unmet_ids,
+            support_actions_since_progress=support_count,
+            deterministic_reanchor=deterministic_reanchor,
+            sequence=sequence, support_action_limit=support_limit)
+        if next_behavior != self.behavioral_decision:
+            object.__setattr__(self, "behavioral_decision", next_behavior)
+            snapshot = self.behavioral_controller.snapshot()
+            self._journal("behavior_control_changed", snapshot=snapshot)
+
+        question_hash = frame.question_bundle_digest
         decision_id = frame.request_id
+        answers = ({answer.question_id: answer.to_dict()
+                    for answer in judgment.answers} if judgment else {})
         decision = {
             "decision_id": decision_id, "subject_ref": subject_ref,
-            "action_digest": action_digest_value, "sequence": frame.sequence,
-            "state_digest": frame.state_digest, "question_hash": question_hash,
+            "action_request_id": action_request_id,
+            "action_invocation_id": action_invocation_id,
+            "sequence": frame.sequence, "state_digest": frame.state_digest,
+            "request_digest": frame.request_digest,
+            "policy_hash": frame.policy_hash,
+            "legal_routes": list(route_candidates),
+            "route_state_revision": route_state_revision,
+            "route_statework_id": route_statework_id,
+            "question_hash": question_hash,
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "judgment": judgment.to_dict() if judgment else {},
-            "status": status, "influenced": influenced,
+            "answers": answers, "status": status,
+            "calibrated": bool(calibrated),
+            "calibrated_question_ids": sorted(calibrated),
+            "influenced": influenced,
             "fused_action_relation": relation,
-            "advisories": list(guidance),
+            "behavioral_state": next_behavior.to_dict(),
         }
-        self.system_one_advisories.extend(guidance)
-        del self.system_one_advisories[:-4]
         self.system_one_decisions[decision_id] = decision
         while len(self.system_one_decisions) > 512:
             oldest = next(iter(self.system_one_decisions))
@@ -1401,34 +1532,289 @@ class RuntimeSession:
             "system_one_mode": policy.mode,
             "system_one_backend_id": policy.backend_id,
             "system_one_model_id": policy.model_id,
+            "system_one_model_revision": policy.model_revision,
+            "system_one_model_content_hash": policy.model_content_hash,
+            "system_one_provider_protocol_hash": policy.provider_protocol_hash,
             "system_one_protocol_version": policy.protocol_version,
             "system_one_protocol_hash": policy.protocol_hash,
-            "system_one_calibration_hash": policy.calibration_hash,
+            "system_one_question_registry_hash": policy.question_registry_hash,
+            "system_one_state_projection_schema_hash": policy.state_projection_schema_hash,
+            "system_one_calibration_hash": policy.calibration_bundle_hash,
+            "system_one_work_mode": str(goal.get("work_mode") or "delivery"),
+            "system_one_deliverable_kind": str(goal.get("deliverable_kind") or "code_behavior"),
             "system_one_sequence": frame.sequence,
             "system_one_state_digest": frame.state_digest,
             "system_one_question_bundle_hash": question_hash,
             "system_one_status": status,
             "system_one_influenced": influenced,
+            "system_one_answers": answers,
         }
+        if action_request_id:
+            payload["action_request_id"] = action_request_id
+        if action_invocation_id:
+            payload["action_invocation_id"] = action_invocation_id
         if relation is not None:
             payload["system_one_fused_action_relation"] = relation
         if judgment is not None:
-            payload["system_one_confidence"] = float(judgment.confidence)
-            for source, target in (
-                    ("action_relation", "system_one_action_relation"),
-                    ("progress_relation", "system_one_progress_relation"),
-                    ("retry_relation", "system_one_retry_relation"),
-                    ("goal_drift", "system_one_goal_drift"),
-                    ("route_preference", "system_one_route_preference")):
-                value = getattr(judgment, source)
-                if value is not None:
-                    payload[target] = value
+            event_labels = {
+                "action_relation": "system_one_action_relation",
+                "progress_relation": "system_one_progress_relation",
+                "retry_relation": "system_one_retry_relation",
+                "goal_drift": "system_one_goal_drift",
+                "route_preference": "system_one_route_preference",
+            }
+            for answer in judgment.answers:
+                target = event_labels.get(answer.question_id)
+                if target:
+                    payload[target] = answer.selected
         self._emit_runtime({"category": "decision", "event_type": "system_one_decision",
-                            "subject": subject_ref,
-                            "uncertainty": (1.0 - float(judgment.confidence)
-                                            if judgment else 1.0),
-                            "payload": payload})
+                            "subject": subject_ref, "payload": payload})
         return judgment
+
+    def _validate_child_route_bundle(self, route: str, target_statework_id: str,
+                                     child: resolve_runtime.RuntimeBundle) -> None:
+        """Require a resolver-produced child that changes only one legal flow."""
+        pieces = route.split(":", 2)
+        if len(pieces) != 3 or pieces[0] != "flow" or pieces[1] != target_statework_id:
+            raise ValueError("route must identify the target StateWork flow")
+        flow_name = pieces[2]
+        if not flow_name or len(flow_name) > 64 or any(char in flow_name for char in "/\\\0"):
+            raise ValueError("route flow name is malformed")
+        if not isinstance(child, resolve_runtime.RuntimeBundle):
+            raise ValueError("legal route must be represented by a resolved runtime bundle")
+        resolve_runtime._policy_from_bundle(self.bundle)
+        resolve_runtime._policy_from_bundle(child)
+        if child.task_id != self.bundle.task_id or child.statework_root != self.bundle.statework_root:
+            raise ValueError("child route changed task or StateWork source")
+
+        before, after = self.bundle.policy.canonical(), child.policy.canonical()
+        mutable_policy_fields = {"kernel", "capsules", "stateworks"}
+        if set(before) != set(after) or any(
+                before[key] != after[key] for key in before if key not in mutable_policy_fields):
+            raise PermissionError("child route changed policy outside flow-derived content")
+        for field_name in (
+                "namespace_id", "application_id", "application_instance_id", "agent_id",
+                "agent_instance_id", "attempt_id", "interaction_id", "parent_session_id",
+                "subject_ref", "goal_contract", "goal_contract_hash", "system_one_policy",
+                "policy_revocation_revision", "revocation_mode", "shared_workflow_membership",
+                "contracts"):
+            if self.bundle.pinned.get(field_name) != child.pinned.get(field_name):
+                raise PermissionError(f"child route changed pinned {field_name}")
+        if (self.bundle.guard_pack.get("guards") != child.guard_pack.get("guards")
+                or self.bundle.guard_pack.get("structural_handlers")
+                != child.guard_pack.get("structural_handlers")
+                or self.bundle.guard_pack.get("routing_adjustments")
+                != child.guard_pack.get("routing_adjustments")
+                or self.bundle.guard_pack.get("routing_experiment")
+                != child.guard_pack.get("routing_experiment")):
+            raise PermissionError("child route changed host guards or routing authority")
+
+        parent_stateworks = list(self.bundle.stateworks)
+        child_stateworks = list(child.stateworks)
+        if len(parent_stateworks) != len(child_stateworks):
+            raise PermissionError("child route changed the required StateWork set")
+        parent_target = child_target = None
+        for left, right in zip(parent_stateworks, child_stateworks):
+            if left.get("id") != right.get("id"):
+                raise PermissionError("child route reordered or replaced StateWorks")
+            if left.get("id") == target_statework_id:
+                parent_target, child_target = left, right
+                flow_derived_fields = {"selected_flow", "flow_requirements",
+                                       "flow_metadata", "flow_states"}
+                for key in set(left) | set(right):
+                    if (key not in flow_derived_fields
+                            and left.get(key) != right.get(key)):
+                        raise PermissionError("child route changed a StateWork contract")
+            elif left != right:
+                raise PermissionError("child route changed a different StateWork")
+        if parent_target is None or child_target is None:
+            raise ValueError("route target is not required by the pinned task")
+        selected = child_target.get("selected_flow")
+        if not isinstance(selected, (list, tuple)) or len(selected) != 2:
+            raise ValueError("child bundle has no pinned selected flow")
+        relative_path, content_hash = str(selected[0]), str(selected[1])
+        flow_path = Path(relative_path)
+        if (flow_path.is_absolute() or ".." in flow_path.parts
+                or flow_path.parts[:1] != (target_statework_id,)
+                or flow_path.parent.name != flow_name):
+            raise ValueError("child bundle did not resolve the selected legal flow")
+        root = Path(child.statework_root).resolve()
+        resolved_flow = (root / flow_path).resolve()
+        try:
+            resolved_flow.relative_to(root)
+        except ValueError as exc:
+            raise PermissionError("child flow escaped its StateWork source") from exc
+        if not resolved_flow.is_file() or resolve_runtime.sha256(resolved_flow) != content_hash:
+            raise resolve_runtime.SnapshotIntegrityError(
+                "child flow content no longer matches its resolved snapshot")
+    def _rank_legal_routes(
+            self, capability: _HostCapability, *,
+            legal_children: Mapping[str, resolve_runtime.RuntimeBundle],
+            state_revision: int, target_statework_id: str
+            ) -> Optional[RouteReplanRecommendation]:
+        self._require_host(capability)
+        if self.behavioral_decision.focus_mode != "replan":
+            return None
+        if self.termination_disposition in TERMINAL_DISPOSITIONS:
+            raise PermissionError("a terminated task cannot request a route replan")
+        if self._pending_action_requests:
+            raise PermissionError("route ranking requires an action boundary with no pending calls")
+        if not isinstance(state_revision, int) or state_revision < 0:
+            raise ValueError("current StateWork revision must be a non-negative integer")
+        if not target_statework_id or len(target_statework_id) > 64:
+            raise ValueError("route ranking requires a bounded StateWork ID")
+        if not isinstance(legal_children, Mapping) or not 2 <= len(legal_children) <= 16:
+            raise ValueError("route ranking requires two to sixteen host-resolved legal flows")
+        children = dict(legal_children)
+        for route, child in children.items():
+            if not isinstance(route, str):
+                raise ValueError("legal flow route IDs must be strings")
+            self._validate_child_route_bundle(route, target_statework_id, child)
+
+        if self._system_one_policy().mode != "advisory" or self.system_one_judge is None:
+            return None
+        candidate = self.system_one_projector.record_activity(
+            "action", source="host_observed", action_class="route_replan",
+            host_declared_relation="ambiguous", target_kind="statework",
+            proposed_purpose="rank already-resolved legal StateWork flows",
+            proposed_purpose_source="host_observed")
+        self._journal("system_one_projection_changed",
+                      snapshot=self.system_one_projector.snapshot())
+        judgment = self._system_one_query(
+            questions=("route_preference",), candidate=candidate,
+            subject_ref=self.current_segment.subject_ref,
+            route_candidates=tuple(sorted(children)),
+            route_state_revision=state_revision,
+            route_statework_id=target_statework_id)
+        if judgment is None:
+            return None
+        decision = self.system_one_decisions.get(judgment.request_id) or {}
+        answer = judgment.answer("route_preference")
+        calibrated_ids = set(decision.get("calibrated_question_ids") or ())
+        confidence = answer.calibrated_confidence if answer else None
+        policy = self._system_one_policy()
+        if ("route_preference" not in calibrated_ids or answer is None
+                or answer.calibration_hash != policy.calibration_bundle_hash
+                or confidence is None or confidence < policy.minimum_confidence
+                or answer.selected not in children):
+            return None
+        recommendation = RouteReplanRecommendation(
+            route=answer.selected, decision_id=judgment.request_id,
+            source_state_digest=judgment.state_digest,
+            request_digest=judgment.request_digest, sequence=judgment.sequence,
+            confidence=confidence, state_revision=state_revision,
+            target_statework_id=target_statework_id, legal_children=children)
+        self._journal("route_replan_recommended", recommendation={
+            "route": recommendation.route,
+            "decision_id": recommendation.decision_id,
+            "source_state_digest": recommendation.source_state_digest,
+            "request_digest": recommendation.request_digest,
+            "sequence": recommendation.sequence,
+            "confidence": recommendation.confidence,
+            "state_revision": recommendation.state_revision,
+            "target_statework_id": recommendation.target_statework_id,
+            "legal_routes": sorted(children),
+        })
+        return recommendation
+
+    def _create_child_policy_epoch(
+            self, capability: _HostCapability,
+            recommendation: RouteReplanRecommendation, *, selected_route: str,
+            current_state_revision: int) -> ChildPolicyEpoch:
+        self._require_host(capability)
+        if not isinstance(recommendation, RouteReplanRecommendation):
+            raise TypeError("child policy epoch requires a host route recommendation")
+        if self.termination_disposition in TERMINAL_DISPOSITIONS:
+            raise PermissionError("a terminated task cannot enter a child policy epoch")
+        if self._pending_action_requests:
+            raise PermissionError("child policy epoch requires no pending action calls")
+        if recommendation.sequence != self.system_one_sequence:
+            raise PermissionError("route recommendation is stale after subsequent System-1 activity")
+        if current_state_revision != recommendation.state_revision:
+            raise PermissionError("StateWork revision changed after route ranking")
+        if selected_route not in recommendation.legal_children:
+            raise PermissionError("host selected a route outside the resolved legal candidates")
+        decision = self.system_one_decisions.get(recommendation.decision_id)
+        if (not decision or decision.get("policy_hash") != self.bundle.pinned.get("policy_hash")
+                or decision.get("request_digest") != recommendation.request_digest
+                or decision.get("state_digest") != recommendation.source_state_digest
+                or decision.get("sequence") != recommendation.sequence
+                or decision.get("route_state_revision") != current_state_revision
+                or decision.get("route_statework_id") != recommendation.target_statework_id
+                or tuple(decision.get("legal_routes") or ())
+                != tuple(sorted(recommendation.legal_children))):
+            raise PermissionError("route recommendation no longer matches its host decision")
+        answer = decision.get("answers", {})
+        answer_row = answer.get("route_preference") if isinstance(answer, Mapping) else None
+        if (not isinstance(answer_row, Mapping)
+                or answer_row.get("selected") != recommendation.route
+                or recommendation.route not in recommendation.legal_children):
+            raise PermissionError("route recommendation has no matching provider answer")
+        child_bundle = recommendation.legal_children[selected_route]
+        self._validate_child_route_bundle(
+            selected_route, recommendation.target_statework_id, child_bundle)
+        child_hash = str(child_bundle.pinned.get("policy_hash") or "")
+        parent_hash = str(self.bundle.pinned.get("policy_hash") or "")
+        if not child_hash or child_hash == parent_hash:
+            raise ValueError("child policy epoch must have a distinct policy hash")
+        epoch_index = (self.policy_epoch_record.epoch_index + 1
+                       if self.policy_epoch_record else 1)
+        record = PolicyEpochRecord(
+            epoch_index=epoch_index, parent_policy_hash=parent_hash,
+            child_policy_hash=child_hash, reason="dynamic_replan",
+            route_type="flow", selected_route=selected_route,
+            system_one_decision_ref=recommendation.decision_id,
+            state_revision=current_state_revision)
+        route_name = selected_route.split(":", 2)[2]
+        route_decision_id = self._record_route_decision(
+            capability, route=route_name, route_type="flow",
+            selection_reason="dynamic_policy_epoch")
+        self._journal("child_policy_epoch_created", policy_epoch=record.to_dict(),
+                      route_decision_id=route_decision_id,
+                      legal_routes=sorted(recommendation.legal_children),
+                      recommendation_confidence=recommendation.confidence)
+        self._host_event({
+            "event_id": f"policy-epoch-{uuid.uuid4()}", "category": "decision",
+            "event_type": "policy_epoch_created", "subject": self.bundle.policy.subject_ref,
+            "payload": {"summary": "host-created child policy epoch",
+                        "route": route_name, "route_type": "flow",
+                        "route_decision_id": route_decision_id,
+                        "policy_hash": parent_hash,
+                        "reason": "dynamic_replan"}})
+        return ChildPolicyEpoch(record=record, bundle=child_bundle)
+
+    @staticmethod
+    def _validate_system_one_judgment(frame: SystemOneFrame,
+                                      judgment: SystemOneJudgment) -> None:
+        checks = (
+            (judgment.identity == frame.identity, "identity"),
+            (judgment.request_id == frame.request_id, "request ID"),
+            (judgment.sequence == frame.sequence, "sequence"),
+            (judgment.state_digest == frame.state_digest, "state digest"),
+            (judgment.question_bundle_digest == frame.question_bundle_digest, "question bundle"),
+            (judgment.request_digest == frame.request_digest, "request digest"),
+            (judgment.policy_hash == frame.policy_hash, "policy"),
+            (judgment.backend_id == frame.backend_id, "backend"),
+            (judgment.model_id == frame.model_id, "model"),
+            (judgment.model_revision == frame.model_revision, "model revision"),
+            (judgment.model_content_hash == frame.model_content_hash, "model content"),
+            (judgment.provider_protocol_hash == frame.provider_protocol_hash, "provider protocol"),
+            (judgment.calibration_bundle_hash == frame.calibration_bundle_hash, "calibration"),
+        )
+        for passed, label in checks:
+            if not passed:
+                raise ValueError(f"System-1 response {label} mismatch")
+        if set(answer.question_id for answer in judgment.answers) != set(frame.question_ids):
+            raise ValueError("System-1 response question set mismatch")
+        for spec in frame.questions:
+            answer = judgment.answer(spec.question_id)
+            assert answer is not None
+            if tuple(item.label for item in answer.raw_probabilities) != tuple(
+                    label for label, _ in spec.criteria):
+                raise ValueError("System-1 probability labels differ from question options")
+        route = judgment.answer("route_preference")
+        if route is not None and route.selected not in frame.state.legal_routes:
+            raise ValueError("System-1 route preference is outside eligible candidates")
 
     def _request(self, action: Mapping[str, Any] | AgentActionRequest) -> AgentActionRequest:
         return action if isinstance(action, AgentActionRequest) else AgentActionRequest.from_mapping(action)
@@ -1624,41 +2010,22 @@ class RuntimeSession:
             return False
 
     def before_action(self, action: Dict[str, Any] | AgentActionRequest) -> GateDecision:
-        """Structural WARD gate; host executors run only ALLOW decisions."""
+        """Compatibility gate for adapters that do not need result correlation."""
+        return self.prepare_action(action).decision
+
+    def prepare_action(self, action: Dict[str, Any] | AgentActionRequest) -> ActionPreparation:
+        """Authorize an action and return its unique request ID for its eventual result."""
         request = self._request(action)
+        action_request_id = f"action-request-{uuid.uuid4()}"
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
-            return GateDecision.BLOCK
+            return ActionPreparation(action_request_id, GateDecision.BLOCK,
+                                     self._descriptor(request))
         if not self._revocation_current() or not self._membership_current():
-            return GateDecision.BLOCK
+            return ActionPreparation(action_request_id, GateDecision.BLOCK,
+                                     self._descriptor(request))
         descriptor = self._descriptor(request)
         decision = self._decision(request)
-        if request.digest:
-            self.system_one_action_relations[request.digest] = descriptor.goal_relation
-            while len(self.system_one_action_relations) > 128:
-                self.system_one_action_relations.pop(next(iter(self.system_one_action_relations)))
-        self.system_one_projector.record_activity(
-            "action", f"{descriptor.tool_type[:64]}:{descriptor.goal_relation}")
-        verification = ((self.bundle.pinned.get("goal_contract") or {}).get(
-            "verification_policy") or {})
-        if (decision == GateDecision.ALLOW
-                and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"
-                and self.convergence is not None
-                and descriptor.goal_relation not in {
-                    "advances_primary_goal", "removes_concrete_blocker"}
-                and self.convergence.needs_goal_reanchor(
-                    cause_id="primary-objective",
-                    support_limit=int(verification.get(
-                        "support_actions_before_goal_reanchor", 5) or 5))):
-            decision = GateDecision.REQUIRE_GOAL_REANCHOR
         strategy = self._action_strategy()
-        self._emit_runtime({"category": "action", "event_type": "action_requested",
-                   "subject": request.subject_ref,
-                   "payload": {"summary": decision.value,
-                               "tool_type": descriptor.tool_type,
-                               "route": request.binding_id,
-                               "route_type": "tool_policy",
-                               "advice_priority": strategy["priorities"].get(request.binding_id),
-                               "policy_hash": strategy["policy_hash"]}})
         for hook in self.tool_hooks:
             hook_decision = hook({"tool_binding_id": request.binding_id,
                                   "arguments": dict(request.arguments),
@@ -1667,6 +2034,62 @@ class RuntimeSession:
                 if not isinstance(hook_decision, GateDecision):
                     raise ValueError("tool hooks must return GateDecision or None")
                 decision = self._more_restrictive(decision, hook_decision)
+
+        # System-1 sees this action only after every hard host check. Its
+        # calibrated relation is available before the behavioral reanchor gate.
+        if decision == GateDecision.ALLOW:
+            target_ref = next((request.arguments.get(key) for key in ("target", "path", "resource")
+                               if isinstance(request.arguments.get(key), str)), None)
+            candidate = self.system_one_projector.record_activity(
+                "action", source="host_observed",
+                action_class=descriptor.action_class or descriptor.tool_type,
+                host_declared_relation=descriptor.goal_relation,
+                target_kind=descriptor.target_kind,
+                target_scope=descriptor.target_scope,
+                target_ref=target_ref,
+                proposed_purpose=descriptor.goal_intent,
+                proposed_purpose_source="host_observed",
+                affected_criterion_ids=descriptor.affected_criterion_ids)
+            self._journal("system_one_projection_changed",
+                          snapshot=self.system_one_projector.snapshot())
+            goal = self.bundle.pinned.get("goal_contract") or {}
+            if goal and descriptor.goal_relation == "ambiguous":
+                self._system_one_query(
+                    questions=("action_relation", "goal_drift"), candidate=candidate,
+                    subject_ref=request.subject_ref, action_request_id=action_request_id,
+                    descriptor=descriptor)
+            relation_record = self.system_one_action_relations.get(action_request_id)
+            relation = (str(relation_record["relation"]) if relation_record
+                        else descriptor.goal_relation)
+            verification = (goal.get("verification_policy") or {})
+            if (goal.get("work_mode") == "delivery" and self.convergence is not None
+                    and relation not in {"advances_primary_goal", "removes_concrete_blocker"}
+                    and self.convergence.needs_goal_reanchor(
+                        cause_id="primary-objective",
+                        support_limit=int(verification.get(
+                            "support_actions_before_goal_reanchor", 5) or 5))):
+                decision = GateDecision.REQUIRE_GOAL_REANCHOR
+
+        if decision == GateDecision.ALLOW:
+            self._pending_action_requests[action_request_id] = {
+                "descriptor": descriptor.__dict__.copy(),
+                "subject_ref": request.subject_ref,
+                "sequence": self.system_one_sequence,
+                "relation": (self.system_one_action_relations.get(action_request_id) or {}).get(
+                    "relation", descriptor.goal_relation),
+            }
+            self._journal("action_request_prepared", action_request_id=action_request_id,
+                          subject_ref=request.subject_ref, descriptor=descriptor.__dict__,
+                          relation=self._pending_action_requests[action_request_id]["relation"])
+        self._emit_runtime({"category": "action", "event_type": "action_requested",
+                   "subject": request.subject_ref,
+                   "payload": {"summary": decision.value,
+                               "tool_type": descriptor.tool_type,
+                               "route": request.binding_id,
+                               "route_type": "tool_policy",
+                               "action_request_id": action_request_id,
+                               "advice_priority": strategy["priorities"].get(request.binding_id),
+                               "policy_hash": strategy["policy_hash"]}})
         if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             self.lifecycle.on_action(decision, descriptor=descriptor)
@@ -1677,18 +2100,9 @@ class RuntimeSession:
         if decision == GateDecision.ALLOW and confirmation is not None:
             self._consumed_grant_ids.add(confirmation.grant_id)
             self._journal("confirmation_consumed", grant_id=confirmation.grant_id)
-        goal = self.bundle.pinned.get("goal_contract") or {}
-        if (decision == GateDecision.ALLOW and goal
-                and descriptor.goal_relation == "ambiguous"):
-            self._system_one_query(
-                questions=("action_relation", "goal_drift"),
-                candidate={"binding_id": request.binding_id,
-                           "tool_type": descriptor.tool_type,
-                           "goal_relation": descriptor.goal_relation,
-                           "goal_intent": descriptor.goal_intent or ""},
-                subject_ref=request.subject_ref,
-                action_digest_value=request.digest, descriptor=descriptor)
-        return decision
+        if decision != GateDecision.ALLOW:
+            self._pending_action_requests.pop(action_request_id, None)
+        return ActionPreparation(action_request_id, decision, descriptor)
 
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
         """Dispatch retry-specific structural handlers at the host boundary."""
@@ -1696,46 +2110,81 @@ class RuntimeSession:
         if self.termination_disposition in TERMINAL_DISPOSITIONS:
             # A terminated task must not be revived by a retry request.
             return GateDecision.BLOCK
-        for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
-            if enforcement.get("mode") != "structural":
-                continue
-            handler = handler_for_enforcement(enforcement)
-            if handler and "before_retry" in getattr(handler, "hooks", ()):
-                result = handler.before_retry(self, action, enforcement)
-                if result == "block":
-                    attempt_ref = str(action.arguments.get("attempt_ref") or "")
-                    descriptor = self.attempt_descriptors.get(attempt_ref)
-                    if (descriptor is not None and self.convergence is not None
-                            and self.convergence.state(descriptor.cause_id).disposition == "BLOCKED"):
-                        state = self.convergence.state(descriptor.cause_id)
-                        self.request_termination(
-                            self._host_capability, disposition="BLOCKED",
-                            reason="Autonomous recovery limit reached without primary-goal progress.",
-                            cause_id=descriptor.cause_id,
-                            evidence_refs=([state.last_failure_evidence_ref]
-                                           if state.last_failure_evidence_ref else ()))
-                    return GateDecision.BLOCK
-                if result == "require_reinspection":
-                    return GateDecision.REQUIRE_REINSPECTION
-                if result == "require_changed_hypothesis":
-                    return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
-                if result == "require_goal_reanchor":
-                    return GateDecision.REQUIRE_GOAL_REANCHOR
-        action_digest_value = action.digest
         attempt_ref = str(action.arguments.get("attempt_ref") or "")
         attempt = self.attempt_descriptors.get(attempt_ref)
-        if (attempt is not None and self._system_one_policy().mode != "disabled"):
-            self._system_one_query(
-                questions=("retry_relation",),
-                candidate={"binding_id": action.binding_id,
-                           "cause_id": attempt.cause_id,
-                           "premise_digest": attempt.premise_digest,
-                           "action_plan_digest": attempt.action_plan_digest},
-                subject_ref=action.subject_ref,
-                action_digest_value=action_digest_value)
-        self.system_one_projector.record_activity(
-            "retry", attempt.cause_id if attempt is not None else "untracked")
-        return GateDecision.ALLOW
+        if attempt is None:
+            return GateDecision.REQUIRE_REINSPECTION
+        semantic = self.attempt_semantics.get(attempt_ref)
+        candidate = self.system_one_projector.record_activity(
+            "retry", source="host_observed",
+            action_class=(semantic.planned_action_class if semantic else "retry"),
+            host_declared_relation="ambiguous",
+            target_kind=(semantic.planned_target_kind if semantic else "attempt"),
+            proposed_purpose=(semantic.hypothesis_summary if semantic else None),
+            proposed_purpose_source=(semantic.source if semantic else "derived"),
+            affected_criterion_ids=(semantic.affected_criterion_ids if semantic else ()))
+        self._journal("system_one_projection_changed",
+                      snapshot=self.system_one_projector.snapshot())
+        self._semantic_retry_same.discard(attempt_ref)
+        if semantic is not None and self._system_one_policy().mode != "disabled":
+            state = self.convergence.state(attempt.cause_id) if self.convergence else None
+            deterministic_same = bool(state and
+                state.action_fingerprint == attempt.action_plan_digest
+                and state.hypothesis_fingerprint == attempt.premise_digest
+                and state.premise_digest == attempt.premise_digest)
+            judgment = None
+            decision = None
+            if not deterministic_same:
+                judgment = self._system_one_query(
+                    questions=("retry_relation",), candidate=candidate,
+                    subject_ref=action.subject_ref)
+                decision = (self.system_one_decisions.get(judgment.request_id)
+                            if judgment else None)
+            retry_relation = fuse_retry_relation(
+                deterministic_same=deterministic_same, judgment=judgment,
+                policy=self._system_one_policy(),
+                calibrated=tuple((decision or {}).get("calibrated_question_ids") or ()))
+            if retry_relation == "equivalent_retry" and not deterministic_same:
+                # Inference can collapse novelty to the already-recorded branch;
+                # it cannot create a new branch or reset any host budget.
+                self._semantic_retry_same.add(attempt_ref)
+        try:
+            for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
+                if enforcement.get("mode") != "structural":
+                    continue
+                handler = handler_for_enforcement(enforcement)
+                if handler and "before_retry" in getattr(handler, "hooks", ()):
+                    result = handler.before_retry(self, action, enforcement)
+                    if result == "block":
+                        if (self.convergence is not None
+                                and self.convergence.state(attempt.cause_id).disposition == "BLOCKED"):
+                            state = self.convergence.state(attempt.cause_id)
+                            self.request_termination(
+                                self._host_capability, disposition="BLOCKED",
+                                reason="Autonomous recovery limit reached without primary-goal progress.",
+                                cause_id=attempt.cause_id,
+                                evidence_refs=([state.last_failure_evidence_ref]
+                                               if state.last_failure_evidence_ref else ()))
+                        return GateDecision.BLOCK
+                    if result == "require_reinspection":
+                        return GateDecision.REQUIRE_REINSPECTION
+                    if result == "require_changed_hypothesis":
+                        return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
+                    if result == "require_goal_reanchor":
+                        return GateDecision.REQUIRE_GOAL_REANCHOR
+            return GateDecision.ALLOW
+        finally:
+            self._semantic_retry_same.discard(attempt_ref)
+
+    def _retry_comparison_fingerprints(
+            self, descriptor: AttemptDescriptor) -> tuple[str, str, Optional[str]]:
+        if descriptor.attempt_ref not in self._semantic_retry_same or self.convergence is None:
+            return (descriptor.action_plan_digest, descriptor.premise_digest,
+                    descriptor.premise_digest)
+        prior = self.convergence.state(descriptor.cause_id)
+        return (prior.action_fingerprint or descriptor.action_plan_digest,
+                prior.hypothesis_fingerprint or descriptor.premise_digest,
+                prior.premise_digest or descriptor.premise_digest)
 
     def request_termination(self, capability: _HostCapability, *,
                            disposition: str, reason: str, cause_id: str,
@@ -1869,13 +2318,14 @@ class RuntimeSession:
                       convergence=self.convergence.export())
 
     def _system_one_decision_for_action(self, capability: _HostCapability,
-                                        action_digest_value: str) -> Optional[str]:
+                                        action_request_id: str) -> Optional[str]:
         self._require_host(capability)
-        if not isinstance(action_digest_value, str) or not re.fullmatch(
-                r"[0-9a-f]{64}", action_digest_value):
-            raise ValueError("action_digest must be a SHA-256 digest")
+        if (not isinstance(action_request_id, str)
+                or not action_request_id.startswith("action-request-")
+                or len(action_request_id) > 256):
+            raise ValueError("action_request_id must be a bounded host-generated identifier")
         matches = [decision for decision in self.system_one_decisions.values()
-                   if decision.get("action_digest") == action_digest_value
+                   if decision.get("action_request_id") == action_request_id
                    and decision.get("judgment")]
         if not matches:
             return None
@@ -1903,10 +2353,16 @@ class RuntimeSession:
                                "equivalent_retry", "unrelated"},
             "goal_drift": {"yes", "no"},
         }
+        prediction = next((item for item in decision["judgment"].get("answers", ())
+                           if item.get("question_id") == label), None)
+        if prediction is None:
+            raise ValueError("outcome label was not included in the prediction")
+        if label == "route_preference":
+            label_values[label] = {str(item.get("label")) for item in
+                                   prediction.get("raw_probabilities", ())
+                                   if isinstance(item, Mapping)}
         if label not in label_values or value not in label_values[label]:
             raise ValueError("unsupported System-1 ground-truth label")
-        if decision["judgment"].get(label) is None:
-            raise ValueError("outcome label was not included in the prediction")
         if authority not in {"host_evidence", "validator", "csw_fact", "operator"}:
             raise ValueError("unsupported System-1 outcome authority")
         record = self.ledger.get(evidence_ref)
@@ -1950,6 +2406,7 @@ class RuntimeSession:
             "progress_relation": "system_one_outcome_progress_relation",
             "retry_relation": "system_one_outcome_retry_relation",
             "goal_drift": "system_one_outcome_goal_drift",
+            "route_preference": "system_one_outcome_route_preference",
         }[label]
         self._emit_runtime({
             "event_id": outcome_event_id,
@@ -2240,7 +2697,7 @@ class RuntimeSession:
             raise ValueError(f"unknown route evaluator {evaluator_id!r}")
         resolved = self.ledger.resolve(list(evidence_refs), subject_ref=self.bundle.policy.subject_ref)
         # Tri-state: absence of success evidence is NOT failure evidence.
-        outcome = "not_applicable"
+        outcome = "NOT_APPLICABLE"
         for ref in resolved:
             record = self.ledger.get(ref["ref"])
             if record is None or record.kind != "validation_result":
@@ -2249,10 +2706,10 @@ class RuntimeSession:
             actual = invocation.get("actual_result") or {}
             status = str(actual.get("status") or actual.get("result") or "").lower()
             if status in {"pass", "passed", "success", "ok"}:
-                outcome = "good"
+                outcome = "PASS"
                 break
             if status in {"fail", "failed", "failure", "error"}:
-                outcome = "bad"
+                outcome = "FAIL"
                 break
         event_id = f"evt-{uuid.uuid4()}"
         outcome_payload = {
@@ -2347,11 +2804,39 @@ class RuntimeSession:
                             result_class: str, subject_ref: Optional[str] = None,
                             *, invocation_id: Optional[str] = None,
                             result_digest: Optional[str] = None,
-                            action_digest_value: Optional[str] = None,
+                            action_request_id: Optional[str] = None,
                             actual_result: Optional[Mapping[str, Any]] = None) -> str:
         """Record a tool result from the host execution channel."""
         self._require_host(capability)
         invocation_id = invocation_id or f"invocation-{uuid.uuid4()}"
+        if not isinstance(invocation_id, str) or not invocation_id.strip() or len(invocation_id) > 256:
+            raise ValueError("invocation_id must be a bounded host-generated identifier")
+        result_data = dict(actual_result or {})
+        raw_evidence_refs = result_data.get("evidence_refs") or ()
+        if (not isinstance(raw_evidence_refs, (list, tuple))
+                or len(raw_evidence_refs) > 8
+                or any(not isinstance(ref, str) or not ref for ref in raw_evidence_refs)):
+            raise ValueError("tool-result evidence_refs must contain at most eight host references")
+        supporting_evidence: list[EvidenceRecord] = []
+        for evidence_ref in dict.fromkeys(raw_evidence_refs):
+            record = self.ledger.get(evidence_ref)
+            if (record is None or record.invalidated
+                    or record.subject_ref != subject_ref):
+                raise ValueError("tool-result evidence reference is missing, stale, or cross-subject")
+            supporting_evidence.append(record)
+        supported_progress_kinds = {
+            "rendered_observation", "validator_result", "repository_evidence",
+            "state_transition", "completion_boundary",
+        }
+        supporting_kinds = tuple(dict.fromkeys(
+            record.kind for record in supporting_evidence
+            if record.kind in supported_progress_kinds))
+        supporting_refs = tuple(record.evidence_id for record in supporting_evidence
+                                if record.kind in supported_progress_kinds)
+        pending = (self._pending_action_requests.get(action_request_id or "")
+                   if action_request_id else None)
+        if action_request_id and pending is None:
+            raise ValueError("tool result references an unknown action_request_id")
         evidence_id = self._record_attestation(
             evidence_type="tool_result", subject_ref=subject_ref,
             issuer=f"host:tool:{tool_type[:64]}",
@@ -2365,23 +2850,40 @@ class RuntimeSession:
         self.host_invocations[invocation_id] = {
             "tool_type": tool_type, "result_class": result_class,
             "subject_ref": subject_ref, "evidence_id": evidence_id,
+            "action_request_id": action_request_id,
             "actual_result": dict(actual_result or {}),
         }
         self._journal("tool_invocation_completed", invocation_id=invocation_id,
                       tool_type=tool_type, result_class=result_class,
                       subject_ref=subject_ref, evidence_id=evidence_id,
+                      action_request_id=action_request_id,
                       result_digest=result_digest or "",
                       actual_result_digest=hashlib.sha256(
                           json.dumps(dict(actual_result or {}), sort_keys=True,
                                      separators=(",", ":"), default=str).encode("utf-8")
                       ).hexdigest())
-        self.system_one_projector.record_activity(
-            "tool_result", f"{tool_type[:64]}:{result_class[:32]}")
+        descriptor = None
+        if pending is not None:
+            descriptor = ActionDescriptor(**dict(pending["descriptor"]))
+        changed = result_data.get("artifact_changed")
+        if not isinstance(changed, bool):
+            changed = None
+        candidate = self.system_one_projector.record_activity(
+            "tool_result", source="host_observed",
+            action_class=(descriptor.action_class if descriptor else tool_type[:64]),
+            host_declared_relation=(descriptor.goal_relation if descriptor else "ambiguous"),
+            target_kind=(descriptor.target_kind if descriptor else None),
+            target_scope=(descriptor.target_scope if descriptor else None),
+            result_class=result_class[:64], artifact_changed=changed,
+            affected_criterion_ids=(descriptor.affected_criterion_ids if descriptor else ()),
+            evidence_kinds=tuple(dict.fromkeys(("tool_result",) + supporting_kinds)))
+        self._journal("system_one_projection_changed",
+                      snapshot=self.system_one_projector.snapshot())
         if (self.convergence is not None
                 and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"):
-            host_relation = self.system_one_action_relations.pop(
-                action_digest_value or "", "ambiguous")
-            if host_relation not in {"advances_primary_goal", "removes_concrete_blocker"}:
+            host_relation = str((pending or {}).get("relation") or "ambiguous")
+            if host_relation not in {"advances_primary_goal", "removes_concrete_blocker",
+                                     "required_verification"}:
                 # Unknown and ambiguous operations count conservatively as
                 # support. No tool-name list decides task relevance.
                 state = self.convergence.record_support_action(cause_id="primary-objective")
@@ -2391,11 +2893,68 @@ class RuntimeSession:
                     support_count=state.support_actions_since_goal_progress)
         if self._system_one_policy().mode != "disabled":
             self._system_one_query(
-                questions=("progress_relation",),
-                candidate={"tool_type": tool_type[:64],
-                           "result_class": result_class[:64],
-                           "subject_match": str(subject_ref == self.bundle.policy.subject_ref).lower()},
-                subject_ref=subject_ref, action_digest_value=action_digest_value)
+                questions=("progress_relation",), candidate=candidate,
+                subject_ref=subject_ref,
+                action_request_id=action_request_id,
+                action_invocation_id=invocation_id)
+            decision = next((item for item in reversed(tuple(self.system_one_decisions.values()))
+                             if item.get("action_invocation_id") == invocation_id), None)
+            judgment_data = dict((decision or {}).get("judgment") or {})
+            try:
+                judgment = (SystemOneJudgment.from_mapping(judgment_data)
+                            if judgment_data else None)
+            except (TypeError, ValueError):
+                judgment = None
+            criterion_id = next((item for item in (descriptor.affected_criterion_ids
+                                                    if descriptor else ())
+                                 if any(row.criterion_id == item and row.status != "satisfied"
+                                        for row in self.system_one_projector.criteria)), None)
+            criterion = next((row for row in self.system_one_projector.criteria
+                              if row.criterion_id == criterion_id), None)
+            evidence_kinds = tuple(dict.fromkeys(("tool_result",) + supporting_kinds))
+            action_relation = str((pending or {}).get("relation") or "")
+            host_progress_class = str(result_data.get("progress_class") or "")
+            if not host_progress_class and action_relation == "required_verification":
+                host_progress_class = "VERIFICATION_PROGRESS"
+            criterion_artifact_changed = bool(
+                changed is True or (criterion_id and
+                                    self.system_one_projector.has_recent_artifact_change_for(
+                                        criterion_id, before_sequence=candidate.sequence)))
+            fused_progress = fuse_progress_relation(
+                host_progress_class=host_progress_class,
+                evidence_kinds=evidence_kinds, artifact_changed=criterion_artifact_changed,
+                criterion_id=criterion_id,
+                criterion_status=(criterion.status if criterion else None),
+                judgment=judgment, policy=self._system_one_policy(),
+                calibrated=tuple((decision or {}).get("calibrated_question_ids") or ()))
+            if fused_progress.host_corroborated and fused_progress.progress_class in {
+                    "GOAL_PROGRESS", "BLOCKER_REMOVED"} and criterion_id:
+                progress_digest = hashlib.sha256(json.dumps({
+                    "evidence_id": evidence_id, "criterion_id": criterion_id,
+                    "artifact_changed": changed, "progress_class": fused_progress.progress_class,
+                }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                self.convergence.record_progress(
+                    cause_id="primary-objective", progress_digest=progress_digest,
+                    progress_class=fused_progress.progress_class, evidence_ref=evidence_id)
+                self.system_one_projector.record_goal_progress(
+                    criterion_id=criterion_id, claim=criterion.claim,
+                    kind=criterion.kind, evidence_ref=evidence_id,
+                    evidence_kind=(supporting_kinds[0] if supporting_kinds else "tool_result"))
+                self._record_convergence("system_one_corroborated_progress")
+                self._journal("system_one_projection_changed",
+                              snapshot=self.system_one_projector.snapshot())
+            self._emit_runtime({
+                "category": "tool_result", "event_type": "progress_relation_fused",
+                "subject": subject_ref,
+                "evidence_refs": [evidence_id, *supporting_refs],
+                "payload": {"summary": "System-1 progress classification fused with host facts",
+                            "result_class": fused_progress.progress_class.lower(),
+                            "progress_class": fused_progress.progress_class,
+                            "criterion_id": fused_progress.criterion_id or "",
+                            "host_corroborated": fused_progress.host_corroborated,
+                            "model_influenced": fused_progress.model_influenced}})
+        if action_request_id:
+            self._pending_action_requests.pop(action_request_id, None)
         self._complete_action(capability)
         return evidence_id
 
@@ -2583,9 +3142,11 @@ class RuntimeSession:
             transition_facts = dict(committed.get("transition") or transition_facts)
         self.statework_states[state_key] = output_state
         self.system_one_projector.record_csw_fact(
-            statework_id=statework_id, subject_ref=subject_ref,
-            input_state=origin, output_state=output_state,
-            progress_class=str(transition_facts.get("progress_class") or "LATERAL"))
+            statework_id=statework_id, input_state=origin, output_state=output_state,
+            progress_class=str(transition_facts.get("progress_class") or "LATERAL"),
+            workflow_metadata=transition_facts)
+        self._journal("system_one_projection_changed",
+                      snapshot=self.system_one_projector.snapshot())
         entry_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.statework_entry_times[state_key] = entry_time
         state_segment = StateSegment(
@@ -2788,7 +3349,8 @@ class RuntimeSession:
     def _begin_attempt(self, capability: _HostCapability, *, attempt_ref: str,
                        cause_id: str, premise_digest: str,
                        action_plan: Mapping[str, Any],
-                       parent_attempt_ref: Optional[str] = None) -> AttemptDescriptor:
+                       parent_attempt_ref: Optional[str] = None,
+                       semantic_descriptor: Optional[Mapping[str, Any]] = None) -> AttemptDescriptor:
         self._require_host(capability)
         if self.convergence is None:
             raise PermissionError("attempt tracking requires the host convergence controller")
@@ -2803,11 +3365,38 @@ class RuntimeSession:
             premise_digest=premise_digest,
             action_plan_digest=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
             parent_attempt_ref=parent_attempt_ref)
+        semantic = None
+        if semantic_descriptor is not None:
+            if not isinstance(semantic_descriptor, Mapping):
+                raise TypeError("semantic_descriptor must be a bounded host-accepted mapping")
+            allowed = {"cause_class", "hypothesis_summary", "mechanism", "evidence_target",
+                       "planned_action_class", "planned_target_kind", "failed_result_class",
+                       "affected_criterion_ids", "source"}
+            if set(semantic_descriptor) - allowed:
+                raise ValueError("semantic_descriptor contains unknown fields")
+            semantic = AttemptSemanticDescriptor(
+                cause_class=str(semantic_descriptor.get("cause_class") or cause_id)[:64],
+                hypothesis_summary=str(semantic_descriptor.get("hypothesis_summary") or "")[:256],
+                mechanism=str(semantic_descriptor.get("mechanism") or "")[:256],
+                evidence_target=str(semantic_descriptor.get("evidence_target") or "")[:128],
+                planned_action_class=str(semantic_descriptor.get("planned_action_class") or "")[:64],
+                planned_target_kind=str(semantic_descriptor.get("planned_target_kind") or "")[:64],
+                failed_result_class=str(semantic_descriptor.get("failed_result_class") or "pending")[:64],
+                premise_digest=premise_digest,
+                action_plan_digest=descriptor.action_plan_digest,
+                affected_criterion_ids=tuple(semantic_descriptor.get("affected_criterion_ids") or ()),
+                source=str(semantic_descriptor.get("source") or "model_proposed"))
         prior = self.attempt_descriptors.get(attempt_ref)
         if prior is not None and prior != descriptor:
             raise ValueError("attempt_ref is already bound to a different plan")
         self.attempt_descriptors[attempt_ref] = descriptor
-        self._journal("attempt_descriptor_recorded", descriptor=descriptor.to_dict())
+        if semantic is not None:
+            old_semantic = self.attempt_semantics.get(attempt_ref)
+            if old_semantic is not None and old_semantic != semantic:
+                raise ValueError("attempt_ref is already bound to a different semantic descriptor")
+            self.attempt_semantics[attempt_ref] = semantic
+        self._journal("attempt_descriptor_recorded", descriptor=descriptor.to_dict(),
+                      semantic_descriptor=semantic.to_dict() if semantic else None)
         return descriptor
 
     def _record_attempt_failure(self, capability: _HostCapability, *,
@@ -2836,6 +3425,25 @@ class RuntimeSession:
             action_fingerprint=descriptor.action_plan_digest,
             hypothesis_fingerprint=descriptor.premise_digest,
             evidence_ref=evidence_ref, premise_digest=descriptor.premise_digest)
+        semantic = self.attempt_semantics.get(attempt_ref)
+        if semantic is not None:
+            failed = AttemptSemanticDescriptor(
+                cause_class=semantic.cause_class,
+                hypothesis_summary=semantic.hypothesis_summary,
+                mechanism=semantic.mechanism,
+                evidence_target=semantic.evidence_target,
+                planned_action_class=semantic.planned_action_class,
+                planned_target_kind=semantic.planned_target_kind,
+                failed_result_class=str(self.host_invocations.get(
+                    self.ledger.get(evidence_ref).invocation_id or "", {}).get(
+                        "result_class") or semantic.failed_result_class),
+                premise_digest=semantic.premise_digest,
+                action_plan_digest=semantic.action_plan_digest,
+                affected_criterion_ids=semantic.affected_criterion_ids,
+                source=semantic.source)
+            self.system_one_projector.record_failed_approach(failed)
+            self._journal("system_one_projection_changed",
+                          snapshot=self.system_one_projector.snapshot())
         self.attempt_failures.add(attempt_ref)
         self._journal("attempt_failure_recorded", attempt_ref=attempt_ref,
                       cause_id=descriptor.cause_id, evidence_ref=evidence_ref,
@@ -2900,6 +3508,19 @@ class RuntimeSession:
                 cause_id=progress_cause, progress_digest=digest,
                 progress_class=progress_class, evidence_ref=evidence_ref)
         self._record_convergence("goal_progress")
+        if criterion_id is not None:
+            criterion = next((item for item in
+                              (self.bundle.pinned.get("goal_contract") or {}).get(
+                                  "acceptance_criteria", ())
+                              if str(item.get("criterion_id")) == criterion_id), None)
+            if criterion is not None:
+                self.system_one_projector.record_goal_progress(
+                    criterion_id=criterion_id,
+                    claim=str(criterion.get("claim") or ""),
+                    kind=str(criterion.get("kind") or "acceptance"),
+                    evidence_ref=evidence_ref, evidence_kind=record.kind)
+                self._journal("system_one_projection_changed",
+                              snapshot=self.system_one_projector.snapshot())
         self._emit_runtime({
             "category": "decision", "event_type": "goal_progress_recorded",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -3383,6 +4004,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
           host_context: Optional[HostExecutionContext] = None,
           session_nonce: Optional[str] = None,
           session_id: Optional[str] = None,
+          policy_epoch_record: Optional[PolicyEpochRecord] = None,
           resume: bool = False) -> RuntimeSession:
     """Inject selected runtime bytes, attach default host telemetry, and
     persist the immutable snapshot. Only tests may explicitly disable the
@@ -3399,13 +4021,51 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     if dict(bundle.policy.system_one_policy) != system_one_policy.to_dict():
         raise resolve_runtime.SnapshotIntegrityError(
             "System-1 policy differs from the task's pinned policy")
+    if policy_epoch_record is not None:
+        if (not isinstance(policy_epoch_record, PolicyEpochRecord)
+                or policy_epoch_record.epoch_index < 1
+                or policy_epoch_record.parent_policy_hash == policy_epoch_record.child_policy_hash
+                or policy_epoch_record.child_policy_hash != bundle.pinned.get("policy_hash")
+                or policy_epoch_record.route_type != "flow"
+                or policy_epoch_record.reason != "dynamic_replan"
+                or not policy_epoch_record.system_one_decision_ref
+                or policy_epoch_record.state_revision < 0):
+            raise resolve_runtime.SnapshotIntegrityError(
+                "child policy epoch record does not match the immutable runtime bundle")
     if behavioral_judge is not None:
-        for field_name, expected in (
-                ("backend_id", system_one_policy.backend_id),
-                ("model_id", system_one_policy.model_id),
-                ("calibration_hash", system_one_policy.calibration_hash)):
-            if getattr(behavioral_judge, field_name, None) != expected:
-                raise ValueError(f"injected System-1 {field_name} differs from pinned policy")
+        capability_method = getattr(behavioral_judge, "capability", None)
+        if not callable(capability_method):
+            raise ValueError("System-1 provider must expose a capability handshake")
+        capability = capability_method()
+        if isinstance(capability, Mapping):
+            capability = SystemOneCapability(
+                **{**dict(capability),
+                   "supported_question_families": tuple(
+                       capability.get("supported_question_families") or ())})
+        if not isinstance(capability, SystemOneCapability):
+            raise ValueError("System-1 provider returned an invalid capability handshake")
+        pinned_capabilities = {
+            "backend_id": system_one_policy.backend_id,
+            "model_id": system_one_policy.model_id,
+            "model_revision": system_one_policy.model_revision,
+            "model_content_hash": system_one_policy.model_content_hash,
+            "provider_protocol_hash": system_one_policy.provider_protocol_hash,
+            "protocol_version": system_one_policy.protocol_version,
+            "protocol_hash": system_one_policy.protocol_hash,
+            "question_registry_hash": system_one_policy.question_registry_hash,
+            "state_projection_schema_hash": system_one_policy.state_projection_schema_hash,
+        }
+        for field_name, expected in pinned_capabilities.items():
+            if getattr(capability, field_name) != expected:
+                raise ValueError(f"System-1 capability {field_name} differs from pinned policy")
+        if capability.max_state_bytes < 32768:
+            raise ValueError("System-1 provider cannot accept the maximum protocol frame")
+        if not set(QUESTION_REGISTRY).issubset(capability.supported_question_families):
+            raise ValueError("System-1 provider does not support the pinned question registry")
+        if capability.stateful_sessions and (
+                not callable(getattr(behavioral_judge, "reset_identity", None))
+                or not callable(getattr(behavioral_judge, "resync", None))):
+            raise ValueError("stateful System-1 provider must implement reset and resync")
         provider_cache_size = getattr(behavioral_judge, "cache_size", None)
         if provider_cache_size is not None and int(provider_cache_size) != system_one_policy.cache_size:
             raise ValueError("injected System-1 cache size differs from pinned policy")
@@ -3495,7 +4155,8 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
        adopted_profile_hashes=tuple(bundle.pinned.get("adopted_profile_hashes") or ()),
        shared_workflow_membership=bundle.pinned.get("shared_workflow_membership"),
        policy_revocation_revision=int(bundle.pinned.get("policy_revocation_revision", 0) or 0),
-       revocation_mode=str(bundle.pinned.get("revocation_mode") or "deferred"))
+       revocation_mode=str(bundle.pinned.get("revocation_mode") or "deferred"),
+       policy_epoch_record=policy_epoch_record)
     session._ledger_token = object()
     session.ledger = EvidenceLedger(bundle.task_id, writer_token=session._ledger_token)
     session.execution_identity = ExecutionIdentity(
@@ -3578,7 +4239,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
         session._journal("session_started", segment_id=session.current_segment.segment_id,
                          segment_index=session.current_segment_index,
                          authority_revision=session.authority_revision,
-                         segment_status={key: value.value for key, value in session.segment_status.items()})
+                         segment_status={key: value.value for key, value in session.segment_status.items()},
+                         policy_epoch_record=(policy_epoch_record.to_dict()
+                                              if policy_epoch_record else None))
     session.active_statework_ids = ({session.current_segment.statework_id}
                                     if session.current_segment.statework_id else set())
     session.lifecycle = LifecycleController(bundle)
@@ -3721,6 +4384,18 @@ def _restore_session(session: RuntimeSession) -> None:
         if event_type == "session_started":
             session.current_segment_index = int(record.get("segment_index", 0))
             session.authority_revision = int(record.get("authority_revision", 0) or 0)
+            epoch_data = record.get("policy_epoch_record")
+            restored_epoch = (PolicyEpochRecord(**epoch_data)
+                              if isinstance(epoch_data, Mapping) else None)
+            if restored_epoch is not None:
+                if restored_epoch.child_policy_hash != session.bundle.pinned.get("policy_hash"):
+                    raise PermissionError("child policy epoch journal differs from resumed bundle")
+                if (session.policy_epoch_record is not None
+                        and session.policy_epoch_record != restored_epoch):
+                    raise PermissionError("supplied policy epoch differs from resumed journal")
+                object.__setattr__(session, "policy_epoch_record", restored_epoch)
+            elif session.policy_epoch_record is not None:
+                raise PermissionError("resumed policy epoch is absent from the durable journal")
             statuses = record.get("segment_status") or {}
             for segment_id, status in statuses.items():
                 session._segment_status[segment_id] = SegmentStatus(status)
@@ -3746,6 +4421,8 @@ def _restore_session(session: RuntimeSession) -> None:
         elif event_type == "system_one_sequence":
             session.system_one_sequence = max(
                 session.system_one_sequence, int(record.get("sequence", 0) or 0))
+        elif event_type == "system_one_projection_changed":
+            session.system_one_projector.restore(record.get("snapshot") or {})
         elif event_type == "system_one_decision_recorded":
             decision = dict(record.get("decision") or {})
             decision_id = str(decision.get("decision_id") or "")
@@ -3753,9 +4430,6 @@ def _restore_session(session: RuntimeSession) -> None:
                 session.system_one_decisions[decision_id] = decision
                 session.system_one_sequence = max(
                     session.system_one_sequence, int(decision.get("sequence", 0) or 0))
-                session.system_one_advisories.extend(
-                    str(item)[:256] for item in decision.get("advisories") or ())
-                del session.system_one_advisories[:-4]
         elif event_type == "system_one_outcome_recorded":
             session.system_one_outcomes.add(
                 f"{record.get('decision_id') or ''}:{record.get('label') or ''}")
@@ -3785,6 +4459,7 @@ def _restore_session(session: RuntimeSession) -> None:
                 "result_class": record.get("result_class", ""),
                 "subject_ref": record.get("subject_ref"),
                 "evidence_id": record.get("evidence_id"),
+                "action_request_id": record.get("action_request_id"),
                 # Raw tool results are deliberately not persisted.  A resumed
                 # completion path must receive a fresh host validator input.
                 "actual_result": {},
@@ -3828,10 +4503,11 @@ def _restore_session(session: RuntimeSession) -> None:
             else:
                 progress_class = "DIAGNOSTIC_PROGRESS"
             session.system_one_projector.record_csw_fact(
-                statework_id=key[0], subject_ref=key[1],
+                statework_id=key[0],
                 input_state=str(record["input_state"]),
                 output_state=str(record["output_state"]),
-                progress_class=csw_progress_class)
+                progress_class=csw_progress_class,
+                workflow_metadata=transition)
             if session.convergence is not None:
                 progress_digest = hashlib.sha256(json.dumps({
                     "statework_id": key[0], "subject_ref": key[1],
@@ -3887,6 +4563,13 @@ def _restore_session(session: RuntimeSession) -> None:
         elif event_type == "attempt_descriptor_recorded":
             descriptor = AttemptDescriptor(**dict(record.get("descriptor") or {}))
             session.attempt_descriptors[descriptor.attempt_ref] = descriptor
+            semantic_data = record.get("semantic_descriptor")
+            if semantic_data:
+                semantic_data = dict(semantic_data)
+                semantic_data["affected_criterion_ids"] = tuple(
+                    semantic_data.get("affected_criterion_ids") or ())
+                session.attempt_semantics[descriptor.attempt_ref] = AttemptSemanticDescriptor(
+                    **semantic_data)
         elif event_type == "attempt_failure_recorded":
             session.attempt_failures.add(str(record.get("attempt_ref") or ""))
     current = session.current_segment
@@ -3896,6 +4579,30 @@ def _restore_session(session: RuntimeSession) -> None:
         os.chmod(session.journal_path, 0o600)
     if session.journal_db_path is not None and session.journal_db_path.exists():
         os.chmod(session.journal_db_path, 0o600)
+    # A resumed model-visible behavior decision may have been based on stale
+    # state. Keep the host reconstruction, clear transient influence, then
+    # send a complete frame on the next eligible query.
+    object.__setattr__(session, "behavioral_controller", BehavioralFusionController())
+    object.__setattr__(session, "behavioral_decision", BehavioralDecision())
+    session.system_one_action_relations.clear()
+    session._pending_action_requests.clear()
+    if session.system_one_judge is not None:
+        identity = SystemOneIdentity(
+            namespace_id=session.execution_identity.namespace_id,
+            application_id=str(session.bundle.pinned.get("application_id") or "unknown-application"),
+            application_instance_id=session.execution_identity.application_instance_id,
+            agent_id=str(session.bundle.pinned.get("agent_id") or "agent"),
+            agent_instance_id=session.execution_identity.agent_instance_id,
+            session_id=session.execution_identity.session_id,
+            task_id=session.execution_identity.task_id,
+            attempt_id=session.execution_identity.attempt_id,
+            interaction_id=session.execution_identity.interaction_id)
+        reset = getattr(session.system_one_judge, "reset_identity", None)
+        if callable(reset):
+            reset(identity)
+    session._journal("system_one_resume_state_invalidated",
+                     projector_restored=True, behavior_epoch_reset=True,
+                     provider_resync_required=True)
 
 
 def resume_task(bundle: resolve_runtime.RuntimeBundle, session_nonce: str, **kwargs: Any) -> RuntimeSession:
@@ -3972,10 +4679,12 @@ def context_for(session: RuntimeSession) -> str:
             f"No primary-deliverable progress in {support_count} support actions. "
             f"Primary outcome: {goal.get('objective', '')}\n"
             "Next action must advance a required criterion or establish a concrete blocker.")
-    if (session._system_one_policy().mode == "advisory"
-            and session.system_one_advisories):
-        parts.append("===== CALIBRATED SYSTEM-1 ADVISORY =====\n" +
-                     "\n".join(session.system_one_advisories[-4:]) +
+    criterion_claims = {str(item.get("criterion_id")): str(item.get("claim") or "")
+                        for item in goal.get("acceptance_criteria", ())}
+    directive = render_behavior_control_directive(
+        session.behavioral_decision, criterion_claims)
+    if directive:
+        parts.append(directive +
                      "\nHost permissions, evidence requirements, retry limits, and completion checks remain authoritative.")
     active_stages = [stage for stage in session.bundle.kernel
                      if stage in session.active_lifecycle]

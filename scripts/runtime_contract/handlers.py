@@ -57,11 +57,13 @@ class RetryHypothesisGateV2:
             "max_recovery_epochs_without_goal_progress", 3) or 3)
         if session._shared_branch_exhausted(descriptor, recovery_limit):
             return "block"
+        action_fingerprint, hypothesis_fingerprint, premise_digest = (
+            session._retry_comparison_fingerprints(descriptor))
         return controller.evaluate_retry(
             cause_id=descriptor.cause_id,
-            action_fingerprint=descriptor.action_plan_digest,
-            hypothesis_fingerprint=descriptor.premise_digest,
-            premise_digest=descriptor.premise_digest,
+            action_fingerprint=action_fingerprint,
+            hypothesis_fingerprint=hypothesis_fingerprint,
+            premise_digest=premise_digest,
             support_action_limit=int(verification.get(
                 "support_actions_before_goal_reanchor", 5) or 5))
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
+from threading import Event, Thread
 from pathlib import Path
 
 import pytest
@@ -12,9 +14,20 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from runtime_contract.actions import ActionDescriptor
 from runtime_contract.behavioral_fusion import fuse_action_relation
-from runtime_contract.system_one import SystemOneIdentity, SystemOneJudgment
+from runtime_contract.protocol_artifact import (
+    PROTOCOL_HASH, PROTOCOL_VERSION, QUESTION_REGISTRY_HASH,
+    STATE_PROJECTION_SCHEMA_HASH,
+)
+from runtime_contract.system_one import (
+    QUESTION_REGISTRY, QuestionAnswer, QuestionProbability, SystemOneCapability,
+    SystemOneIdentity, SystemOneJudgment,
+)
 from runtime_contract.task import (AcceptanceCriterion, SystemOnePolicy,
                                   TaskGoalContract, TaskRequest)
+
+TEST_MODEL_CONTENT_HASH = hashlib.sha256(b"test-model-content").hexdigest()
+TEST_PROVIDER_PROTOCOL_HASH = hashlib.sha256(b"test-provider-protocol").hexdigest()
+TEST_CALIBRATION_HASH = hashlib.sha256(b"test-calibration-bundle").hexdigest()
 
 
 def runtime_modules():
@@ -33,21 +46,60 @@ def runtime_modules():
     return resolve, runtime
 
 
+def make_test_policy(mode="shadow", *, calibration_hash=""):
+    return SystemOnePolicy(
+        mode=mode, backend_id="test-backend", model_id="test-model",
+        model_revision="test-revision", model_content_hash=TEST_MODEL_CONTENT_HASH,
+        provider_protocol_hash=TEST_PROVIDER_PROTOCOL_HASH,
+        calibration_bundle_hash=calibration_hash)
+
+
+def test_system_one_latency_policy_allows_bounded_cpu_model_deadline():
+    assert SystemOnePolicy(max_latency_ms=30000).max_latency_ms == 30000
+    with pytest.raises(ValueError, match="max_latency_ms"):
+        SystemOnePolicy(max_latency_ms=30001)
+
+
 class FixedJudge:
     backend_id = "test-backend"
     model_id = "test-model"
+    model_revision = "test-revision"
+    model_content_hash = TEST_MODEL_CONTENT_HASH
+    provider_protocol_hash = TEST_PROVIDER_PROTOCOL_HASH
+    cache_size = 128
+    max_latency_ms = 100
 
     def __init__(self, *, action_relation="unrelated", progress_relation="goal_progress",
                  retry_relation="equivalent_retry", goal_drift="no", wrong_identity=False,
-                 calibration_hash="", calibrated=False):
+                 calibrated=False, route_preference=None):
         self.frames = []
         self.action_relation = action_relation
         self.progress_relation = progress_relation
         self.retry_relation = retry_relation
         self.goal_drift = goal_drift
+        self.route_preference = route_preference
         self.wrong_identity = wrong_identity
-        self.calibration_hash = calibration_hash
         self.calibrated = calibrated
+        self.resets = []
+        self.resyncs = []
+
+    def capability(self):
+        return SystemOneCapability(
+            backend_id=self.backend_id, model_id=self.model_id,
+            model_revision=self.model_revision,
+            model_content_hash=self.model_content_hash,
+            provider_protocol_hash=self.provider_protocol_hash,
+            protocol_version=PROTOCOL_VERSION, protocol_hash=PROTOCOL_HASH,
+            question_registry_hash=QUESTION_REGISTRY_HASH,
+            state_projection_schema_hash=STATE_PROJECTION_SCHEMA_HASH,
+            supported_question_families=tuple(QUESTION_REGISTRY),
+            max_state_bytes=32768, stateful_sessions=True)
+
+    def reset_identity(self, identity):
+        self.resets.append(identity)
+
+    def resync(self, frame):
+        self.resyncs.append(frame)
 
     def judge(self, frame, *, mode):
         self.frames.append(frame)
@@ -59,20 +111,44 @@ class FixedJudge:
                 agent_instance_id=identity.agent_instance_id, session_id=identity.session_id,
                 task_id=identity.task_id, attempt_id=identity.attempt_id,
                 interaction_id=identity.interaction_id)
-        answer = SystemOneJudgment(
+        selected_by_question = {
+            "action_relation": self.action_relation,
+            "progress_relation": self.progress_relation,
+            "retry_relation": self.retry_relation,
+            "goal_drift": self.goal_drift,
+            "route_preference": self.route_preference,
+        }
+        answers = []
+        for spec in frame.questions:
+            labels = [label for label, _ in spec.criteria]
+            selected = selected_by_question.get(spec.question_id, labels[0])
+            if selected not in labels:
+                selected = labels[0]
+            remaining = max(0, len(labels) - 1)
+            probabilities = tuple(QuestionProbability(
+                label=label,
+                probability=(0.99 if label == selected else 0.01 / remaining))
+                for label in labels)
+            calibrated_probs = probabilities if self.calibrated else None
+            answers.append(QuestionAnswer(
+                question_id=spec.question_id, selected=selected,
+                raw_probabilities=probabilities,
+                calibrated_probabilities=calibrated_probs,
+                calibration_hash=(frame.calibration_bundle_hash if self.calibrated else None)))
+        judgment = SystemOneJudgment(
             identity=identity, request_id=frame.request_id, sequence=frame.sequence,
-            state_digest=frame.state_digest, policy_hash=frame.policy_hash,
+            state_digest=frame.state_digest,
+            question_bundle_digest=frame.question_bundle_digest,
+            request_digest=frame.request_digest, policy_hash=frame.policy_hash,
             backend_id=frame.backend_id, model_id=frame.model_id,
-            calibration_hash=frame.calibration_hash, confidence=0.99,
-            action_relation=(self.action_relation if "action_relation" in frame.questions else None),
-            progress_relation=(self.progress_relation if "progress_relation" in frame.questions else None),
-            retry_relation=(self.retry_relation if "retry_relation" in frame.questions else None),
-            goal_drift=(self.goal_drift if "goal_drift" in frame.questions else None),
-            protocol_version=frame.protocol_version, protocol_hash=frame.protocol_hash)
-        if self.calibrated:
-            from types import SimpleNamespace
-            return SimpleNamespace(judgment=answer, status="ok", calibrated=True)
-        return answer
+            model_revision=frame.model_revision,
+            model_content_hash=frame.model_content_hash,
+            provider_protocol_hash=frame.provider_protocol_hash,
+            calibration_bundle_hash=frame.calibration_bundle_hash,
+            answers=tuple(answers), protocol_version=frame.protocol_version,
+            protocol_hash=frame.protocol_hash)
+        from types import SimpleNamespace
+        return SimpleNamespace(judgment=judgment, status="ok", calibrated=self.calibrated)
 
 
 def request(task_id, *, system_one_policy=None, action_registry=None, support_limit=5):
@@ -84,15 +160,14 @@ def request(task_id, *, system_one_policy=None, action_registry=None, support_li
     return TaskRequest(
         task_id=task_id, application_id="system-one-tests", subject_ref="component:target",
         shape="implement", goal_contract=goal,
-        system_one_policy=system_one_policy or SystemOnePolicy(
-            mode="shadow", backend_id="test-backend", model_id="test-model"),
+        system_one_policy=system_one_policy or make_test_policy(),
         action_registry=action_registry or {},
-        )
+    )
 
 
 def test_task_policy_pins_protocol_backend_model_and_calibration_identity():
     resolve, _runtime = runtime_modules()
-    policy = SystemOnePolicy(mode="shadow", backend_id="test-backend", model_id="test-model")
+    policy = make_test_policy()
     bundle = resolve.resolve(request("system-one-policy", system_one_policy=policy))
     assert bundle.pinned["system_one_policy"] == policy.to_dict()
     assert bundle.policy.canonical()["system_one_policy"] == policy.to_dict()
@@ -110,37 +185,207 @@ def test_shadow_judgment_is_bounded_telemetry_and_cannot_change_action_gate():
     action = {"tool_binding_id": "read", "arguments": {
         "path": "src/main.py", "credential": "raw-secret-marker"},
         "subject_ref": "component:target"}
-    assert session.before_action(action) == runtime.GateDecision.ALLOW
+    prepared = session.prepare_action(action)
+    assert prepared.decision == runtime.GateDecision.ALLOW
     assert len(judge.frames) == 1
     projected = json.dumps(judge.frames[0].canonical_payload(), sort_keys=True)
     assert "raw-secret-marker" not in projected
+    assert "src/main.py" not in projected
     decision = next(event for event in events if event["event_type"] == "system_one_decision")
     assert decision["payload"]["system_one_mode"] == "shadow"
     assert decision["payload"]["system_one_action_relation"] == "unrelated"
     assert decision["payload"]["system_one_influenced"] is False
     assert decision["payload"]["system_one_fused_action_relation"] == "diagnostic_support"
+    assert decision["payload"]["action_request_id"] == prepared.action_request_id
     assert "raw-secret-marker" not in json.dumps(events)
 
 
-def test_advisory_guidance_requires_pinned_calibration_and_stays_typed():
+def test_advisory_directive_requires_pinned_calibration_and_hysteresis():
     resolve, runtime = runtime_modules()
-    policy = SystemOnePolicy(
-        mode="advisory", backend_id="test-backend", model_id="test-model",
-        calibration_hash="a" * 64)
+    policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
     events = []
-    judge = FixedJudge(action_relation="unrelated", goal_drift="yes",
-                       calibration_hash="a" * 64, calibrated=True)
+    judge = FixedJudge(action_relation="unrelated", goal_drift="yes", calibrated=True)
     session = runtime.start(
         resolve.resolve(request("system-one-advisory", system_one_policy=policy)),
         behavioral_judge=judge,
         telemetry_sink=lambda event: events.append(dict(event)),
         session_nonce="system-one-advisory")
-    assert session.before_action({"tool_binding_id": "read", "arguments": {}}) == runtime.GateDecision.ALLOW
+    for _ in range(2):
+        assert session.prepare_action({"tool_binding_id": "read", "arguments": {}}).decision \
+            == runtime.GateDecision.ALLOW
     context = runtime.context_for(session)
-    assert "CALIBRATED SYSTEM-1 ADVISORY" in context
-    assert "Possible goal drift" in context
+    assert "CURRENT EXECUTION FOCUS" in context
+    assert "Mode: replan" in context
+    assert "Possible goal drift" not in context
     decision = next(event for event in events if event["event_type"] == "system_one_decision")
     assert decision["payload"]["system_one_influenced"] is True
+    assert decision["payload"]["system_one_answers"]["goal_drift"]["selected"] == "yes"
+
+
+def test_visual_drift_frame_and_rendered_observation_fuse_to_criterion_progress(tmp_path):
+    resolve, runtime = runtime_modules()
+    policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
+    goal = TaskGoalContract(
+        objective="Change the visual component to match the supplied reference.",
+        deliverable_kind="visual_ui", work_mode="delivery",
+        acceptance_criteria=(AcceptanceCriterion(
+            "C1", "Visual composition matches the reference", "static_visual"),))
+    actions = {
+        "visual_edit": ActionDescriptor(
+            "visual_edit", mutability="write", action_class="artifact_mutation",
+            target_kind="visual_artifact", goal_intent="update the referenced composition",
+            affected_criterion_ids=("C1",)),
+        "visual_render": ActionDescriptor(
+            "visual_render", goal_relation="required_verification", action_class="render",
+            target_kind="visual_artifact", goal_intent="render the changed artifact",
+            affected_criterion_ids=("C1",)),
+    }
+    bundle = resolve.resolve(TaskRequest(
+        task_id="system-one-visual-render", application_id="system-one-tests",
+        subject_ref="repo:visual", shape="implement", goal_contract=goal,
+        system_one_policy=policy, action_registry=actions))
+    judge = FixedJudge(action_relation="unrelated", progress_relation="goal_progress",
+                       goal_drift="yes", calibrated=True)
+    events = []
+    session = runtime.start(bundle, behavioral_judge=judge,
+                            telemetry_sink=lambda event: events.append(dict(event)),
+                            session_nonce="system-one-visual-render")
+    host = session._host_ingress()
+
+    for index in range(2):
+        inspection = session.prepare_action({
+            "tool_binding_id": "inspect", "arguments": {},
+            "subject_ref": "repo:visual"})
+        assert inspection.decision == runtime.GateDecision.ALLOW
+        host.record_tool_result(
+            "inspect", "success", subject_ref="repo:visual",
+            invocation_id=f"visual-inspect-{index}",
+            action_request_id=inspection.action_request_id)
+    assert session.behavioral_decision.focus_mode == "replan"
+    directive = runtime.context_for(session)
+    assert "C1" in directive and "Avoid unrelated investigation" in directive
+    assert judge.frames[0].state.task["deliverable_kind"] == "visual_ui"
+    assert judge.frames[0].state.criteria[0].status == "unmet"
+
+    write = session.prepare_action({
+        "tool_binding_id": "visual_edit",
+        "arguments": {"target": str(tmp_path / "buddy-renderer.py")},
+        "subject_ref": "repo:visual"})
+    assert write.decision == runtime.GateDecision.ALLOW
+    host.record_tool_result(
+        "visual_edit", "success", subject_ref="repo:visual",
+        invocation_id="visual-edit-1", action_request_id=write.action_request_id,
+        actual_result={"artifact_changed": True})
+    assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 3
+    support_event_count = sum(event["event_type"] == "support_action_recorded"
+                              for event in events)
+
+    rendered = host.record_observation("rendered_observation", subject_ref="repo:visual")
+    render = session.prepare_action({
+        "tool_binding_id": "visual_render", "arguments": {},
+        "subject_ref": "repo:visual"})
+    assert render.decision == runtime.GateDecision.ALLOW
+    host.record_tool_result(
+        "visual_render", "success", subject_ref="repo:visual",
+        invocation_id="visual-render-1", action_request_id=render.action_request_id,
+        actual_result={"artifact_changed": False, "evidence_refs": [rendered]})
+
+    assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 0
+    assert sum(event["event_type"] == "support_action_recorded" for event in events) \
+        == support_event_count
+    assert session.system_one_projector.criteria[0].status == "partially_observed"
+    progress_frame = next(frame for frame in reversed(judge.frames)
+                          if frame.question_ids == ("progress_relation",))
+    assert progress_frame.state.task["deliverable_kind"] == "visual_ui"
+    assert progress_frame.state.criteria[0].criterion_id == "C1"
+    assert progress_frame.state.criteria[0].status == "unmet"
+    assert any(fact.artifact_changed is True and "C1" in fact.affected_criterion_ids
+               for fact in progress_frame.state.activity)
+    assert "rendered_observation" in progress_frame.state.candidate.evidence_kinds
+    fused = [event for event in events if event["event_type"] == "progress_relation_fused"]
+    assert fused[-1]["payload"]["progress_class"] == "GOAL_PROGRESS"
+    assert fused[-1]["payload"]["host_corroborated"] is True
+
+
+def _semantic_retry_case(task_id, retry_relation):
+    resolve, runtime = runtime_modules()
+    policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
+    goal = TaskGoalContract(
+        objective="Fix the visual renderer.", deliverable_kind="visual_ui",
+        work_mode="delivery",
+        acceptance_criteria=(AcceptanceCriterion(
+            "C1", "The visual renderer matches the reference", "static_visual"),))
+    bundle = resolve.resolve(TaskRequest(
+        task_id=task_id, application_id="system-one-retry", shape="implement",
+        goal_contract=goal, system_one_policy=policy))
+    judge = FixedJudge(retry_relation=retry_relation, calibrated=True)
+    session = runtime.start(bundle, behavioral_judge=judge, telemetry_disabled=True,
+                            session_nonce=task_id)
+    host = session._host_ingress()
+    digest = lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest()
+    evidence = host.record_observation(
+        "diagnostic_observation", subject_ref=bundle.policy.subject_ref)
+    host.begin_attempt(
+        attempt_ref="attempt-1", cause_id="visual-composition",
+        premise_digest=digest("integer-coordinate-hypothesis"),
+        action_plan={"tool": "modify_renderer", "mechanism": "integer coordinates"},
+        semantic_descriptor={
+            "cause_class": "blocky visual composition",
+            "hypothesis_summary": "Particles look blocky because positions are rounded to integer pixels.",
+            "mechanism": "Quantizing each particle coordinate",
+            "evidence_target": "Rendered composition",
+            "planned_action_class": "modify_renderer",
+            "planned_target_kind": "visual_artifact",
+            "affected_criterion_ids": ["C1"], "source": "model_proposed"})
+    host.record_attempt_failure(attempt_ref="attempt-1", evidence_ref=evidence)
+    assert session.before_retry({
+        "tool_binding_id": "inspect", "arguments": {"attempt_ref": "attempt-1"}}) \
+        == runtime.GateDecision.REQUIRE_REINSPECTION
+    host.record_reinspection(cause_id="visual-composition", revision=1)
+    prior_budget = session.convergence.state("visual-composition").same_approach_retries
+    host.begin_attempt(
+        attempt_ref="attempt-2", cause_id="visual-composition",
+        premise_digest=digest("frame-step-hypothesis"),
+        action_plan={"tool": "modify_renderer", "mechanism": "frame interpolation"},
+        semantic_descriptor={
+            "cause_class": "visual texture",
+            "hypothesis_summary": "The dots look blocky because rendering holds particles between frame updates.",
+            "mechanism": "Frame-stepped interpolation",
+            "evidence_target": "Rendered composition",
+            "planned_action_class": "modify_renderer",
+            "planned_target_kind": "visual_artifact",
+            "affected_criterion_ids": ["C1"], "source": "model_proposed"})
+    decision = session.before_retry({
+        "tool_binding_id": "inspect", "arguments": {"attempt_ref": "attempt-2"}})
+    return runtime, session, judge, prior_budget, decision
+
+
+def test_retry_paraphrase_is_semantically_collapsed_without_budget_reset():
+    runtime, session, judge, prior_budget, decision = _semantic_retry_case(
+        "system-one-retry-paraphrase", "equivalent_retry")
+    assert decision == runtime.GateDecision.REQUIRE_CHANGED_HYPOTHESIS
+    frame = judge.frames[-1]
+    assert "integer pixels" in frame.state.failed_approaches[-1].hypothesis_summary
+    assert "frame updates" in frame.state.candidate.proposed_purpose
+    assert len(frame.state.failed_approaches[-1].premise_digest) == 64
+    assert len(frame.state.failed_approaches[-1].action_plan_digest) == 64
+    assert frame.question_ids == ("retry_relation",)
+    assert frame.questions[0].criteria
+    assert session.system_one_decisions[judge.frames[-1].request_id]["answers"][
+        "retry_relation"]["selected"] == "equivalent_retry"
+    assert session.convergence.state("visual-composition").same_approach_retries == prior_budget
+    assert session.convergence.state("visual-composition").recovery_epochs == 0
+
+
+def test_materially_new_retry_remains_eligible_but_does_not_reset_hard_limits():
+    runtime, session, judge, prior_budget, decision = _semantic_retry_case(
+        "system-one-retry-new-hypothesis", "materially_new")
+    assert decision == runtime.GateDecision.ALLOW
+    assert session.system_one_decisions[judge.frames[-1].request_id]["answers"][
+        "retry_relation"]["selected"] == "materially_new"
+    state = session.convergence.state("visual-composition")
+    assert state.same_approach_retries == prior_budget
+    assert state.recovery_epochs == 0
 
 
 def test_shadow_prediction_cannot_reset_host_convergence_budget():
@@ -150,20 +395,174 @@ def test_shadow_prediction_cannot_reset_host_convergence_budget():
     session = runtime.start(bundle, behavioral_judge=judge, telemetry_disabled=True,
                             session_nonce="system-one-no-reset")
     host = session._host_ingress()
+    prepared = session.prepare_action({
+        "tool_binding_id": "read", "arguments": {},
+        "subject_ref": "component:target"})
+    assert prepared.decision == runtime.GateDecision.ALLOW
     evidence_ref = host.record_tool_result(
-        "write", "success", subject_ref="component:target", invocation_id="write-1",
-        action_digest=runtime.action_digest("write", {}, "component:target"),
-        actual_result={"secret_result": "not projected"})
+        "read", "success", subject_ref="component:target", invocation_id="read-invocation-1",
+        action_request_id=prepared.action_request_id,
+        actual_result={"secret_result": "not projected", "artifact_changed": True})
     state = session.convergence.state("primary-objective")
     assert state.support_actions_since_goal_progress == 1
     progress_decisions = [decision for decision in session.system_one_decisions.values()
-                          if decision["judgment"].get("progress_relation") == "goal_progress"]
+                          if decision["judgment"].get("answers")]
     assert progress_decisions
     assert host.system_one_decision_for_action(
-        progress_decisions[-1]["action_digest"]) == progress_decisions[-1]["decision_id"]
+        prepared.action_request_id) == progress_decisions[-1]["decision_id"]
     host.record_goal_progress(cause_id="primary-objective", evidence_ref=evidence_ref,
                               criterion_id="C1")
     assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 0
+
+
+def test_identical_concurrent_requests_get_distinct_correlations():
+    resolve, runtime = runtime_modules()
+    session = runtime.start(resolve.resolve(request("system-one-concurrent")),
+                            behavioral_judge=FixedJudge(), telemetry_disabled=True,
+                            session_nonce="system-one-concurrent")
+    action = {"tool_binding_id": "read", "arguments": {},
+              "subject_ref": "component:target"}
+    one, two = session.prepare_action(action), session.prepare_action(action)
+    assert one.action_request_id != two.action_request_id
+    assert one.decision == two.decision == runtime.GateDecision.ALLOW
+
+
+def test_stale_system_one_response_is_discarded_when_a_later_frame_wins():
+    resolve, runtime = runtime_modules()
+    first_started, release_first = Event(), Event()
+
+    class DelayedFirstResponse(FixedJudge):
+        def judge(self, frame, *, mode):
+            if frame.sequence == 1:
+                first_started.set()
+                if not release_first.wait(timeout=5):
+                    raise TimeoutError("test did not release the stale provider call")
+            return super().judge(frame, mode=mode)
+
+    judge = DelayedFirstResponse()
+    session = runtime.start(resolve.resolve(request("system-one-stale-response")),
+                            behavioral_judge=judge, telemetry_disabled=True,
+                            session_nonce="system-one-stale-response")
+    action = {"tool_binding_id": "read", "arguments": {}}
+    results, errors = [], []
+
+    def first_call():
+        try:
+            results.append(session.prepare_action(action))
+        except Exception as exc:  # surface worker errors in the main test thread
+            errors.append(exc)
+
+    thread = Thread(target=first_call, daemon=True)
+    thread.start()
+    assert first_started.wait(timeout=5)
+    results.append(session.prepare_action(action))
+    release_first.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert len(results) == 2
+    stale = next(item for item in session.system_one_decisions.values()
+                 if item["sequence"] == 1)
+    assert stale["status"] == "stale_response"
+    assert stale["judgment"] == {}
+
+
+def test_provider_crash_falls_back_once_without_changing_authority():
+    resolve, runtime = runtime_modules()
+
+    class CrashedProvider(FixedJudge):
+        def judge(self, frame, *, mode):
+            self.frames.append(frame)
+            raise RuntimeError("provider process exited")
+
+    judge = CrashedProvider()
+    session = runtime.start(resolve.resolve(request("system-one-provider-crash")),
+                            behavioral_judge=judge, telemetry_disabled=True,
+                            session_nonce="system-one-provider-crash")
+    action = session.prepare_action({"tool_binding_id": "read", "arguments": {}})
+    assert action.decision == runtime.GateDecision.ALLOW
+    fallback = next(iter(session.system_one_decisions.values()))
+    assert fallback["status"] == "fallback"
+    assert fallback["judgment"] == {}
+    assert len(judge.frames) == 1
+    assert session.prepare_action({"tool_binding_id": "shell", "arguments": {}}).decision \
+        == runtime.GateDecision.BLOCK
+    assert len(judge.frames) == 1
+
+
+def test_system_one_disabled_task_runs_without_dp_or_csw():
+    resolve, runtime = runtime_modules()
+    bundle = resolve.resolve(request("system-one-optional-absent"))
+    assert bundle.stateworks == ()
+    session = runtime.start(bundle, telemetry_disabled=True,
+                            session_nonce="system-one-optional-absent")
+    assert session.system_one_judge is None
+    assert session.prepare_action({"tool_binding_id": "read", "arguments": {}}).decision \
+        == runtime.GateDecision.ALLOW
+    assert session.prepare_action({"tool_binding_id": "shell", "arguments": {}}).decision \
+        == runtime.GateDecision.BLOCK
+    assert session.system_one_decisions == {}
+
+
+def test_multi_agent_system_one_frames_are_identity_and_session_isolated():
+    resolve, runtime = runtime_modules()
+    goal = TaskGoalContract(
+        objective="Change the requested component and verify the stated outcome.",
+        deliverable_kind="code_behavior", work_mode="delivery",
+        acceptance_criteria=(AcceptanceCriterion("C1", "Requested behavior works", "behavior"),))
+    frames = []
+    sessions = []
+    for agent_id in ("worker-a", "worker-b"):
+        req = TaskRequest(
+            task_id="system-one-multi-agent", application_id="system-one-tests",
+            agent_id=agent_id, agent_instance_id=f"{agent_id}-instance",
+            subject_ref="component:shared", shape="implement", goal_contract=goal,
+            system_one_policy=make_test_policy("shadow"))
+        judge = FixedJudge()
+        session = runtime.start(
+            resolve.resolve(req), behavioral_judge=judge, telemetry_disabled=True,
+            session_nonce=f"system-one-{agent_id}")
+        prepared = session.prepare_action({
+            "tool_binding_id": "read", "arguments": {"target": f"/tmp/{agent_id}.txt"},
+            "subject_ref": "component:shared"})
+        assert prepared.decision == runtime.GateDecision.ALLOW
+        sessions.append(session)
+        frames.append(judge.frames[-1])
+    assert frames[0].identity.agent_id == "worker-a"
+    assert frames[1].identity.agent_id == "worker-b"
+    assert frames[0].identity.session_id != frames[1].identity.session_id
+    assert frames[0].identity.agent_instance_id != frames[1].identity.agent_instance_id
+    assert frames[0].state.candidate.target_ref_digest != frames[1].state.candidate.target_ref_digest
+    assert all("worker-b" not in str(fact.to_dict()) for fact in frames[0].state.activity)
+    assert all("worker-a" not in str(fact.to_dict()) for fact in frames[1].state.activity)
+
+
+def test_resume_restores_semantic_projector_and_invalidates_behavior_advice():
+    resolve, runtime = runtime_modules()
+    judge = FixedJudge(goal_drift="yes")
+    bundle = resolve.resolve(request("system-one-resume-projector"))
+    session = runtime.start(bundle, behavioral_judge=judge, telemetry_disabled=True,
+                            session_nonce="system-one-resume-projector")
+    host = session._host_ingress()
+    prepared = session.prepare_action({"tool_binding_id": "read", "arguments": {}})
+    host.record_tool_result("read", "success", invocation_id="before-resume-read",
+                            action_request_id=prepared.action_request_id)
+    prior_projection = session.system_one_projector.snapshot()
+
+    resumed = runtime.resume_task(
+        bundle, "system-one-resume-projector", behavioral_judge=judge,
+        telemetry_disabled=True)
+    assert resumed.system_one_projector.snapshot() == prior_projection
+    assert resumed.behavioral_decision.focus_mode == "delivery"
+    assert "CURRENT EXECUTION FOCUS" not in runtime.context_for(resumed)
+    assert judge.resets
+    next_action = resumed.prepare_action({"tool_binding_id": "read", "arguments": {}})
+    assert next_action.decision == runtime.GateDecision.ALLOW
+    frame = judge.frames[-1]
+    assert any(fact.activity_type == "tool_result"
+               and fact.result_class == "success" for fact in frame.state.activity)
+    assert judge.resyncs[-1].canonical_payload() == frame.canonical_payload()
 
 
 def test_system_one_outcome_requires_later_independent_evidence():
@@ -174,11 +573,10 @@ def test_system_one_outcome_requires_later_independent_evidence():
         telemetry_sink=lambda event: events.append(dict(event)),
         session_nonce="system-one-outcome")
     host = session._host_ingress()
-    action = {"tool_binding_id": "read", "arguments": {},
-              "subject_ref": "component:target"}
-    session.before_action(action)
-    action_digest = runtime.action_digest("read", {}, "component:target")
-    decision_id = host.system_one_decision_for_action(action_digest)
+    prepared = session.prepare_action({
+        "tool_binding_id": "read", "arguments": {},
+        "subject_ref": "component:target"})
+    decision_id = host.system_one_decision_for_action(prepared.action_request_id)
     assert decision_id
     evidence = host.record_observation("independent_result", "component:target")
     event_id = host.record_system_one_outcome(
@@ -202,24 +600,31 @@ def test_stale_identity_falls_back_and_ward_block_precedes_semantic_query():
         resolve.resolve(request("system-one-correlation")), behavioral_judge=judge,
         telemetry_sink=lambda event: events.append(dict(event)),
         session_nonce="system-one-correlation")
-    assert session.before_action({"tool_binding_id": "read", "arguments": {}}) == runtime.GateDecision.ALLOW
+    assert session.prepare_action({"tool_binding_id": "read", "arguments": {}}).decision \
+        == runtime.GateDecision.ALLOW
     assert len(judge.frames) == 1
     assert next(event for event in events if event["event_type"] == "system_one_decision")[
         "payload"]["system_one_status"] == "fallback"
-    assert session.before_action({"tool_binding_id": "shell", "arguments": {}}) == runtime.GateDecision.BLOCK
+    assert session.prepare_action({"tool_binding_id": "shell", "arguments": {}}).decision \
+        == runtime.GateDecision.BLOCK
     assert len(judge.frames) == 1
 
 
 def test_static_host_relations_do_not_depend_on_tool_names_or_model_labels():
-    policy = SystemOnePolicy(mode="advisory", backend_id="test-backend",
-                             model_id="test-model", calibration_hash="a" * 64)
+    policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
     identity = SystemOneIdentity("ns", "app", "app-instance", "agent", "agent-instance",
                                  "session", "task", "attempt")
-    answer = SystemOneJudgment(
+    labels = list(QUESTION_REGISTRY["action_relation"]["criteria"])
+    probs = tuple(QuestionProbability(label, 1 / len(labels)) for label in labels)
+    answer = QuestionAnswer("action_relation", "advances_primary_goal", probs,
+                            probs, TEST_CALIBRATION_HASH)
+    judgment = SystemOneJudgment(
         identity=identity, request_id="request", sequence=1, state_digest="b" * 64,
+        question_bundle_digest="d" * 64, request_digest="e" * 64,
         policy_hash="c" * 64, backend_id="test-backend", model_id="test-model",
-        calibration_hash="a" * 64, confidence=0.99,
-        action_relation="advances_primary_goal")
+        model_revision="test-revision", model_content_hash=TEST_MODEL_CONTENT_HASH,
+        provider_protocol_hash=TEST_PROVIDER_PROTOCOL_HASH,
+        calibration_bundle_hash=TEST_CALIBRATION_HASH, answers=(answer,))
     cases = (
         (ActionDescriptor("render", goal_relation="required_verification"),
          "required_verification"),
@@ -229,7 +634,7 @@ def test_static_host_relations_do_not_depend_on_tool_names_or_model_labels():
          "unrelated"),
     )
     for descriptor, expected in cases:
-        fused = fuse_action_relation(descriptor, judgment=answer, policy=policy, calibrated=True)
+        fused = fuse_action_relation(descriptor, judgment=judgment, policy=policy, calibrated=True)
         assert fused.relation == expected
         assert fused.source == "host_descriptor"
         assert fused.model_influenced is False
@@ -239,8 +644,8 @@ def test_resume_rejects_changed_system_one_policy_identity():
     resolve, runtime = runtime_modules()
     first = resolve.resolve(request("system-one-resume"))
     runtime.start(first, telemetry_disabled=True, session_nonce="system-one-resume")
-    different = SystemOnePolicy(mode="shadow", backend_id="test-backend",
-                                model_id="test-model-v2")
+    different = SystemOnePolicy(**{
+        **make_test_policy().to_dict(), "model_id": "test-model-v2"})
     second = resolve.resolve(request("system-one-resume", system_one_policy=different))
     with pytest.raises(PermissionError, match="journal is not bound"):
         runtime.resume_task(second, "system-one-resume", telemetry_disabled=True)
@@ -251,5 +656,108 @@ def test_provider_identity_must_match_policy_before_start():
     bundle = resolve.resolve(request("system-one-provider-mismatch"))
     judge = FixedJudge()
     judge.model_id = "changed-model"
-    with pytest.raises(ValueError, match="model_id differs from pinned policy"):
+    with pytest.raises(ValueError, match="capability model_id differs"):
         runtime.start(bundle, behavioral_judge=judge, telemetry_disabled=True)
+
+
+def _route_epoch_bundles(resolve, task_id, policy):
+    cow = Path(resolve.COW_ROOT)
+    request = resolve.TaskRequest(
+        task_id=task_id, application_id="system-one-route-epoch",
+        subject_ref="infra:route-epoch", shape="implement",
+        domain_tags=("infrastructure",),
+        observation_context={"state": "PLANNED"}, system_one_policy=policy,
+        goal_contract=TaskGoalContract(
+            objective="Safely change and validate the infrastructure state.",
+            deliverable_kind="code_behavior", work_mode="delivery",
+            acceptance_criteria=(AcceptanceCriterion(
+                "C1", "The selected infrastructure change is validated.", "behavior"),)))
+    routes = resolve.enumerate_eligible_routes(
+        next(item for item in resolve.load_stateworks(cow) if item["id"] == "infrae"),
+        cow, current_state="PLANNED", task_shape="implement",
+        domain_tags=("infrastructure",))
+    children = {
+        f"flow:infrae:{item['route']}": resolve.resolve(
+            request, cow_root=cow, requested_flows={"infrae": item["route"]})
+        for item in routes if item["route_type"] == "flow"
+    }
+    parent = children["flow:infrae:change"]
+    return request, parent, children
+
+
+def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child():
+    resolve, runtime = runtime_modules()
+    policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
+    request_contract, parent, children = _route_epoch_bundles(
+        resolve, "system-one-route-epoch", policy)
+    target = "flow:infrae:incident"
+    judge = FixedJudge(goal_drift="yes", calibrated=True,
+                       route_preference=target)
+    session = runtime.start(parent, behavioral_judge=judge,
+                            telemetry_disabled=True,
+                            session_nonce="system-one-route-epoch")
+    host = session._host_ingress()
+    for index in range(2):
+        prepared = session.prepare_action({
+            "tool_binding_id": "read", "arguments": {},
+            "subject_ref": parent.policy.subject_ref})
+        assert prepared.decision == runtime.GateDecision.ALLOW
+        host.record_tool_result(
+            "read", "success", subject_ref=parent.policy.subject_ref,
+            invocation_id=f"route-epoch-read-{index}",
+            action_request_id=prepared.action_request_id)
+    assert session.behavioral_decision.focus_mode == "replan"
+
+    recommendation = host.rank_legal_routes(
+        children, state_revision=7, target_statework_id="infrae")
+    assert recommendation is not None
+    assert recommendation.route == target
+    assert set(recommendation.legal_children) == set(children)
+    with pytest.raises(PermissionError, match="revision changed"):
+        host.create_child_policy_epoch(
+            recommendation, selected_route=target, current_state_revision=8)
+
+    epoch = host.create_child_policy_epoch(
+        recommendation, selected_route=target, current_state_revision=7)
+    assert epoch.record.parent_policy_hash == parent.pinned["policy_hash"]
+    assert epoch.record.child_policy_hash == epoch.bundle.pinned["policy_hash"]
+    assert epoch.record.system_one_decision_ref == recommendation.decision_id
+    assert epoch.bundle is children[target]
+    assert parent.policy.stateworks[0].selected_flow != epoch.bundle.policy.stateworks[0].selected_flow
+
+    child_session = runtime.start(
+        epoch.bundle, behavioral_judge=judge, telemetry_disabled=True,
+        session_nonce="system-one-route-epoch-child",
+        policy_epoch_record=epoch.record)
+    assert child_session.bundle.pinned["policy_hash"] == epoch.record.child_policy_hash
+    assert child_session.policy_epoch_record == epoch.record
+    assert session.bundle is parent
+    assert session.bundle.pinned["policy_hash"] == epoch.record.parent_policy_hash
+    resumed_child = runtime.resume_task(
+        epoch.bundle, "system-one-route-epoch-child",
+        behavioral_judge=judge, telemetry_disabled=True)
+    assert resumed_child.policy_epoch_record == epoch.record
+
+
+def test_policy_epoch_rejects_an_unresolved_or_forged_route_bundle():
+    resolve, runtime = runtime_modules()
+    policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
+    _request_contract, parent, children = _route_epoch_bundles(
+        resolve, "system-one-route-epoch-invalid", policy)
+    session = runtime.start(parent, behavioral_judge=FixedJudge(goal_drift="yes", calibrated=True),
+                            telemetry_disabled=True,
+                            session_nonce="system-one-route-epoch-invalid")
+    host = session._host_ingress()
+    for index in range(2):
+        prepared = session.prepare_action({
+            "tool_binding_id": "read", "arguments": {},
+            "subject_ref": parent.policy.subject_ref})
+        host.record_tool_result(
+            "read", "success", subject_ref=parent.policy.subject_ref,
+            invocation_id=f"route-epoch-invalid-{index}",
+            action_request_id=prepared.action_request_id)
+    forged = dict(children)
+    forged["flow:infrae:illegal"] = children["flow:infrae:incident"]
+    with pytest.raises(ValueError, match="selected legal flow"):
+        host.rank_legal_routes(forged, state_revision=0, target_statework_id="infrae")
+    assert session.bundle is parent

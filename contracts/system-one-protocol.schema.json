@@ -1,0 +1,1103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cognitivestateframeworks.dev/contracts/system-one-protocol.schema.json",
+  "title": "CFW System-1 protocol",
+  "type": "object",
+  "protocol_version": "2.0.0",
+  "x-question-registry": {
+    "action_relation": {
+      "family": "action_relation",
+      "type": "choice",
+      "instructions": "How does the proposed action relate to the user's current objective and remaining acceptance criteria?",
+      "criteria": {
+        "advances_primary_goal": "Directly changes a deliverable or satisfies an unfinished acceptance criterion.",
+        "removes_concrete_blocker": "Removes a specific obstacle preventing work on an unfinished criterion.",
+        "required_verification": "Produces evidence needed to verify a requested criterion or recent artifact change.",
+        "diagnostic_support": "Gathers information that may help choose a later action but does not itself advance or verify a criterion.",
+        "unrelated": "Does not reasonably support the user's objective or its required verification."
+      }
+    },
+    "progress_relation": {
+      "family": "progress_relation",
+      "type": "choice",
+      "instructions": "What did the completed activity establish about the user's objective, using only the supplied host facts?",
+      "criteria": {
+        "goal_progress": "Host facts show a concrete change toward an identified unfinished criterion.",
+        "blocker_removed": "Host facts show that a previously recorded blocker was removed.",
+        "diagnostic_progress": "Host facts show relevant new information, without criterion-level progress.",
+        "verification_progress": "Host facts show a criterion or artifact was actually checked.",
+        "recovery_progress": "Host facts show a failed or invalid state was repaired.",
+        "no_progress": "The supplied facts do not establish any of the above."
+      }
+    },
+    "retry_relation": {
+      "family": "retry_relation",
+      "type": "choice",
+      "instructions": "Compare the semantic descriptions of the previous failed approach and the proposed approach.",
+      "criteria": {
+        "materially_new": "The proposed approach uses a materially different causal hypothesis, mechanism, or evidence target.",
+        "same_premise_new_action": "The underlying hypothesis is retained but the planned action or evidence target materially changes.",
+        "equivalent_retry": "The proposed approach is semantically equivalent to an already failed approach despite wording or tool differences.",
+        "unrelated": "The proposed approach does not address the recorded failure or cause."
+      }
+    },
+    "goal_drift": {
+      "family": "goal_drift",
+      "type": "choice",
+      "instructions": "Does the candidate activity appear unrelated to the unfinished objective or its necessary verification?",
+      "criteria": {
+        "yes": "The candidate appears to shift effort away from unfinished user criteria without a concrete dependency.",
+        "no": "The candidate supports an unfinished criterion, its blocker, or needed verification."
+      }
+    },
+    "route_preference": {
+      "family": "route_preference",
+      "type": "choice",
+      "instructions": "Which already-authorized legal route best fits the current task state?",
+      "criteria": {}
+    }
+  },
+  "$defs": {
+    "Identity": {
+      "type": "object",
+      "required": [
+        "namespace_id",
+        "application_id",
+        "application_instance_id",
+        "agent_id",
+        "agent_instance_id",
+        "session_id",
+        "task_id",
+        "attempt_id",
+        "interaction_id"
+      ],
+      "properties": {
+        "namespace_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "application_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "agent_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "agent_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "session_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "interaction_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "FactSource": {
+      "enum": [
+        "host_observed",
+        "csw_authoritative",
+        "validator",
+        "operator",
+        "model_proposed",
+        "derived"
+      ]
+    },
+    "CriterionState": {
+      "type": "object",
+      "required": [
+        "criterion_id",
+        "claim",
+        "kind",
+        "status",
+        "evidence_status",
+        "evidence_ref_digests",
+        "last_progress_sequence"
+      ],
+      "properties": {
+        "criterion_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "status": {
+          "enum": [
+            "unmet",
+            "active",
+            "partially_observed",
+            "satisfied",
+            "blocked"
+          ]
+        },
+        "evidence_status": {
+          "enum": [
+            "none",
+            "available",
+            "verified",
+            "invalidated"
+          ]
+        },
+        "evidence_ref_digests": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "last_progress_sequence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "ActivityFact": {
+      "type": "object",
+      "required": [
+        "sequence",
+        "activity_type",
+        "source",
+        "action_class",
+        "host_declared_relation",
+        "target_kind",
+        "target_scope",
+        "target_ref_digest",
+        "proposed_purpose",
+        "proposed_purpose_source",
+        "affected_criterion_ids",
+        "result_class",
+        "artifact_changed",
+        "progress_class",
+        "evidence_kinds"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "activity_type": {
+          "enum": [
+            "action",
+            "tool_result",
+            "validation",
+            "state_transition",
+            "retry",
+            "goal_progress",
+            "blocker",
+            "operator_correction"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/FactSource"
+        },
+        "action_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "host_declared_relation": {
+          "enum": [
+            "advances_primary_goal",
+            "removes_concrete_blocker",
+            "required_verification",
+            "diagnostic_support",
+            "unrelated",
+            "ambiguous",
+            null
+          ]
+        },
+        "target_kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "target_scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "target_ref_digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "proposed_purpose": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "proposed_purpose_source": {
+          "$ref": "#/$defs/FactSource"
+        },
+        "affected_criterion_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "result_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "artifact_changed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "progress_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "GOAL_PROGRESS",
+            "BLOCKER_REMOVED",
+            "DIAGNOSTIC_PROGRESS",
+            "VERIFICATION_PROGRESS",
+            "RECOVERY_PROGRESS",
+            null
+          ]
+        },
+        "evidence_kinds": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowFact": {
+      "type": "object",
+      "required": [
+        "statework_id",
+        "domain",
+        "purpose",
+        "current_state",
+        "previous_state",
+        "edge_id",
+        "trigger",
+        "path_class",
+        "progress_class",
+        "work_class",
+        "domain_effect",
+        "revision",
+        "normal_path_rank_before",
+        "normal_path_rank_after",
+        "source"
+      ],
+      "properties": {
+        "statework_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "domain": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "purpose": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "current_state": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "previous_state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "edge_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "trigger": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "path_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "progress_class": {
+          "enum": [
+            "FORWARD_PROGRESS",
+            "LATERAL",
+            "RECOVERY",
+            "INVALIDATION",
+            "REGRESSION",
+            "TERMINAL"
+          ]
+        },
+        "work_class": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "domain_effect": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "revision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "normal_path_rank_before": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "normal_path_rank_after": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "source": {
+          "const": "csw_authoritative"
+        }
+      },
+      "additionalProperties": false
+    },
+    "AttemptSemanticDescriptor": {
+      "type": "object",
+      "required": [
+        "cause_class",
+        "hypothesis_summary",
+        "mechanism",
+        "evidence_target",
+        "planned_action_class",
+        "planned_target_kind",
+        "failed_result_class",
+        "premise_digest",
+        "action_plan_digest",
+        "affected_criterion_ids",
+        "source"
+      ],
+      "properties": {
+        "cause_class": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "hypothesis_summary": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "mechanism": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "evidence_target": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "planned_action_class": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "planned_target_kind": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "failed_result_class": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "premise_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "action_plan_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "affected_criterion_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "source": {
+          "enum": [
+            "model_proposed",
+            "host_observed",
+            "derived"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticState": {
+      "type": "object",
+      "required": [
+        "task",
+        "situation",
+        "criteria",
+        "activity",
+        "workflows",
+        "convergence",
+        "candidate",
+        "failed_approaches",
+        "legal_routes"
+      ],
+      "properties": {
+        "task": {
+          "type": "object",
+          "required": [
+            "objective",
+            "work_mode",
+            "deliverable_kind",
+            "task_complexity",
+            "phase",
+            "active_segment",
+            "active_statework",
+            "active_flow",
+            "non_goals"
+          ],
+          "properties": {
+            "objective": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            },
+            "work_mode": {
+              "enum": [
+                "delivery",
+                "diagnose",
+                "review",
+                "research"
+              ]
+            },
+            "deliverable_kind": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "task_complexity": {
+              "enum": [
+                "trivial",
+                "standard",
+                "complex"
+              ]
+            },
+            "phase": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64
+            },
+            "active_segment": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "active_statework": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64
+            },
+            "active_flow": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 64
+            },
+            "non_goals": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "situation": {
+          "type": "object",
+          "required": [
+            "current_state",
+            "blockers",
+            "actions_since_goal_progress",
+            "actions_since_artifact_change",
+            "verification_actions_since_artifact_change",
+            "recovery_epochs",
+            "repeated_branch_count"
+          ],
+          "properties": {
+            "current_state": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 128
+            },
+            "blockers": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "actions_since_goal_progress": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "actions_since_artifact_change": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "verification_actions_since_artifact_change": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "recovery_epochs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "repeated_branch_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "criteria": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/CriterionState"
+          }
+        },
+        "activity": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/ActivityFact"
+          }
+        },
+        "workflows": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/WorkflowFact"
+          }
+        },
+        "convergence": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxProperties": 8
+        },
+        "candidate": {
+          "$ref": "#/$defs/ActivityFact"
+        },
+        "failed_approaches": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/AttemptSemanticDescriptor"
+          }
+        },
+        "legal_routes": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "QuestionSpec": {
+      "type": "object",
+      "required": [
+        "question_id",
+        "family",
+        "type",
+        "instructions",
+        "criteria"
+      ],
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "type": {
+          "enum": [
+            "choice",
+            "score",
+            "noul"
+          ]
+        },
+        "instructions": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "criteria": {
+          "type": [
+            "object",
+            "array"
+          ],
+          "maxProperties": 24,
+          "maxItems": 24
+        }
+      },
+      "additionalProperties": false
+    },
+    "QuestionProbability": {
+      "type": "object",
+      "required": [
+        "label",
+        "probability"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "QuestionAnswer": {
+      "type": "object",
+      "required": [
+        "question_id",
+        "selected",
+        "raw_probabilities",
+        "calibrated_probabilities",
+        "calibration_hash"
+      ],
+      "properties": {
+        "question_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "selected": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "raw_probabilities": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/QuestionProbability"
+          }
+        },
+        "calibrated_probabilities": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "maxItems": 24,
+          "items": {
+            "$ref": "#/$defs/QuestionProbability"
+          }
+        },
+        "calibration_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SystemOneFrame": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "protocol_hash",
+        "identity",
+        "request_id",
+        "sequence",
+        "state_digest",
+        "question_bundle_digest",
+        "request_digest",
+        "policy_hash",
+        "backend_id",
+        "model_id",
+        "model_revision",
+        "model_content_hash",
+        "provider_protocol_hash",
+        "question_registry_hash",
+        "state_projection_schema_hash",
+        "calibration_bundle_hash",
+        "state",
+        "questions"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "2.0.0"
+        },
+        "protocol_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "question_bundle_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "request_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "backend_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_content_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider_protocol_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "question_registry_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "state_projection_schema_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "calibration_bundle_hash": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{64})?$"
+        },
+        "state": {
+          "$ref": "#/$defs/SemanticState"
+        },
+        "questions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/QuestionSpec"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SystemOneJudgment": {
+      "type": "object",
+      "required": [
+        "protocol_version",
+        "protocol_hash",
+        "identity",
+        "request_id",
+        "sequence",
+        "state_digest",
+        "question_bundle_digest",
+        "request_digest",
+        "policy_hash",
+        "backend_id",
+        "model_id",
+        "model_revision",
+        "model_content_hash",
+        "provider_protocol_hash",
+        "calibration_bundle_hash",
+        "answers"
+      ],
+      "properties": {
+        "protocol_version": {
+          "const": "2.0.0"
+        },
+        "protocol_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "identity": {
+          "$ref": "#/$defs/Identity"
+        },
+        "request_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "state_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "question_bundle_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "request_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "policy_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "backend_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_content_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider_protocol_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "calibration_bundle_hash": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{64})?$"
+        },
+        "answers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/QuestionAnswer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SystemOneCapability": {
+      "type": "object",
+      "required": [
+        "backend_id",
+        "model_id",
+        "model_revision",
+        "model_content_hash",
+        "provider_protocol_hash",
+        "protocol_version",
+        "protocol_hash",
+        "question_registry_hash",
+        "state_projection_schema_hash",
+        "supported_question_families",
+        "max_state_bytes",
+        "stateful_sessions"
+      ],
+      "properties": {
+        "backend_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "model_content_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "provider_protocol_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "protocol_version": {
+          "const": "2.0.0"
+        },
+        "protocol_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "question_registry_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "state_projection_schema_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "supported_question_families": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "max_state_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768
+        },
+        "stateful_sessions": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -148,7 +148,7 @@ def test_route_outcome_is_tri_state():
     import inspect
     from runtime import RuntimeSession
     source = inspect.getsource(RuntimeSession._evaluate_route_outcome)
-    assert 'outcome = "not_applicable"' in source
+    assert 'outcome = "NOT_APPLICABLE"' in source
 
 
 def test_convergence_state_block_is_model_visible(tmp_path, monkeypatch):
@@ -172,9 +172,9 @@ def test_route_outcome_starts_as_not_applicable_not_failure():
     import inspect
     from runtime import RuntimeSession
     source = inspect.getsource(RuntimeSession._evaluate_route_outcome)
-    default = source.index('outcome = "not_applicable"')
-    positive = source.index('outcome = "good"')
-    negative = source.index('outcome = "bad"')
+    default = source.index('outcome = "NOT_APPLICABLE"')
+    positive = source.index('outcome = "PASS"')
+    negative = source.index('outcome = "FAIL"')
     assert default < positive < negative
     # Failure is only reachable behind an explicit failing status set.
     assert "in {\"fail\", \"failed\", \"failure\", \"error\"}" in source

@@ -22,8 +22,8 @@ Composition contract (no imports of DigitalPsychology code):
     └─ EmergencyOverride: separate record, never mutates the snapshot
 
 This module is a pure library: `resolve()` returns RuntimeBundle; the CLI is
-only a debugging front end. The bundle writes to an out-of-tree per-task
-destination ($XDG_RUNTIME_DIR/cognitiveframeworks/<task>/<snapshot-hash>.json),
+only a debugging front end. The bundle writes to an out-of-tree per-task/agent
+destination ($XDG_RUNTIME_DIR/cognitiveframeworks/<task>/<snapshot-hash>-<identity>.json),
 never into the source tree.
 """
 from __future__ import annotations
@@ -2554,7 +2554,11 @@ def write_snapshot(bundle: RuntimeBundle, task_id: Optional[str] = None) -> Path
     task_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(task_dir, 0o700)
     _policy_from_bundle(bundle)
-    out_path = task_dir / f"{policy_hash}.json"
+    snapshot_identity = hashlib.sha256("|".join(
+        str(bundle.pinned.get(key) or "") for key in (
+            "namespace_id", "application_instance_id", "agent_instance_id",
+            "attempt_id", "interaction_id")).encode("utf-8")).hexdigest()[:16]
+    out_path = task_dir / f"{policy_hash}-{snapshot_identity}.json"
     task_projection = bundle.to_dict()
     task_projection.setdefault("pinned", {}).pop("frozen_at", None)
     if out_path.exists():
