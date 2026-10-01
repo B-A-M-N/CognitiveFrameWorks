@@ -448,6 +448,7 @@
             "BLOCKER_REMOVED",
             "DIAGNOSTIC_PROGRESS",
             "VERIFICATION_PROGRESS",
+            "VALIDATION_EVIDENCE",
             "RECOVERY_PROGRESS",
             "WORKFLOW_PROGRESS"
           ]

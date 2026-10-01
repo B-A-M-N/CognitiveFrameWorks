@@ -1565,18 +1565,35 @@ class RuntimeSession:
                 criterion_states.get(str(item.get("criterion_id"))) is not None
                 and criterion_states[str(item.get("criterion_id"))].status == "satisfied"
                 for item in required_criteria)
-            active_ids = set(getattr(self, "active_statework_ids", set()))
-            workflow_by_id = {item.statework_id: item
-                              for item in self.metacognitive_state.workflows}
-            workflows_complete = all(
-                workflow_by_id.get(statework_id) is not None
-                and workflow_by_id[statework_id].progress_class == "TERMINAL"
-                for statework_id in active_ids)
+            workflow_facts = {
+                (item.statework_id, item.subject_ref): item
+                for item in self.metacognitive_state.workflows}
+            workflows_complete = True
+            for item in self.bundle.stateworks:
+                statework_id = str(item.get("id") or "")
+                subject_ref = str(item.get("subject_ref")
+                                  or self.bundle.policy.subject_ref or "")
+                workflow = workflow_facts.get((statework_id, subject_ref))
+                if workflow is None or workflow.completed is not True:
+                    workflows_complete = False
+                    break
+            completion_subject = (self.current_segment.subject_ref
+                                  or self.bundle.policy.subject_ref)
+            boundary_evidence_available = any(
+                record.issuer.startswith("validator:")
+                and record.invocation_id is not None
+                and bool(record.claim_digest)
+                for record in self.ledger.current_records(
+                    subject_ref=completion_subject,
+                    allowed_kinds={"boundary_evidence", "completion_boundary"}))
             completion_readiness = CompletionReadiness(
                 required_criteria_satisfied=criteria_satisfied,
-                boundary_evidence_available=criteria_satisfied,
+                boundary_evidence_available=boundary_evidence_available,
                 unresolved_contradictions=any(
-                    not bool(item.get("resolved")) for item in self.contradictions.values()),
+                    not bool(item.get("resolved"))
+                    and (completion_subject is None
+                         or item.get("subject") == completion_subject)
+                    for item in self.contradictions.values()),
                 active_stateworks_complete=workflows_complete,
                 pending_verification_obligations=len(
                     self.metacognitive_state.pending_verification_obligations))
@@ -3715,13 +3732,17 @@ class RuntimeSession:
                                    else "validator_result"),
                    "subject": subject_ref,
                    "payload": {"summary": "host validator passed",
-                               "result_class": evidence_type}},
+                               "result_class": evidence_type,
+                               "progress_class": "VALIDATION_EVIDENCE"}},
             invocation_id=invocation_id,
             content={"validator_id": validator_id, "invocation_id": invocation_id,
                      "tool_evidence_id": invocation["evidence_id"],
                      "result": typed_result},
             claim_digest=claim_digest, schema_id=f"validator-result:{evidence_type}",
             validator_id=validator_id)
+        self.metacognitive_state.record_activity(
+            "validation", source="validator", result_class=evidence_type,
+            progress_class="VALIDATION_EVIDENCE", evidence_kinds=(evidence_type,))
         if self.convergence is not None:
             self.convergence.record_progress(
                 cause_id="primary-objective",
@@ -3729,8 +3750,8 @@ class RuntimeSession:
                     "validator_id": validator_id, "evidence_id": evidence_id,
                     "result_class": evidence_type,
                 }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
-                progress_class="VERIFICATION_PROGRESS", evidence_ref=evidence_id)
-            self._record_convergence("verification_progress")
+                progress_class="VALIDATION_EVIDENCE", evidence_ref=evidence_id)
+            self._record_convergence("validation_evidence")
         return evidence_id
 
     def record_state_transition(self, statework_id: str, subject_ref: str,
@@ -3874,10 +3895,14 @@ class RuntimeSession:
             state_key = (statework_id, subject_ref)
             self.statework_states[state_key] = str(next_state)
             self.statework_entry_times[state_key] = timestamp
-            self.metacognitive_state.record_csw_fact(
-                statework_id=statework_id, input_state=str(prior_state),
-                output_state=str(next_state), progress_class=decision.progress_class,
-                workflow_metadata=metadata, subject_ref=subject_ref)
+            self.metacognitive_state.record_workflow_progress(
+                statework_id=statework_id, subject_ref=subject_ref,
+                engine_kind=decision.engine_kind,
+                workflow_revision=decision.revision, step_id=decision.step_id,
+                progress_class=decision.progress_class, completed=decision.completed,
+                work_class=decision.work_class, domain_effect=decision.domain_effect,
+                current_position=str(next_state), previous_position=str(prior_state),
+                evidence_refs=evidence_ids)
             prior_revision = sum(
                 1 for item in self.state_segments
                 if item.statework_id == statework_id and item.subject_ref == subject_ref)
@@ -3894,10 +3919,10 @@ class RuntimeSession:
                           transition=metadata, progress_class="WORKFLOW_PROGRESS",
                           csw_progress_class=decision.progress_class)
         else:
-            self.metacognitive_state.record_generic_workflow_progress(
+            self.metacognitive_state.record_workflow_progress(
                 statework_id=statework_id, subject_ref=subject_ref,
                 engine_kind=decision.engine_kind, step_id=decision.step_id,
-                revision=decision.revision, progress_class=decision.progress_class,
+                workflow_revision=decision.revision, progress_class=decision.progress_class,
                 completed=decision.completed, work_class=decision.work_class,
                 domain_effect=decision.domain_effect, evidence_refs=evidence_ids)
             self._journal("workflow_step_allowed", statework_id=statework_id,
@@ -5349,13 +5374,18 @@ def _restore_session(session: RuntimeSession) -> None:
                                       or transition.get("progress_class")
                                       or "LATERAL")
             progress_class = "WORKFLOW_PROGRESS"
-            session.metacognitive_state.record_csw_fact(
-                statework_id=key[0],
-                input_state=str(record["input_state"]),
-                output_state=str(record["output_state"]),
+            session.metacognitive_state.record_workflow_progress(
+                statework_id=key[0], subject_ref=key[1],
+                engine_kind=str(transition.get("engine_kind") or "state_machine"),
+                workflow_revision=int(transition.get("revision") or 0),
+                step_id=str(transition.get("step_id") or transition.get("edge_id") or "transition"),
                 progress_class=csw_progress_class,
-                workflow_metadata=transition,
-                subject_ref=key[1])
+                completed=transition.get("completed") is True,
+                work_class=str(transition.get("work_class") or "workflow"),
+                domain_effect=str(transition.get("domain_effect") or "workflow"),
+                current_position=str(record["output_state"]),
+                previous_position=str(record["input_state"]),
+                evidence_refs=tuple(record.get("evidence_refs") or ()))
             if session.convergence is not None:
                 progress_digest = hashlib.sha256(json.dumps({
                     "statework_id": key[0], "subject_ref": key[1],
@@ -5369,12 +5399,12 @@ def _restore_session(session: RuntimeSession) -> None:
                     progress_class="WORKFLOW_PROGRESS",
                     evidence_ref=evidence_refs[-1] if evidence_refs else None)
         elif event_type == "workflow_step_allowed":
-            session.metacognitive_state.record_generic_workflow_progress(
+            session.metacognitive_state.record_workflow_progress(
                 statework_id=str(record["statework_id"]),
                 subject_ref=str(record["subject_ref"]),
                 engine_kind=str(record["engine_kind"]),
                 step_id=str(record["step_id"]),
-                revision=int(record["revision"]),
+                workflow_revision=int(record["revision"]),
                 progress_class=str(record["progress_class"]),
                 completed=bool(record["completed"]),
                 work_class=str(record.get("work_class") or "workflow"),

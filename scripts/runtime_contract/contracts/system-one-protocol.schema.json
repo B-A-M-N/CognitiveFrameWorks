@@ -314,6 +314,7 @@
             "BLOCKER_REMOVED",
             "DIAGNOSTIC_PROGRESS",
             "VERIFICATION_PROGRESS",
+            "VALIDATION_EVIDENCE",
             "WORKFLOW_PROGRESS",
             "RECOVERY_PROGRESS",
             null
@@ -326,163 +327,6 @@
             "type": "string",
             "maxLength": 64
           }
-        }
-      },
-      "additionalProperties": false
-    },
-    "WorkflowFact": {
-      "type": "object",
-      "required": [
-        "statework_id",
-        "domain",
-        "purpose",
-        "current_state",
-        "previous_state",
-        "edge_id",
-        "trigger",
-        "path_class",
-        "progress_class",
-        "work_class",
-        "domain_effect",
-        "revision",
-        "normal_path_rank_before",
-        "normal_path_rank_after",
-        "source",
-        "subject_ref",
-        "engine_kind",
-        "step_id",
-        "completed"
-      ],
-      "properties": {
-        "statework_id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 64
-        },
-        "domain": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 64
-        },
-        "purpose": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 256
-        },
-        "current_state": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1,
-          "maxLength": 64
-        },
-        "previous_state": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 64
-        },
-        "edge_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 128
-        },
-        "trigger": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 64
-        },
-        "path_class": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 64
-        },
-        "progress_class": {
-          "enum": [
-            "FORWARD_PROGRESS",
-            "LATERAL",
-            "RECOVERY",
-            "INVALIDATION",
-            "REGRESSION",
-            "TERMINAL"
-          ]
-        },
-        "work_class": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 64
-        },
-        "domain_effect": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 64
-        },
-        "revision": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "normal_path_rank_before": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "normal_path_rank_after": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0
-        },
-        "source": {
-          "const": "csw_authoritative"
-        },
-        "subject_ref": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 256
-        },
-        "engine_kind": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 64
-        },
-        "step_id": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "maxLength": 128
-        },
-        "completed": {
-          "type": [
-            "boolean",
-            "null"
-          ]
         }
       },
       "additionalProperties": false
@@ -716,7 +560,7 @@
           "type": "array",
           "maxItems": 8,
           "items": {
-            "$ref": "#/$defs/WorkflowFact"
+            "$ref": "#/$defs/WorkflowProgressFact"
           }
         },
         "convergence": {
@@ -1137,6 +981,102 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 64
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowProgressFact": {
+      "type": "object",
+      "required": [
+        "statework_id",
+        "subject_ref",
+        "engine_kind",
+        "workflow_revision",
+        "step_id",
+        "work_class",
+        "domain_effect",
+        "progress_class",
+        "current_position",
+        "previous_position",
+        "completed",
+        "evidence_refs",
+        "source"
+      ],
+      "properties": {
+        "statework_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "subject_ref": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "engine_kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "workflow_revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "step_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "work_class": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "domain_effect": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "progress_class": {
+          "enum": [
+            "FORWARD_PROGRESS",
+            "LATERAL",
+            "RECOVERY",
+            "INVALIDATION",
+            "REGRESSION",
+            "TERMINAL"
+          ]
+        },
+        "current_position": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "previous_position": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "completed": {
+          "type": "boolean"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "source": {
+          "const": "csw_authoritative"
         }
       },
       "additionalProperties": false

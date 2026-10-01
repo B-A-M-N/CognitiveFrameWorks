@@ -8,7 +8,7 @@ import json
 from typing import Any, Mapping, Optional, Sequence
 
 from .system_one import (ActivityFact, AttemptSemanticDescriptor, CriterionState,
-                         WorkflowFact)
+                         WorkflowProgressFact)
 
 
 @dataclass(frozen=True)
@@ -331,7 +331,7 @@ class MetacognitiveState:
             raise ValueError("System-1 projection limits exceed the safe bound")
         self._ordinary = deque(maxlen=activity_limit)
         self._important: dict[str, ActivityFact] = {}
-        self._workflows: dict[tuple[str, str], WorkflowFact] = {}
+        self._workflows: dict[tuple[str, str], WorkflowProgressFact] = {}
         self._failed_approaches = deque(maxlen=failed_approach_limit)
         self._important_limit = important_limit
         self._workflow_limit = workflow_limit
@@ -356,7 +356,7 @@ class MetacognitiveState:
         return tuple(sorted(self._criteria.values(), key=lambda item: item.criterion_id))
 
     @property
-    def workflows(self) -> tuple[WorkflowFact, ...]:
+    def workflows(self) -> tuple[WorkflowProgressFact, ...]:
         return tuple(sorted(self._workflows.values(),
                             key=lambda item: (item.statework_id, item.subject_ref or "")))
 
@@ -503,8 +503,26 @@ class MetacognitiveState:
                 evidence_ref_digests=tuple(row["evidence_ref_digests"]),
                 last_progress_sequence=row["last_progress_sequence"])
 
-        def workflow(row: Mapping[str, Any]) -> WorkflowFact:
-            return WorkflowFact(**dict(row))
+        def workflow(row: Mapping[str, Any]) -> WorkflowProgressFact:
+            payload = dict(row)
+            if "workflow_revision" in payload:
+                payload["evidence_refs"] = tuple(payload.get("evidence_refs") or ())
+                return WorkflowProgressFact(**payload)
+            # Migrate snapshots written before the engine-neutral projection.
+            # Missing completion data stays incomplete; it never implies success.
+            return WorkflowProgressFact(
+                statework_id=str(payload["statework_id"]),
+                subject_ref=str(payload.get("subject_ref") or "legacy-subject"),
+                engine_kind=str(payload.get("engine_kind") or "state_machine"),
+                workflow_revision=int(payload.get("revision") or 0),
+                step_id=str(payload.get("step_id") or payload.get("edge_id") or "legacy-step"),
+                work_class=str(payload.get("work_class") or "workflow"),
+                domain_effect=str(payload.get("domain_effect") or "workflow"),
+                progress_class=str(payload["progress_class"]),
+                current_position=payload.get("current_state"),
+                previous_position=payload.get("previous_state"),
+                completed=payload.get("completed") is True,
+                source=str(payload.get("source") or "csw_authoritative"))
 
         ordinary = [activity(row) for row in value["ordinary"]]
         important = [activity(row) for row in value["important"]]
@@ -527,7 +545,8 @@ class MetacognitiveState:
         for item in important:
             key = "artifact_change" if item.artifact_changed is True else item.activity_type
             self._important[key] = item
-        self._workflows = {item.statework_id: item for item in workflows}
+        self._workflows = {
+            (item.statework_id, item.subject_ref): item for item in workflows}
         self._failed_approaches.clear()
         self._failed_approaches.extend(failed)
         self._criteria = {item.criterion_id: item for item in criteria}
@@ -780,7 +799,7 @@ class MetacognitiveState:
         if self._blockers.pop(blocker_id, None) is not None:
             self._logical_revision += 1
 
-    def record_workflow(self, fact: WorkflowFact) -> None:
+    def record_workflow(self, fact: WorkflowProgressFact) -> None:
         key = (fact.statework_id, fact.subject_ref or "")
         self._workflows[key] = fact
         self._logical_revision += 1
@@ -788,52 +807,25 @@ class MetacognitiveState:
             oldest = next(iter(self._workflows))
             del self._workflows[oldest]
 
-    def record_csw_fact(self, *, statework_id: str, input_state: str,
-                        output_state: str, progress_class: str,
-                        workflow_metadata: Optional[Mapping[str, Any]] = None,
-                        subject_ref: Optional[str] = None) -> None:
-        metadata = dict(workflow_metadata or {})
-        self.record_workflow(WorkflowFact(
-            statework_id=statework_id, current_state=output_state,
-            previous_state=input_state, progress_class=progress_class,
-            edge_id=str(metadata.get("edge_id") or "") or None,
-            trigger=str(metadata.get("trigger") or "") or None,
-            path_class=str(metadata.get("path_class") or "") or None,
-            work_class=str(metadata.get("work_class") or "") or None,
-            domain_effect=str(metadata.get("domain_effect") or "") or None,
-            revision=(int(metadata["revision"]) if metadata.get("revision") is not None else None),
-            subject_ref=subject_ref,
-            engine_kind=str(metadata.get("engine_kind") or "state_machine"),
-            step_id=str(metadata.get("step_id") or metadata.get("edge_id") or "") or None,
-            completed=bool(metadata["completed"]) if "completed" in metadata else None,
-            normal_path_rank_before=(int(metadata["normal_path_rank_before"])
-                                     if metadata.get("normal_path_rank_before") is not None else None),
-            normal_path_rank_after=(int(metadata["normal_path_rank_after"])
-                                    if metadata.get("normal_path_rank_after") is not None else None),
-            domain=str(metadata.get("domain") or "") or None,
-            purpose=str(metadata.get("purpose") or "") or None))
-        self.record_activity("workflow_progress", source="csw_authoritative",
-                             action_class=str(metadata.get("work_class") or "transition"),
-                             result_class=progress_class,
-                             progress_class="WORKFLOW_PROGRESS")
-
-    def record_generic_workflow_progress(self, *, statework_id: str,
-                                         subject_ref: str,
-                                         engine_kind: str, step_id: str,
-                                         revision: int, progress_class: str,
-                                         completed: bool, work_class: str,
-                                         domain_effect: str,
-                                         evidence_refs: Sequence[str] = ()) -> None:
-        """Store engine-neutral progress without inventing a current state."""
-        fact = WorkflowFact(
-            statework_id=statework_id, current_state=None,
-            progress_class=progress_class, source="csw_authoritative",
-            subject_ref=subject_ref, engine_kind=engine_kind, step_id=step_id,
+    def record_workflow_progress(self, *, statework_id: str, subject_ref: str,
+                                 engine_kind: str, workflow_revision: int,
+                                 step_id: str, progress_class: str,
+                                 completed: bool, work_class: str,
+                                 domain_effect: str,
+                                 current_position: Optional[str] = None,
+                                 previous_position: Optional[str] = None,
+                                 evidence_refs: Sequence[str] = ()) -> None:
+        self.record_workflow(WorkflowProgressFact(
+            statework_id=statework_id, subject_ref=subject_ref,
+            engine_kind=engine_kind, workflow_revision=int(workflow_revision),
+            step_id=step_id, progress_class=progress_class,
             completed=bool(completed), work_class=work_class,
-            domain_effect=domain_effect, revision=int(revision))
-        self.record_workflow(fact)
+            domain_effect=domain_effect, current_position=current_position,
+            previous_position=previous_position,
+            evidence_refs=tuple(str(item) for item in evidence_refs)))
         self.record_activity("workflow_progress", source="csw_authoritative",
-                             action_class=work_class, result_class=progress_class,
+                             action_class=work_class,
+                             result_class=progress_class,
                              progress_class="WORKFLOW_PROGRESS")
 
     def record_failed_approach(self, descriptor: AttemptSemanticDescriptor) -> None:

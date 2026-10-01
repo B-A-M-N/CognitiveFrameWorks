@@ -291,6 +291,55 @@ def test_successful_completion_requires_a_nonempty_goal_contract():
             runtime.GateDecision.REQUIRE_REINSPECTION)
 
 
+def test_metacognitive_readiness_waits_for_host_attested_boundary_evidence():
+    resolve, runtime = _modules()
+    goal = TaskGoalContract(
+        objective="Produce and verify the requested behavior.",
+        deliverable_kind="code_behavior", work_mode="delivery",
+        acceptance_criteria=(AcceptanceCriterion(
+            "C1", "The requested behavior is present.", "code_behavior"),))
+    bundle = resolve.resolve(TaskRequest(
+        task_id="completion-readiness", application_id="test", shape="quick",
+        subject_ref="repo:readiness", goal_contract=goal))
+    session = runtime.start(bundle, telemetry_disabled=True,
+                            session_nonce="completion-readiness")
+    session.metacognitive_state.mark_criterion_satisfied(
+        "C1", evidence_ref="criterion-proof", evidence_kind="validator_result")
+    assert session._evaluate_metacognition().mode == "VERIFY"
+
+    host = session._host_ingress()
+    host.record_tool_result("test", "pass", "repo:readiness",
+                            invocation_id="boundary-invocation")
+    claim = CompletionClaim.create(
+        claim_id="readiness-claim", task_id=bundle.task_id,
+        subject_ref="repo:readiness", boundary_type="completion",
+        boundary_target="task", expected_validator="completion-boundary-v1",
+        invocation_id="boundary-invocation", goal_contract_hash=goal.contract_hash,
+        criterion_ids=("C1",))
+    boundary = host.record_validator_result(
+        "completion-boundary-v1", "boundary-invocation", {"status": "pass"},
+        "repo:readiness", claim_digest=claim.claim_digest)
+    assert session.ledger.get(boundary) is not None
+    assert session._evaluate_metacognition().mode == "READY_TO_COMPLETE"
+
+
+def test_validator_evidence_does_not_count_as_support_action():
+    resolve, runtime = _modules()
+    session = runtime.start(resolve.resolve("validator-accounting", "quick"),
+                            telemetry_disabled=True,
+                            session_nonce="validator-accounting")
+    host = session._host_ingress()
+    host.record_tool_result("test", "pass", "repo:validator",
+                            invocation_id="validator-invocation",
+                            actual_result={"fresh": True, "status": "pass"})
+    host.record_validator_result(
+        "reinspection-v1", "validator-invocation",
+        {"fresh": True, "status": "pass"}, "repo:validator")
+    state = session.convergence.state("primary-objective")
+    assert state.support_actions_since_goal_progress == 0
+    assert state.evidence_facts_since_goal_progress == 1
+
+
 def test_twenty_turn_delivery_scenario_reanchors_instead_of_looping():
     resolve, runtime = _modules()
     goal = TaskGoalContract(

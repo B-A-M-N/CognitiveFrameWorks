@@ -107,6 +107,30 @@ def test_total_support_and_workflow_progress_are_independent_and_durable():
     assert state.total_actions_since_goal_progress == 0
     assert state.support_actions_since_goal_progress == 0
     assert state.workflow_steps_since_goal_progress == 0
+    assert state.evidence_facts_since_goal_progress == 0
+
+
+def test_validator_evidence_has_its_own_ledger_and_does_not_spend_support_budget():
+    controller = _controller()
+    controller.record_committed_action(cause_id="c1", lane="UNCLASSIFIED")
+    controller.record_progress(cause_id="c1", progress_digest="validation-1",
+                               progress_class="VALIDATION_EVIDENCE",
+                               evidence_ref="evidence-1")
+    state = controller.state("c1")
+    assert state.total_actions_since_goal_progress == 1
+    assert state.support_actions_since_goal_progress == 0
+    assert state.evidence_facts_since_goal_progress == 1
+
+    restored = _controller()
+    restored.restore(controller.export())
+    state = restored.state("c1")
+    assert state.evidence_facts_since_goal_progress == 1
+    restored.record_progress(cause_id="c1", progress_digest="criterion-1",
+                             progress_class="GOAL_PROGRESS")
+    state = restored.state("c1")
+    assert state.total_actions_since_goal_progress == 0
+    assert state.support_actions_since_goal_progress == 0
+    assert state.evidence_facts_since_goal_progress == 0
 
 
 def test_exhausted_budget_terminates_instead_of_reinspecting():

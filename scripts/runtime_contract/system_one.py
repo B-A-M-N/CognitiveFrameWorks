@@ -122,8 +122,8 @@ class ActivityFact:
                                 "workflow_progress", "retry", "goal_progress", "blocker",
                                 "operator_correction"})
     PROGRESS_CLASSES = frozenset({"GOAL_PROGRESS", "BLOCKER_REMOVED", "DIAGNOSTIC_PROGRESS",
-                                  "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS",
-                                  "WORKFLOW_PROGRESS"})
+                                  "VERIFICATION_PROGRESS", "VALIDATION_EVIDENCE",
+                                  "RECOVERY_PROGRESS", "WORKFLOW_PROGRESS"})
 
     def __post_init__(self) -> None:
         if not isinstance(self.sequence, int) or self.sequence < 1:
@@ -163,48 +163,57 @@ class ActivityFact:
 
 
 @dataclass(frozen=True)
-class WorkflowFact:
+class WorkflowProgressFact:
     statework_id: str
-    current_state: Optional[str]
+    subject_ref: str
+    engine_kind: str
+    workflow_revision: int
+    step_id: str
+    work_class: str
+    domain_effect: str
     progress_class: str
-    domain: Optional[str] = None
-    purpose: Optional[str] = None
-    previous_state: Optional[str] = None
-    edge_id: Optional[str] = None
-    trigger: Optional[str] = None
-    path_class: Optional[str] = None
-    work_class: Optional[str] = None
-    domain_effect: Optional[str] = None
-    revision: Optional[int] = None
-    normal_path_rank_before: Optional[int] = None
-    normal_path_rank_after: Optional[int] = None
+    current_position: Optional[str]
+    previous_position: Optional[str]
+    completed: bool
+    evidence_refs: Tuple[str, ...] = ()
     source: str = "csw_authoritative"
-    subject_ref: Optional[str] = None
-    engine_kind: Optional[str] = None
-    step_id: Optional[str] = None
-    completed: Optional[bool] = None
 
     def __post_init__(self) -> None:
-        for name, limit in (("statework_id", 64), ("progress_class", 32)):
+        for name, limit in (("statework_id", 64), ("progress_class", 32),
+                            ("engine_kind", 64), ("step_id", 128),
+                            ("work_class", 64), ("domain_effect", 64),
+                            ("subject_ref", 256)):
             _bounded_text(getattr(self, name), name, limit)
-        _bounded_text(self.current_state, "current_state", 64, optional=True)
+        _bounded_text(self.current_position, "current_position", 128, optional=True)
+        _bounded_text(self.previous_position, "previous_position", 128, optional=True)
         if self.progress_class not in {"FORWARD_PROGRESS", "LATERAL", "RECOVERY",
                                        "INVALIDATION", "REGRESSION", "TERMINAL"}:
             raise ValueError("unsupported StateWork progress class")
         if self.source != "csw_authoritative":
             raise ValueError("workflow facts must have CSW provenance")
-        for name, limit in (("domain", 64), ("purpose", 256), ("previous_state", 64),
-                            ("edge_id", 128), ("trigger", 64), ("path_class", 64),
-                            ("work_class", 64), ("domain_effect", 64),
-                            ("subject_ref", 256), ("engine_kind", 64), ("step_id", 128)):
-            _bounded_text(getattr(self, name), name, limit, optional=True)
+        if (not isinstance(self.workflow_revision, int)
+                or isinstance(self.workflow_revision, bool)
+                or self.workflow_revision < 0):
+            raise ValueError("workflow_revision must be a non-negative integer")
+        if (not isinstance(self.completed, bool)
+                or not isinstance(self.evidence_refs, (tuple, list))
+                or len(self.evidence_refs) > 8):
+            raise ValueError("workflow completion or evidence references are invalid")
+        for value in self.evidence_refs:
+            _bounded_text(value, "evidence reference", 256)
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
 
     def to_dict(self) -> dict[str, Any]:
-        return {name: getattr(self, name) for name in (
-            "statework_id", "domain", "purpose", "current_state", "previous_state", "edge_id",
-            "trigger", "path_class", "progress_class", "work_class", "domain_effect",
-            "revision", "normal_path_rank_before", "normal_path_rank_after", "source",
-            "subject_ref", "engine_kind", "step_id", "completed")}
+        result = {name: getattr(self, name) for name in (
+            "statework_id", "subject_ref", "engine_kind", "workflow_revision", "step_id",
+            "work_class", "domain_effect", "progress_class", "current_position",
+            "previous_position", "completed", "source")}
+        result["evidence_refs"] = list(self.evidence_refs)
+        return result
+
+
+# Compatibility name for callers that used the former provider projection.
+WorkflowFact = WorkflowProgressFact
 
 
 @dataclass(frozen=True)
@@ -250,7 +259,7 @@ class SemanticState:
     situation: Mapping[str, Any]
     criteria: Tuple[CriterionState, ...]
     activity: Tuple[ActivityFact, ...]
-    workflows: Tuple[WorkflowFact, ...]
+    workflows: Tuple[WorkflowProgressFact, ...]
     convergence: Tuple[Tuple[str, int], ...]
     candidate: ActivityFact
     failed_approaches: Tuple[AttemptSemanticDescriptor, ...] = ()
@@ -441,8 +450,10 @@ class SystemOneFrame:
                 result_class=row["result_class"], artifact_changed=row["artifact_changed"],
                 progress_class=row["progress_class"], evidence_kinds=tuple(row["evidence_kinds"]))
 
-        def workflow(row: Mapping[str, Any]) -> WorkflowFact:
-            return WorkflowFact(**dict(row))
+        def workflow(row: Mapping[str, Any]) -> WorkflowProgressFact:
+            payload = dict(row)
+            payload["evidence_refs"] = tuple(payload.get("evidence_refs") or ())
+            return WorkflowProgressFact(**payload)
 
         def attempt(row: Mapping[str, Any]) -> AttemptSemanticDescriptor:
             payload = dict(row)
@@ -684,7 +695,7 @@ class BehavioralJudge(Protocol):
 
 
 __all__ = ["SystemOnePolicy", "SystemOneIdentity", "CriterionState", "ActivityFact",
-           "WorkflowFact", "AttemptSemanticDescriptor", "SemanticState", "QuestionSpec",
+           "WorkflowProgressFact", "WorkflowFact", "AttemptSemanticDescriptor", "SemanticState", "QuestionSpec",
            "QuestionProbability", "QuestionAnswer", "SystemOneFrame", "SystemOneJudgment",
            "SystemOneCapability", "BehavioralJudge", "QUESTION_REGISTRY",
            "QUESTION_REGISTRY_HASH", "STATE_PROJECTION_SCHEMA_HASH", "canonical_hash"]

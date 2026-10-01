@@ -8,7 +8,7 @@ from .metacognition import MetacognitiveState
 from .protocol_artifact import QUESTION_REGISTRY
 from .system_one import (ActivityFact, AttemptSemanticDescriptor, CriterionState,
                          QuestionSpec, SemanticState, SystemOneFrame,
-                         SystemOneIdentity, WorkflowFact, canonical_hash)
+                         SystemOneIdentity, canonical_hash)
 from .task import SystemOnePolicy
 
 
@@ -65,7 +65,9 @@ class SystemOneStateProjector:
                 criterion_id=criterion_id,
                 claim=str(item.get("claim") or "")[:512],
                 kind=str(item.get("kind") or "")[:64]))
-        workflows = tuple(sorted(meta_state.workflows, key=lambda item: item.statework_id))
+        workflows = tuple(sorted(
+            meta_state.workflows,
+            key=lambda item: (item.statework_id, item.subject_ref)))
         activity = meta_state.recent_activity
         convergence_values = {key: max(0, int(value)) for key, value in convergence.items()}
         committed_actions = meta_state.committed_actions_since_goal_progress

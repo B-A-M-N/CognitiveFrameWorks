@@ -34,7 +34,8 @@ GATE_ALLOW = None
 
 PROGRESS_CLASSES = {
     "GOAL_PROGRESS", "BLOCKER_REMOVED", "DIAGNOSTIC_PROGRESS",
-    "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS", "WORKFLOW_PROGRESS",
+    "VERIFICATION_PROGRESS", "VALIDATION_EVIDENCE", "RECOVERY_PROGRESS",
+    "WORKFLOW_PROGRESS",
 }
 ACTION_ACCOUNTING_LANES = {"DIRECT", "SUPPORT", "UNCLASSIFIED", "VERIFICATION"}
 
@@ -257,6 +258,8 @@ class RetryState:
     total_actions_since_goal_progress: int = 0
     workflow_steps_since_goal_progress: int = 0
     last_workflow_progress_seq: int = 0
+    evidence_facts_since_goal_progress: int = 0
+    last_evidence_progress_seq: int = 0
     recovery_epochs_since_goal_progress: int = 0
     last_progress_class: Optional[str] = None
     disposition: str = "RUNNING"
@@ -284,6 +287,8 @@ class RetryState:
             "total_actions_since_goal_progress": self.total_actions_since_goal_progress,
             "workflow_steps_since_goal_progress": self.workflow_steps_since_goal_progress,
             "last_workflow_progress_seq": self.last_workflow_progress_seq,
+            "evidence_facts_since_goal_progress": self.evidence_facts_since_goal_progress,
+            "last_evidence_progress_seq": self.last_evidence_progress_seq,
             "recovery_epochs_since_goal_progress": self.recovery_epochs_since_goal_progress,
             "last_progress_class": self.last_progress_class,
             "disposition": self.disposition,
@@ -318,6 +323,10 @@ class RetryState:
         state.workflow_steps_since_goal_progress = int(
             data.get("workflow_steps_since_goal_progress", 0) or 0)
         state.last_workflow_progress_seq = int(data.get("last_workflow_progress_seq", 0) or 0)
+        state.evidence_facts_since_goal_progress = int(
+            data.get("evidence_facts_since_goal_progress", 0) or 0)
+        state.last_evidence_progress_seq = int(
+            data.get("last_evidence_progress_seq", 0) or 0)
         state.recovery_epochs_since_goal_progress = int(
             data.get("recovery_epochs_since_goal_progress", 0) or 0)
         state.last_progress_class = (str(data["last_progress_class"])
@@ -427,6 +436,7 @@ class ConvergenceController:
             state.support_actions_since_goal_progress = 0
             state.total_actions_since_goal_progress = 0
             state.workflow_steps_since_goal_progress = 0
+            state.evidence_facts_since_goal_progress = 0
             state.recovery_epochs_since_goal_progress = 0
             state.recovery_epochs = 0
             state.no_progress_epochs = 0
@@ -434,6 +444,9 @@ class ConvergenceController:
         elif progress_class == "WORKFLOW_PROGRESS":
             state.last_workflow_progress_seq = state.progress_sequence
             state.workflow_steps_since_goal_progress += 1
+        elif progress_class == "VALIDATION_EVIDENCE":
+            state.last_evidence_progress_seq = state.progress_sequence
+            state.evidence_facts_since_goal_progress += 1
         else:
             state.last_support_progress_seq = state.progress_sequence
             state.support_actions_since_goal_progress += 1

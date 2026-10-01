@@ -263,3 +263,12 @@ class EvidenceLedger:
 
     def get(self, evidence_id: str) -> Optional[EvidenceRecord]:
         return self._records.get(evidence_id)
+
+    def current_records(self, *, subject_ref: Optional[str] = None,
+                        allowed_kinds: Optional[set[str]] = None
+                        ) -> tuple[EvidenceRecord, ...]:
+        """Return immutable current evidence metadata for host readiness checks."""
+        return tuple(record for record in self._records.values()
+                     if not record.invalidated
+                     and (subject_ref is None or record.subject_ref == subject_ref)
+                     and (allowed_kinds is None or record.kind in allowed_kinds))
