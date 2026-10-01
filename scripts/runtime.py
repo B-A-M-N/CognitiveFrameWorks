@@ -1882,7 +1882,10 @@ class RuntimeSession:
                 judgment = self._system_one_query(
                     questions=("route_preference",), candidate=candidate,
                     subject_ref=self.current_segment.subject_ref,
-                    route_candidates=tuple(sorted(children)),
+                    # Semantic inference may resolve only the deterministic
+                    # top-score tie. Lower-ranked legal flows are not choice
+                    # candidates for the provider.
+                    route_candidates=tuple(top_routes),
                     route_state_revision=state_revision,
                     route_statework_id=target_statework_id)
                 if judgment is None:
@@ -4406,7 +4409,8 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     supplied_context = host_context or HostExecutionContext()
     pinned_contracts = bundle.pinned.get("contracts", {})
     pinned_runtime_hash = pinned_contracts.get("runtime_behavior_hash")
-    if pinned_runtime_hash != resolve_runtime.runtime_behavior_hash():
+    source_root = Path(bundle.statework_root or resolve_runtime.COW_ROOT)
+    if pinned_runtime_hash != resolve_runtime.runtime_behavior_hash(source_root):
         raise resolve_runtime.SnapshotIntegrityError(
             "runtime enforcement code changed after policy composition")
     system_one_policy = SystemOnePolicy(**dict(bundle.pinned.get("system_one_policy") or {}))
