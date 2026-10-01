@@ -15,6 +15,8 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import threading
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,6 +104,9 @@ class FixtureSemanticBackend:
 
         self.route_options = []
         self.failed_hypotheses = []
+        self.block_first_query = False
+        self.first_query_started = threading.Event()
+        self.release_first_query = threading.Event()
         self._capability = SystemOneCapability(
             backend_id=self.backend_id,
             model_id=self.model_id,
@@ -130,6 +135,10 @@ class FixtureSemanticBackend:
         from lib.system_one_contracts import (QuestionAnswer, QuestionProbability,
                                               SystemOneJudgment)
 
+        if self.block_first_query and frame.sequence == 1:
+            self.first_query_started.set()
+            if not self.release_first_query.wait(timeout=3):
+                raise TimeoutError("serialization fixture did not release its first query")
         if "route_preference" in frame.question_ids:
             self.route_options.append(tuple(frame.state.legal_routes))
         self.failed_hypotheses.append(tuple(
@@ -338,14 +347,15 @@ def qualify_delivery_trace(mode: str) -> tuple[int, int, str, str]:
     assert after_proposal.mode == before.mode == "DELIVER"
     if judge is not None:
         assert failed_hypothesis in judge.failed_hypotheses[0]
+    assert session._pending_action_requests[prepared.action_request_id]["relation"] == "ambiguous"
     host.record_tool_result(
         "ambiguous-action", "success", subject,
         action_request_id=prepared.action_request_id,
         actual_result={"artifact_changed": False})
 
     # The same five support outcomes and one dispatched ambiguous action run
-    # in A, B, and C. Laya's progress label is semantic telemetry only; the
-    # support counter changes only through the host's action classification.
+    # in A, B, and C. A semantic relevance answer remains a hint; the hard
+    # support counter uses the unchanged host descriptor.
     for index in range(5):
         host.record_tool_result(
             "read_state", "success", subject,
@@ -397,6 +407,116 @@ def qualify_verification_budget(mode: str) -> tuple[str, ...]:
             actual_result={"artifact_changed": False, "check": index})
     assert decisions == ["allow", "allow", "block"]
     return tuple(decisions)
+
+
+def qualify_semantic_expiry() -> tuple[str, str]:
+    subject = "workspace:semantic-expiry"
+    session, _, _ = make_session(
+        "advisory", task_id="semantic-expiry-task", subject=subject)
+    host = session._host_ingress()
+    candidate = session.metacognitive_state.make_candidate(
+        "action", source="host_observed", host_declared_relation="ambiguous")
+    judgment = session._system_one_query(
+        questions=("goal_drift",), candidate=candidate, subject_ref=subject)
+    assert judgment is not None
+    before = session._evaluate_metacognition()
+    assert before.semantic_attention_note and before.source_decisions
+
+    evidence = host.record_observation("blocker_observed", subject)
+    host.record_blocker("new-blocker", "Host observed a new obstacle.",
+                        evidence_ref=evidence)
+    after_change = session._evaluate_metacognition()
+    assert after_change.mode == "DIAGNOSE"
+    assert after_change.semantic_attention_note is None
+    assert after_change.source_decisions == ()
+
+    cleared = host.record_observation("blocker_cleared", subject)
+    host.clear_blocker("new-blocker", evidence_ref=cleared)
+    after_clear = session._evaluate_metacognition()
+    assert after_clear.mode == "DELIVER"
+    assert after_clear.semantic_attention_note is None
+
+    refreshed = session._system_one_query(
+        questions=("goal_drift",), candidate=candidate, subject_ref=subject)
+    assert refreshed is not None
+    assert session._evaluate_metacognition().semantic_attention_note
+    host.record_recovery_epoch(cause_id="primary-objective",
+                               reason="host entered a new recovery epoch")
+    after_recovery = session._evaluate_metacognition()
+    assert after_recovery.mode == "DELIVER"
+    assert after_recovery.semantic_attention_note is None
+    return before.mode, after_change.mode
+
+
+def qualify_provider_serialization(mode: str) -> int:
+    subject = f"workspace:serialization:{mode}"
+    session, judge, _ = make_session(
+        mode, task_id=f"serialization-task-{mode}", subject=subject)
+    assert judge is not None
+    backend = judge.backend
+    backend.block_first_query = True
+    candidate = session.metacognitive_state.make_candidate(
+        "action", source="host_observed", host_declared_relation="ambiguous")
+    results = []
+    second_started = threading.Event()
+
+    def query(*, second: bool) -> None:
+        if second:
+            second_started.set()
+        results.append(session._system_one_query(
+            questions=("action_relation",), candidate=candidate,
+            subject_ref=subject))
+
+    first = threading.Thread(target=query, kwargs={"second": False})
+    second = threading.Thread(target=query, kwargs={"second": True})
+    first.start()
+    assert backend.first_query_started.wait(timeout=2)
+    second.start()
+    assert second_started.wait(timeout=2)
+    # Let the competing call reach sequence allocation before releasing the
+    # first provider operation; a whole-operation identity lock keeps it out.
+    time.sleep(0.05)
+    backend.release_first_query.set()
+    first.join(timeout=3)
+    second.join(timeout=3)
+    assert not first.is_alive() and not second.is_alive()
+    assert len(results) == 2 and all(result is not None for result in results)
+    assert session.system_one_sequence == 2
+    return session.system_one_sequence
+
+
+def qualify_stale_host_snapshot() -> tuple[str, str]:
+    subject = "workspace:stale-provider-snapshot"
+    session, judge, _ = make_session(
+        "advisory", task_id="stale-provider-snapshot-task", subject=subject)
+    assert judge is not None
+    backend = judge.backend
+    backend.block_first_query = True
+    candidate = session.metacognitive_state.make_candidate(
+        "action", source="host_observed", host_declared_relation="ambiguous")
+    results = []
+
+    def query() -> None:
+        results.append(session._system_one_query(
+            questions=("goal_drift",), candidate=candidate,
+            subject_ref=subject))
+
+    worker = threading.Thread(target=query)
+    worker.start()
+    assert backend.first_query_started.wait(timeout=2)
+    evidence = session._host_ingress().record_observation(
+        "blocker_observed", subject)
+    session._host_ingress().record_blocker(
+        "concurrent-blocker", "Host state changed during inference.",
+        evidence_ref=evidence)
+    backend.release_first_query.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive() and results == [None]
+    decision = next(reversed(session.system_one_decisions.values()))
+    assert decision["status_reason"] == "stale_response"
+    current = session._evaluate_metacognition()
+    assert current.mode == "DIAGNOSE" and current.semantic_attention_note is None
+    return decision["status_reason"], current.mode
 
 
 def prepare_route_root(temp_root: Path) -> None:
@@ -471,14 +591,26 @@ def main() -> int:
         try:
             modes = ("disabled", "shadow", "advisory")
             delivery = {mode: qualify_delivery_trace(mode) for mode in modes}
-            assert all(item[0] >= 5 and item[1] == 1 and item[2] == "DELIVER"
+            assert {item[0] for item in delivery.values()} == {6}
+            assert all(item[1] == 1 and item[2] == "DELIVER"
                        and item[3] == "BLOCKED" for item in delivery.values())
-            print("A/B/C delivery trace: revised hypotheses, hard progress, and "
-                  "recovery limits preserved")
+            print("A/B/C delivery trace: revised hypotheses and identical hard "
+                  "progress/recovery limits preserved")
 
             verification = {mode: qualify_verification_budget(mode) for mode in modes}
             assert verification == {mode: ("allow", "allow", "block") for mode in modes}
             print("A/B/C verification trace: repeated unchanged checks stop identically")
+
+            assert qualify_semantic_expiry() == ("DELIVER", "DIAGNOSE")
+            print("semantic attention expires when host metacognitive state changes")
+
+            serial = {mode: qualify_provider_serialization(mode)
+                      for mode in ("shadow", "advisory")}
+            assert serial == {"shadow": 2, "advisory": 2}
+            print("System-1 sequence, provider call, and validation serialize per identity")
+
+            assert qualify_stale_host_snapshot() == ("stale_response", "DIAGNOSE")
+            print("inference is discarded when host metacognitive state changes in flight")
 
             route_root = Path(route_dir) / "CognitiveStateWork"
             prepare_route_root(route_root)

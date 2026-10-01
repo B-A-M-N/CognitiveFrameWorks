@@ -1201,12 +1201,12 @@ class RuntimeSession:
     metacognitive_controller: MetacognitiveController = field(
         default_factory=MetacognitiveController, repr=False)
     semantic_signals: SemanticSignals = field(default_factory=SemanticSignals, repr=False)
+    semantic_signals_revision: int = field(default=-1, repr=False)
     metacognitive_decision: MetaDecision = field(
         default_factory=lambda: MetaDecision("DELIVER", "task initialized"), repr=False)
     system_one_sequence: int = 0
     system_one_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     system_one_outcomes: set[str] = field(default_factory=set, repr=False)
-    system_one_action_relations: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     _pending_action_requests: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     _pending_retry_candidates: Dict[str, ActivityFact] = field(default_factory=dict, repr=False)
     policy_epoch_record: Optional[PolicyEpochRecord] = field(default=None, repr=False)
@@ -1241,9 +1241,9 @@ class RuntimeSession:
                 "attempt_semantics", "_semantic_retry_same",
                 "shared_branch_ledger", "system_one_judge", "metacognitive_state",
                 "system_one_projector", "metacognitive_controller", "semantic_signals",
+                "semantic_signals_revision",
                 "metacognitive_decision",
                 "system_one_sequence", "system_one_decisions", "system_one_outcomes",
-                "system_one_action_relations",
         "_pending_action_requests", "_pending_retry_candidates", "policy_epoch_record"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
@@ -1454,7 +1454,10 @@ class RuntimeSession:
                 "max_same_approach_retries", 2) or 2),
             unresolved_contradiction=any(
                 not bool(item.get("resolved")) for item in self.contradictions.values()),
-            semantic=semantic if semantic is not None else self.semantic_signals)
+            semantic=(semantic if semantic is not None else
+                      self.semantic_signals
+                      if self.semantic_signals_revision == self.metacognitive_state.logical_revision
+                      else SemanticSignals()))
         if decision != self.metacognitive_decision:
             object.__setattr__(self, "metacognitive_decision", decision)
             self._journal("metacognitive_decision_recorded", decision=decision.to_dict(),
@@ -1462,6 +1465,24 @@ class RuntimeSession:
         return decision
 
     def _system_one_query(self, *, questions: tuple[str, ...], candidate: ActivityFact,
+                          subject_ref: Optional[str] = None,
+                          action_request_id: Optional[str] = None,
+                          action_invocation_id: Optional[str] = None,
+                          descriptor: Optional[ActionDescriptor] = None,
+                          route_candidates: tuple[str, ...] = (),
+                          route_state_revision: Optional[int] = None,
+                          route_statework_id: Optional[str] = None) -> Optional[SystemOneJudgment]:
+        """Serialize a complete provider operation for this RuntimeSession identity."""
+        with self._system_one_provider_lock:
+            return self._system_one_query_serialized(
+                questions=questions, candidate=candidate, subject_ref=subject_ref,
+                action_request_id=action_request_id,
+                action_invocation_id=action_invocation_id, descriptor=descriptor,
+                route_candidates=route_candidates,
+                route_state_revision=route_state_revision,
+                route_statework_id=route_statework_id)
+
+    def _system_one_query_serialized(self, *, questions: tuple[str, ...], candidate: ActivityFact,
                           subject_ref: Optional[str] = None,
                           action_request_id: Optional[str] = None,
                           action_invocation_id: Optional[str] = None,
@@ -1512,6 +1533,7 @@ class RuntimeSession:
             selected_flow = active_statework.get("selected_flow") if active_statework else None
             if isinstance(selected_flow, (list, tuple)) and selected_flow:
                 active_flow = Path(str(selected_flow[0])).parent.name
+        query_meta_revision = self.metacognitive_state.logical_revision
         frame = self.system_one_projector.project(
             meta_state=self.metacognitive_state,
             identity=identity, sequence=sequence,
@@ -1566,7 +1588,8 @@ class RuntimeSession:
         except Exception:
             judgment, calibrated_questions = None, set()
             status_reason = "provider_exception"
-        if sequence != self.system_one_sequence:
+        if (sequence != self.system_one_sequence
+                or query_meta_revision != self.metacognitive_state.logical_revision):
             judgment, calibrated_questions = None, set()
             status_reason = "stale_response"
         status = _canonical_system_one_status(
@@ -1580,17 +1603,13 @@ class RuntimeSession:
                 descriptor, judgment=judgment, policy=policy, calibrated=calibrated)
             relation = fused.relation
             influenced = fused.model_influenced
-            if action_request_id:
-                self.system_one_action_relations[action_request_id] = {
-                    "relation": relation, "decision_id": frame.request_id,
-                    "sequence": sequence}
-                while len(self.system_one_action_relations) > 512:
-                    self.system_one_action_relations.pop(next(iter(self.system_one_action_relations)))
         signals = SemanticFusion.signals(
             judgment, policy=policy, calibrated=calibrated)
         prior_decision = self.metacognitive_decision
         object.__setattr__(self, "semantic_signals", signals)
-        next_decision = self._evaluate_metacognition(semantic=signals)
+        object.__setattr__(self, "semantic_signals_revision",
+                           query_meta_revision)
+        next_decision = self._evaluate_metacognition()
         control_changed = (next_decision.mode, next_decision.reason,
                            next_decision.goal_reanchor_required) != (
                                prior_decision.mode, prior_decision.reason,
@@ -2297,8 +2316,9 @@ class RuntimeSession:
                     raise ValueError("tool hooks must return GateDecision or None")
                 decision = self._more_restrictive(decision, hook_decision)
 
-        # System-1 sees this action only after every hard host check. Its
-        # calibrated relation is available before the behavioral reanchor gate.
+        # System-1 sees this action only after every hard host check. Semantic
+        # action relevance informs attention, while the host descriptor alone
+        # determines hard budgets and gate outcomes.
         if decision == GateDecision.ALLOW:
             target_ref = next((request.arguments.get(key) for key in ("target", "path", "resource")
                                if isinstance(request.arguments.get(key), str)), None)
@@ -2318,14 +2338,12 @@ class RuntimeSession:
                     questions=("action_relation", "goal_drift"), candidate=candidate,
                     subject_ref=request.subject_ref, action_request_id=action_request_id,
                     descriptor=descriptor)
-            relation_record = self.system_one_action_relations.get(action_request_id)
-            relation = (str(relation_record["relation"]) if relation_record
-                        else descriptor.goal_relation)
-            candidate = replace(candidate, host_declared_relation=relation)
+            host_relation = descriptor.goal_relation
+            candidate = replace(candidate, host_declared_relation=host_relation)
             verification = (goal.get("verification_policy") or {})
-            if relation == "required_verification":
+            if host_relation == "required_verification":
                 violation = self.metacognitive_state.verification_limit_exceeded(
-                    candidate, relation=relation,
+                    candidate, relation=host_relation,
                     max_actions=int(verification.get(
                         "max_verification_actions_without_artifact_change", 2) or 2),
                     max_repeats=int(verification.get(
@@ -2337,7 +2355,7 @@ class RuntimeSession:
                         "subject": request.subject_ref,
                         "payload": {"summary": violation, "result_class": "blocked"}})
             if (goal.get("work_mode") == "delivery" and self.convergence is not None
-                    and relation not in {"advances_primary_goal", "removes_concrete_blocker"}
+                    and host_relation not in {"advances_primary_goal", "removes_concrete_blocker"}
                     and self.convergence.needs_goal_reanchor(
                         cause_id="primary-objective",
                         support_limit=int(verification.get(
@@ -2349,8 +2367,7 @@ class RuntimeSession:
                 "descriptor": descriptor.__dict__.copy(),
                 "subject_ref": request.subject_ref,
                 "sequence": self.system_one_sequence,
-                "relation": (self.system_one_action_relations.get(action_request_id) or {}).get(
-                    "relation", descriptor.goal_relation),
+                "relation": descriptor.goal_relation,
                 "candidate": candidate,
             }
             attempt_ref = str(request.arguments.get("attempt_ref") or "")
@@ -3930,6 +3947,9 @@ class RuntimeSession:
         if self.convergence is None:
             raise PermissionError("recovery tracking requires the host convergence controller")
         state = self.convergence.record_recovery_epoch(cause_id=cause_id)
+        self.metacognitive_state.record_recovery_epoch()
+        self._journal("system_one_projection_changed",
+                      snapshot=self.metacognitive_state.snapshot())
         self._record_convergence("recovery_epoch")
         self._emit_runtime({
             "category": "retry", "event_type": "recovery_epoch_recorded",
@@ -4987,8 +5007,8 @@ def _restore_session(session: RuntimeSession) -> None:
     # state. Keep the host reconstruction, clear transient influence, then
     # send a complete frame on the next eligible query.
     object.__setattr__(session, "semantic_signals", SemanticSignals())
+    object.__setattr__(session, "semantic_signals_revision", -1)
     object.__setattr__(session, "metacognitive_decision", MetaDecision("DELIVER", "session restored"))
-    session.system_one_action_relations.clear()
     session._pending_action_requests.clear()
     session._pending_retry_candidates.clear()
     if session.system_one_judge is not None:

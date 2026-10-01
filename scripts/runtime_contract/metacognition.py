@@ -121,6 +121,12 @@ class MetacognitiveController:
             sources = semantic.source_decisions[:8]
             if semantic.possible_goal_drift:
                 note = "A semantic signal suggests possible drift; keep the next action tied to an unfinished criterion."
+            elif semantic.action_relation is not None:
+                note = (f"Semantic action-relevance hint: {semantic.action_relation}; "
+                        "use it to guide attention, while host progress and verification rules remain authoritative.")
+            elif semantic.progress_relation is not None:
+                note = (f"Semantic outcome hint: {semantic.progress_relation}; "
+                        "only host-bound criterion evidence changes hard progress.")
         if active:
             return MetaDecision("DELIVER", "required criterion remains unfinished", active,
                                 semantic_attention_note=note, source_decisions=sources)
@@ -576,6 +582,11 @@ class MetacognitiveState:
 
     def record_failed_approach(self, descriptor: AttemptSemanticDescriptor) -> None:
         self._failed_approaches.append(descriptor)
+        self._logical_revision += 1
+
+    def record_recovery_epoch(self) -> None:
+        """Advance the host revision when recovery state changes without an action."""
+        self._recovery_epochs += 1
         self._logical_revision += 1
 
 
