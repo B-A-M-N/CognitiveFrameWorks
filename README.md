@@ -61,6 +61,17 @@ The example resolves an `implement` task, shows the host action gate decision, a
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
+| Deployment | CFW role | Other-system requirement |
+| --- | --- | --- |
+| **CFW alone** | Components, task policy, evidence handling, and action gates | None |
+| **CSW alone** | Not loaded | CSW runs through its standalone host interface |
+| **CFW + CSW** | Task-local components and action enforcement | CSW independently owns workflow state, evidence, and legal transitions |
+| **CFW + CSW + DP** | Supplies bounded signals and validates/applies component directives | DP coordinates adaptation; CSW continues to authorize workflow operations |
+
+CFW and CSW each have standalone entry points and work together without DP.
+The full three-system mode is recommended when behavioral interventions should
+adapt across both cognitive components and domain workflows.
+
 ## The larger architecture
 
 CognitiveFrameWorks is one of three complementary systems:
@@ -71,38 +82,30 @@ CognitiveFrameWorks is one of three complementary systems:
 | **CognitiveStateWorks** | **Which workflow states and transitions are legal now?** | Domain state, workflow legality, transition requirements, handoffs, recovery |
 | **DigitalPsychology** | **How should behavior adapt, and did the intervention improve progress?** | Behavioral observation, intervention control, outcome attribution, and longitudinal learning |
 
-Together they form a **closed-loop cognitive-behavioral control architecture**:
+When all three are enabled, they form a **closed-loop cognitive-behavioral control architecture**:
 
 ```text
-                           ┌──────────────────────────────┐
-                           │     DigitalPsychology       │
-                           │                              │
-                           │ observe → characterize       │
-                           │ compare → experiment         │
-                           │ validate → monitor           │
-                           └──────────────┬───────────────┘
-                                          │
-                            validated behavioral findings
-                                          │
-                       ┌──────────────────┴──────────────────┐
-                       │                                     │
-                       ▼                                     ▼
-             CognitiveFrameWorks                    CognitiveStateWorks
-             cognitive components                   authoritative workflow state
-             reasoning & action                     legal transitions
-             evidence & authority                   evidence requirements
-                       │                                     │
-                       └──────────────────┬──────────────────┘
-                                          │
-                                          ▼
-                                        Agent
-                                          │
-                               actions / results / state
-                                          │
-                                          └──── telemetry ───→
+                    DigitalPsychology runtime host
+                 observes and selects a bounded intervention
+                          ↙                       ↘
+          CFW signals and directives       CSW state and eligible choices
+          CFW validates controls           CSW validates workflow operations
+                          ↘                       ↙
+                                     Agent
+                                       │
+                        actions, artifacts, host evidence
+                                       │
+                                       ▼
+                      independent DP outcome evaluator
+                                       │
+                  retain, relax, reverse, or refine policy
 ```
 
 This separation is intentional.
+
+CFW and CSW each run independently, and they can run together without DP.
+Enabling DP adds cross-system adaptation and independent credit assignment;
+it does not transfer CFW's action authority or CSW's workflow authority.
 
 A behavioral problem should not automatically become another paragraph in the model's prompt. A workflow problem should not be solved with generic reasoning advice. And a behavioral hypothesis should not become runtime policy before it has been tested.
 
@@ -203,6 +206,12 @@ they prove. Hosts should pass the user's objective and acceptance criteria in
 `TaskRequest.goal_contract`. Legacy requests can still run, but successful
 completion is blocked until the host pins a goal contract with at least one
 required criterion and supplies host-attested evidence for each required claim.
+
+The CFW criterion ledger supports the full bounded task set (up to 256
+criteria). In a three-system runtime, DP may grant a short attention lease for
+up to three criteria; CFW projects that active window while the host retains
+and verifies the complete goal contract. Criteria outside the current window
+remain in CFW's ledger and the host's completion check.
 
 Lifecycle stages use their declared frequencies: per-action wrappers expire
 when the host completes the action, per-artifact checks expire after host
@@ -311,9 +320,11 @@ The StateWork transition contract determines what evidence is required to reach 
 DigitalPsychology's runtime host consumes CFW's bounded signals, projects its
 revisioned behavioral state into CFW model and planning contexts, and measures
 the result against host and CSW evidence. CFW's `CFWBehaviorAdapter` is an
-explicit capability returned by `RuntimeTaskHandle.digital_psychology_adapter()`;
-it does not patch or replace the CFW session. Every action continues through
-CFW's own authority gate.
+explicit capability returned by `RuntimeTaskHandle.digital_psychology_adapter()`.
+The adapter uses CFW's declared prepare/apply/synchronize/rollback APIs and
+revision checks; CFW keeps its session lifecycle and validates every action
+through its own authority gate. CSW selection and transition calls use its
+separate revisioned workflow API.
 
 Validated long-run findings can later become one of two things:
 
