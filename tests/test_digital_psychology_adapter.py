@@ -25,28 +25,44 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
 
     task = CognitiveRuntime(telemetry_disabled=True).begin_task(
         resolve.TaskRequest(task_id="dp-component-port", application_id="dp-test",
-                            shape="quick"),
+                            shape="implement", subject_ref="repo:dp-component-port"),
         telemetry_disabled=True,
     )
     adapter = task.digital_psychology_adapter()
-    assert adapter.available_statework_ids() == tuple(sorted(
-        str(item.get("id") or "") for item in task.bundle.stateworks))
+    assert {"owl", "anchor", "fuse", "ward"}.issubset(
+        adapter.available_component_ids())
     directive = {
-        "directive_id": "dir-dp-test", "operation": "set_mode",
-        "target": "mode", "value": "RECOVER", "cause": "equivalent_retry",
-        "expected_effect": "Use a materially different approach.",
+        "directive_id": "dir-dp-test", "operation": "set_framework",
+        "target": "owl", "value": "off", "cause": "equivalent_retry",
+        "expected_effect": "Suppress the stale reasoning component for one bounded attempt.",
         "scope": "dp-runtime-" + "a" * 64, "expires_after_actions": 3,
         "intervention_id": "intv-dp-test",
     }
     prepared = adapter.prepare_behavior_directives((directive,))
+    behavior_state = {
+        "revision": 1,
+        "cognitive_mode": "RECOVER",
+        "framework_modes": {"owl": "off", "anchor": "passive", "fuse": "normal",
+                             "ward": "mandatory", "flow": "off", "sispis": "normal",
+                             "dox": "off"},
+        "active_stateworks": [], "focus_criteria": [],
+        "verification_intensity": "normal", "exploration_budget": "normal",
+        "retry_policy": "normal", "recovery_level": 0,
+        "context_strategy": "standard", "response_strategy": "direct",
+        "active_interventions": [], "intervention_history": [],
+    }
 
-    assert adapter.apply_behavior_directives(prepared) == ("dir-dp-test",)
+    assert adapter.apply_behavior_directives(prepared, behavior_state) == ("dir-dp-test",)
     context = adapter.before_model_call("DP behavior projection", tool_capable=True)
     assert "APPLIED DIGITAL PSYCHOLOGY CONTROLS" in context
-    assert "set_mode mode=RECOVER" in context
+    assert "set_framework owl=off" in context
     assert "DP behavior projection" in context
+    assert "ACTIVE PIPELINE: owl" not in context
+    assert "===== OWL =====" not in context
+    assert "===== WARD =====" in context
 
     adapter.rollback_behavior_directives(prepared)
     restored = adapter.before_model_call("DP behavior projection")
-    assert "set_mode mode=RECOVER" not in restored
+    assert "set_framework owl=off" not in restored
+    assert "===== OWL =====" in restored
     task.close()

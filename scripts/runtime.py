@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Task-local enforcement runtime for CognitiveFrameWorks.
+"""Task-local CFW enforcement and component runtime.
 
 The CLI resolver is a debugging front end; the actual agent/harness calls the
 Python API. CFW owns its component lifecycle, action authorization, and
-evidence-bound enforcement. When DigitalPsychology is enabled, its separate
-runtime host owns cross-system behavioral orchestration and reaches CFW through
-the explicit adapter in ``scripts/digital_psychology_adapter.py``.
+evidence-bound enforcement in standalone mode. When DigitalPsychology is
+enabled, DP owns whole-session behavioral policy and CFW exposes its components
+through the explicit adapter in ``scripts/digital_psychology_adapter.py``.
 
     TaskRequest -> resolve() -> RuntimeBundle -> runtime.start(bundle)
 
@@ -1322,6 +1322,9 @@ class RuntimeSession:
     system_one_sequence: int = 0
     system_one_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     system_one_outcomes: set[str] = field(default_factory=set, repr=False)
+    external_behavior_authority: bool = False
+    external_behavior_state: Dict[str, Any] = field(default_factory=dict, repr=False)
+    _external_startup_lifecycle: set[str] = field(default_factory=set, repr=False)
     _pending_action_requests: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     _pending_retry_candidates: Dict[str, ActivityFact] = field(default_factory=dict, repr=False)
     _action_objective_bindings: Dict[str, ActionObjectiveBinding] = field(
@@ -1362,10 +1365,135 @@ class RuntimeSession:
                 "semantic_signals_revision", "semantic_signal_store",
                 "metacognitive_decision",
                 "system_one_sequence", "system_one_decisions", "system_one_outcomes",
+                "external_behavior_authority", "external_behavior_state",
+                "_external_startup_lifecycle",
         "_pending_action_requests", "_pending_retry_candidates",
         "_action_objective_bindings", "policy_epoch_record"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
+
+    def available_component_ids(self) -> tuple[str, ...]:
+        """Return the CFW frameworks present in this immutable task bundle."""
+        supported = {"owl", "anchor", "fuse", "ward", "flow", "sispis", "dox"}
+        owners = {stage.split("_", 1)[0].lower()
+                  for stage in self.bundle.kernel}
+        return tuple(sorted(owners & supported))
+
+    def enable_external_behavior_authority(self) -> tuple[str, ...]:
+        """Bind DP as the behavior authority before this session sees agent work."""
+        if self.external_behavior_authority:
+            return self.available_component_ids()
+        if (self.system_one_sequence or self.route_decisions
+                or self._pending_action_requests or self.attempt_descriptors):
+            raise RuntimeError(
+                "DigitalPsychology must bind before CFW behavioral activity begins")
+        object.__setattr__(self, "_external_startup_lifecycle",
+                           set(self.active_lifecycle))
+        object.__setattr__(self, "external_behavior_authority", True)
+        return self.available_component_ids()
+
+    def apply_external_behavior_state(self, value: Mapping[str, Any]) -> None:
+        """Materialize a DP-owned behavior state through CFW's declared API."""
+        if not self.external_behavior_authority:
+            raise RuntimeError("external behavior authority has not been bound")
+        if not isinstance(value, Mapping) or len(value) > 24:
+            raise ValueError("DP behavior state must be a bounded mapping")
+        expected_fields = {
+            "revision", "cognitive_mode", "framework_modes", "active_stateworks",
+            "focus_criteria", "verification_intensity", "exploration_budget",
+            "retry_policy", "recovery_level", "context_strategy",
+            "response_strategy", "active_interventions", "intervention_history",
+        }
+        if set(value) != expected_fields:
+            raise ValueError("DP behavior state does not match the versioned CFW port")
+        revision = value.get("revision")
+        if type(revision) is not int or revision < 0:
+            raise ValueError("DP behavior revision must be a non-negative integer")
+        mode = value.get("cognitive_mode")
+        behavior_modes = {"RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
+                          "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}
+        if mode not in behavior_modes:
+            raise ValueError("DP supplied an unsupported cognitive mode")
+        frameworks = value.get("framework_modes")
+        allowed_frameworks = {"owl", "anchor", "fuse", "ward", "flow", "sispis", "dox"}
+        allowed_modes = {"off", "passive", "normal", "elevated", "reset", "reopen",
+                         "mandatory", "recovery", "constrained"}
+        if not isinstance(frameworks, Mapping) or len(frameworks) > 16:
+            raise ValueError("DP framework modes are malformed")
+        if any(not isinstance(key, str) for key in frameworks):
+            raise ValueError("DP framework mode IDs must be strings")
+        normalized = {str(key).lower(): item for key, item in frameworks.items()}
+        if (set(normalized) - allowed_frameworks
+                or len(normalized) != len(frameworks)
+                or any(item not in allowed_modes for item in normalized.values())):
+            raise ValueError("DP supplied an unsupported CFW component mode")
+        if normalized.get("ward") != "mandatory":
+            raise PermissionError("DP cannot lower the WARD hard floor")
+        controls = {
+            "verification_intensity": value.get("verification_intensity"),
+            "exploration_budget": value.get("exploration_budget"),
+            "retry_policy": value.get("retry_policy"),
+            "recovery_level": value.get("recovery_level"),
+            "context_strategy": value.get("context_strategy"),
+            "response_strategy": value.get("response_strategy"),
+            "focus_criteria": value.get("focus_criteria"),
+        }
+        choices = {
+            "verification_intensity": {"passive", "normal", "high", "strict"},
+            "exploration_budget": {"disabled", "low", "normal", "bounded"},
+            "retry_policy": {"normal", "materially_different_only", "no_retry"},
+            "context_strategy": {"standard", "compact", "criterion_focused"},
+            "response_strategy": {"direct", "detailed", "structured"},
+        }
+        if any(controls[key] not in allowed
+               for key, allowed in choices.items()):
+            raise ValueError("DP supplied an unsupported CFW control value")
+        recovery = controls["recovery_level"]
+        if type(recovery) is not int or not 0 <= recovery <= 3:
+            raise ValueError("DP recovery level must be between zero and three")
+        focus = controls["focus_criteria"]
+        if (not isinstance(focus, (tuple, list)) or len(focus) > 8
+                or any(not isinstance(item, str) or not item or len(item) > 128
+                       for item in focus)):
+            raise ValueError("DP focus criteria are malformed")
+
+        available = self.available_component_ids()
+        stages_by_owner: dict[str, list[str]] = {}
+        for stage in self.bundle.kernel:
+            owner = stage.split("_", 1)[0].lower()
+            if owner in available:
+                stages_by_owner.setdefault(owner, []).append(stage)
+        active: set[str] = {
+            stage for stage in self.bundle.kernel
+            if stage.split("_", 1)[0].lower() not in allowed_frameworks
+            and stage in self._external_startup_lifecycle
+        }
+        for framework in available:
+            component_stages = stages_by_owner.get(framework, ())
+            component_mode = normalized.get(framework, "off")
+            if component_mode == "off":
+                continue
+            if framework == "anchor":
+                preferred = ("anchor_closeout" if mode == "READY_TO_COMPLETE"
+                             else "anchor_open")
+                selected = next((stage for stage in component_stages
+                                 if stage == preferred), component_stages[0])
+                active.add(selected)
+            elif component_stages:
+                active.add(component_stages[0])
+
+        # State changes are applied only here, after schema and hard-floor checks.
+        object.__setattr__(self, "external_behavior_state",
+                           json.loads(json.dumps(dict(value), sort_keys=True)))
+        object.__setattr__(self, "active_lifecycle", active)
+
+    def restore_external_behavior_startup(self) -> None:
+        """Restore the immutable CFW startup preset after a failed DP apply."""
+        if not self.external_behavior_authority:
+            raise RuntimeError("external behavior authority has not been bound")
+        object.__setattr__(self, "external_behavior_state", {})
+        object.__setattr__(self, "active_lifecycle",
+                           set(self._external_startup_lifecycle))
 
     @property
     def action_registry(self) -> Mapping[str, ActionDescriptor]:
@@ -1420,7 +1548,7 @@ class RuntimeSession:
                           action_hint: Optional[Mapping[str, Any]] = None,
                           behavior_context: str = "",
                           active_statework_ids: Optional[Sequence[str]] = None) -> str:
-        if self.lifecycle is not None:
+        if self.lifecycle is not None and not self.external_behavior_authority:
             prior = set(self.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
             complexity = (self.bundle.pinned.get("goal_contract") or {}).get(
@@ -1437,7 +1565,7 @@ class RuntimeSession:
     def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None,
                              *, behavior_context: str = "",
                              active_statework_ids: Optional[Sequence[str]] = None) -> str:
-        if self.lifecycle is not None:
+        if self.lifecycle is not None and not self.external_behavior_authority:
             prior = set(self.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
             self.lifecycle.on_tool_planning(descriptor)
@@ -1448,7 +1576,7 @@ class RuntimeSession:
                            active_statework_ids=active_statework_ids)
 
     def artifact_processed(self) -> None:
-        if self.lifecycle is not None:
+        if self.lifecycle is not None and not self.external_behavior_authority:
             self.lifecycle.on_artifact_processed()
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
@@ -1491,7 +1619,7 @@ class RuntimeSession:
                       segment_index=target, statework_id=self.current_segment.statework_id)
         statework_id = self.current_segment.statework_id
         self.active_statework_ids = {statework_id} if statework_id else set()
-        if self.lifecycle is not None:
+        if self.lifecycle is not None and not self.external_behavior_authority:
             self.lifecycle.reset_for_segment()
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
@@ -1561,6 +1689,11 @@ class RuntimeSession:
 
     def _evaluate_metacognition(self, *,
                                  semantic: Optional[SemanticSignals] = None) -> MetaDecision:
+        if self.external_behavior_authority:
+            state = self.external_behavior_state
+            return MetaDecision(
+                str(state.get("cognitive_mode") or "DELIVER"),
+                "behavior policy is owned by DigitalPsychology")
         goal = self.bundle.pinned.get("goal_contract") or {}
         verification = goal.get("verification_policy") or {}
         state = self.convergence.state("primary-objective") if self.convergence else None
@@ -1667,6 +1800,8 @@ class RuntimeSession:
                           route_state_revision: Optional[int] = None,
                           route_statework_id: Optional[str] = None) -> Optional[SystemOneJudgment]:
         """Query from a typed host snapshot after authority checks."""
+        if self.external_behavior_authority:
+            return None
         policy = self._system_one_policy()
         if policy.mode == "disabled":
             return None
@@ -2012,6 +2147,8 @@ class RuntimeSession:
             preference_source: str = "metacognition"
             ) -> Optional[RouteReplanRecommendation]:
         self._require_host(capability)
+        if self.external_behavior_authority:
+            return None
         if self._evaluate_metacognition().mode != "REPLAN":
             return None
         if self.termination_disposition in TERMINAL_DISPOSITIONS:
@@ -2690,7 +2827,7 @@ class RuntimeSession:
                                "action_request_id": action_request_id,
                                "advice_priority": strategy["priorities"].get(request.binding_id),
                                "policy_hash": strategy["policy_hash"]}})
-        if self.lifecycle is not None:
+        if self.lifecycle is not None and not self.external_behavior_authority:
             prior = set(self.active_lifecycle)
             self.lifecycle.on_action(decision, descriptor=descriptor)
             self.active_lifecycle = set(self.lifecycle.active)
@@ -2874,7 +3011,7 @@ class RuntimeSession:
     def on_artifact(self, *, flow_triggered: bool = False,
                     durable_contract_changed: bool = False,
                     state_changed: bool = True) -> None:
-        if self.lifecycle is not None:
+        if self.lifecycle is not None and not self.external_behavior_authority:
             self.lifecycle.on_artifact(
                 flow_triggered=flow_triggered,
                 durable_contract_changed=durable_contract_changed,
@@ -3694,7 +3831,7 @@ class RuntimeSession:
 
     def _complete_action(self, capability: _HostCapability) -> None:
         self._require_host(capability)
-        if self.lifecycle is not None:
+        if self.lifecycle is not None and not self.external_behavior_authority:
             prior = set(self.active_lifecycle)
             self.lifecycle.on_action_complete()
             self.active_lifecycle = set(self.lifecycle.active)
@@ -3955,10 +4092,7 @@ class RuntimeSession:
                     "event_type": "workflow_step_progress",
                     "subject": subject_ref,
                     "payload": {"summary": "CSW workflow step was applied",
-                                "workflow_engine": decision.engine_kind,
-                                "step_id": decision.step_id,
-                                "workflow_revision": decision.revision,
-                                "workflow_progress_class": decision.progress_class,
+                                "csw_progress_class": decision.progress_class,
                                 "progress_class": "WORKFLOW_PROGRESS"}})
         self._record_convergence("workflow_progress")
         return GateDecision.ALLOW
@@ -4711,7 +4845,7 @@ class RuntimeSession:
         if run_final_hooks:
             for hook in self.final_hooks:
                 hook(result)
-        if complete and self.lifecycle is not None:
+        if complete and self.lifecycle is not None and not self.external_behavior_authority:
             self.lifecycle.on_completion()
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
@@ -5067,7 +5201,8 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
             if authorized_memberships:
                 shared_branch_path = resolve_runtime.runtime_state_dir() / "shared-branches.sqlite3"
                 session.shared_branch_ledger = SharedBranchLedger(shared_branch_path)
-    if state_authority is None and runtime_mode != "combined_enforcing":
+    if (state_authority is None and runtime_mode != "combined_enforcing"
+            and bundle.stateworks):
         # Even a private workflow uses CSW's engine-neutral authority. Keep its
         # durable store task-scoped so standalone sessions cannot share state by
         # accidentally reusing a display subject.
@@ -5565,7 +5700,8 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
             raise ValueError("external active StateWork IDs are malformed")
         available_stateworks = {str(item.get("id") or "")
                                 for item in session.bundle.stateworks}
-        if not set(active_statework_ids).issubset(available_stateworks):
+        if (not session.external_behavior_authority
+                and not set(active_statework_ids).issubset(available_stateworks)):
             raise ValueError("external active StateWork IDs escape the pinned bundle")
     goal = session.bundle.pinned.get("goal_contract") or {}
     if goal:
@@ -5593,7 +5729,8 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
     support_limit = int(verification.get("support_actions_before_goal_reanchor", 5) or 5)
     total_action_limit = int(
         verification.get("max_committed_actions_without_goal_progress", 15) or 15)
-    if (goal.get("work_mode") == "delivery" and session.convergence is not None
+    if (not session.external_behavior_authority
+            and goal.get("work_mode") == "delivery" and session.convergence is not None
             and session.convergence.needs_goal_reanchor(
                 cause_id="primary-objective", support_limit=support_limit,
                 total_action_limit=total_action_limit)):
@@ -5606,15 +5743,17 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
             "Next action must advance a required criterion or establish a concrete blocker.")
     criterion_claims = {str(item.get("criterion_id")): str(item.get("claim") or "")
                         for item in goal.get("acceptance_criteria", ())}
-    directive = render_metacognitive_directive(session._evaluate_metacognition())
+    directive = ("" if session.external_behavior_authority else
+                 render_metacognitive_directive(session._evaluate_metacognition()))
     if directive:
         parts.append(directive +
                      "\nHost permissions, evidence requirements, retry limits, and completion checks remain authoritative.")
     active_stages = [stage for stage in session.bundle.kernel
                      if stage in session.active_lifecycle]
-    if not active_stages:
+    if not active_stages and not (session.external_behavior_authority
+                                  and session.external_behavior_state):
         active_stages = list(session.bundle.kernel[:1])
-    parts.append("ACTIVE PIPELINE: " + " -> ".join(active_stages))
+    parts.append("ACTIVE PIPELINE: " + (" -> ".join(active_stages) or "none"))
     seen_capsules: set[tuple[str, str]] = set()
     for stage_id in active_stages:
         capsule = session.injected.get(stage_id)
@@ -5653,14 +5792,15 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
         active_handoff = handoff[min(session.current_segment_index, len(handoff) - 1)]
         parts.append("\n===== ACTIVE HANDOFF =====\n" +
                      f"- {active_handoff['producer']} -> {active_handoff['packet']}")
-    if session.convergence is not None:
+    if session.convergence is not None and not session.external_behavior_authority:
         blocks = [state.compact_state_block(
             max_recovery_epochs_without_progress=session.convergence.max_recovery_epochs_without_progress)
                   for state in session.convergence.states()]
         blocks = [block for block in blocks if block]
         if blocks:
             parts.append("\n===== CONVERGENCE =====\n" + "\n\n".join(blocks))
-    action_hint = session._action_strategy_hint()
+    action_hint = ("" if session.external_behavior_authority
+                   else session._action_strategy_hint())
     if action_hint:
         parts.append(action_hint)
     if behavior_context:

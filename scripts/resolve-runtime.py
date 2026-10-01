@@ -526,6 +526,11 @@ def match_stateworks(stateworks: List[Dict[str, Any]], domains: Iterable[str],
 # ------------------------------------------------- packet-prerequisite chain
 
 def parse_packet_registry(cow_root: Path = COW_ROOT) -> Dict[str, Any]:
+    # A CFW-only task has no StateWorks to compose and must not load CSW's
+    # control plane as an implicit runtime dependency. A present CSW registry
+    # still goes through the compiled-registry validation below.
+    if not (Path(cow_root) / "registry.yaml").is_file():
+        return {}
     try:
         data = _load_compiled_csw_registry(cow_root).get("packet_registry") or {}
     except PacketDependencyError:

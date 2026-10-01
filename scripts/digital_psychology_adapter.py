@@ -31,6 +31,7 @@ _CONTROL_VALUES = {
 class PreparedBehaviorDirectiveBatch:
     directives: tuple[dict[str, Any], ...]
     prior_controls: Mapping[str, Mapping[str, Any]]
+    prior_behavior_state: Mapping[str, Any] | None
 
 
 class CFWBehaviorAdapter:
@@ -40,6 +41,11 @@ class CFWBehaviorAdapter:
         required_session_fields = ("bundle", "signals", "injected", "active_statework_ids")
         if any(not hasattr(session, field) for field in required_session_fields):
             raise TypeError("CFW behavior adapter requires a started RuntimeSession")
+        if (not callable(getattr(session, "enable_external_behavior_authority", None))
+                or not callable(getattr(session, "apply_external_behavior_state", None))
+                or not callable(getattr(session, "restore_external_behavior_startup", None))
+                or not callable(getattr(session, "available_component_ids", None))):
+            raise TypeError("CFW runtime lacks the explicit DP behavior authority API")
         if not callable(getattr(agent_handle, "before_model_call", None)) or not callable(
                 getattr(agent_handle, "before_tool_planning", None)):
             raise TypeError("CFW behavior adapter requires an agent context handle")
@@ -47,6 +53,11 @@ class CFWBehaviorAdapter:
         self._agent_handle = agent_handle
         self._controls: dict[str, dict[str, Any]] = {}
         self._current_action_index = -1
+        self._behavior_state: dict[str, Any] | None = None
+        session.enable_external_behavior_authority()
+
+    def available_component_ids(self) -> tuple[str, ...]:
+        return tuple(self._session.available_component_ids())
 
     def collect_behavior_signals(self, observation: Any) -> tuple[dict[str, Any], ...]:
         self._current_action_index = int(observation.action_index)
@@ -86,12 +97,19 @@ class CFWBehaviorAdapter:
         return PreparedBehaviorDirectiveBatch(
             directives=normalized,
             prior_controls={key: dict(value) for key, value in self._controls.items()},
+            prior_behavior_state=(dict(self._behavior_state)
+                                  if self._behavior_state is not None else None),
         )
 
-    def apply_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch
+    def apply_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch,
+                                  behavior_state: Mapping[str, Any]
                                   ) -> tuple[str, ...]:
         if not isinstance(prepared, PreparedBehaviorDirectiveBatch):
             raise TypeError("CFW directive batch was not prepared by this adapter")
+        if not isinstance(behavior_state, Mapping):
+            raise TypeError("DP behavior state must be a mapping")
+        self._validate_directive_state(prepared.directives, behavior_state)
+        self._session.apply_external_behavior_state(behavior_state)
         controls = dict(self._controls)
         for directive in prepared.directives:
             applied = dict(directive)
@@ -101,13 +119,28 @@ class CFWBehaviorAdapter:
         if len(controls) > 16:
             raise ValueError("CFW active behavior-control set exceeds its bound")
         self._controls = controls
+        self._behavior_state = json.loads(
+            json.dumps(dict(behavior_state), sort_keys=True))
         return tuple(item["directive_id"] for item in prepared.directives)
+
+    def synchronize_behavior_state(self, behavior_state: Mapping[str, Any]) -> None:
+        if not isinstance(behavior_state, Mapping):
+            raise TypeError("DP behavior state must be a mapping")
+        self._session.apply_external_behavior_state(behavior_state)
+        self._behavior_state = json.loads(
+            json.dumps(dict(behavior_state), sort_keys=True))
 
     def rollback_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch) -> None:
         if not isinstance(prepared, PreparedBehaviorDirectiveBatch):
             raise TypeError("CFW directive batch was not prepared by this adapter")
         self._controls = {key: dict(value)
                           for key, value in prepared.prior_controls.items()}
+        if prepared.prior_behavior_state is None:
+            self._session.restore_external_behavior_startup()
+            self._behavior_state = None
+        else:
+            self._session.apply_external_behavior_state(prepared.prior_behavior_state)
+            self._behavior_state = dict(prepared.prior_behavior_state)
 
     def render_behavior_context(self, context: str, *,
                                 active_statework_ids: Sequence[str] = ()) -> str:
@@ -157,6 +190,32 @@ class CFWBehaviorAdapter:
                 f"(cause: {directive['cause']}; expires after action "
                 f"{directive['expires_after_action_index']})")
         return "\n".join(control_lines) + "\n" + context
+
+    @staticmethod
+    def _validate_directive_state(directives: Sequence[Mapping[str, Any]],
+                                  state: Mapping[str, Any]) -> None:
+        frameworks = state.get("framework_modes")
+        if not isinstance(frameworks, Mapping):
+            raise ValueError("DP behavior state has no framework modes")
+        for directive in directives:
+            operation = directive["operation"]
+            target = directive["target"]
+            expected = directive["value"]
+            if operation == "set_mode":
+                actual = state.get("cognitive_mode")
+            elif operation == "set_framework":
+                actual = frameworks.get(target.lower())
+            elif operation == "set_control":
+                actual = state.get(target)
+                if target == "focus_criteria":
+                    actual = json.dumps(actual, separators=(",", ":"))
+                else:
+                    actual = str(actual)
+            else:
+                raise ValueError("CSW preference directives cannot be applied by CFW")
+            if actual != expected:
+                raise ValueError(
+                    f"DP behavior state does not contain directive value for {target!r}")
 
     @staticmethod
     def _target_key(directive: Mapping[str, Any]) -> str:
