@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+import types
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -89,6 +90,8 @@ BANNED_SISPIS_DIMENSIONS = [
     "option_multiplicity", "tradeoff_density", "ambiguity_of_framing",
     "comparative_intent", "downstream_impact",
 ]
+_CSW_CONTROL_MODULES: Dict[str, Any] = {}
+_CSW_COMPILED_REGISTRIES: Dict[str, Dict[str, Any]] = {}
 
 
 class PacketDependencyCycle(ValueError):
@@ -157,7 +160,11 @@ def cow_runtime_hash(cow_root: Path = COW_ROOT) -> str:
     """Hash the executable StateWork engine and its policy schemas."""
     if not (cow_root / "registry.yaml").is_file():
         return hashlib.sha256(b"statework-capability:absent\0" + str(cow_root).encode()).hexdigest()
-    paths = [cow_root / "scripts" / "control_plane.py"]
+    paths = [cow_root / "scripts" / "control_plane.py",
+             cow_root / "scripts" / "workflow_engines.py",
+             cow_root / "scripts" / "flow_selectors.py",
+             cow_root / "compiled-registry.json",
+             cow_root / "registry.yaml"]
     paths.extend((cow_root / "schemas").glob("*.json"))
     paths.extend((cow_root / "schemas").glob("*.yaml"))
     return _tree_runtime_hash(paths, relative_to=cow_root)
@@ -189,6 +196,8 @@ def runtime_behavior_hash(cow_root: Path = COW_ROOT) -> str:
     paths.extend(sorted((ROOT / "scripts" / "runtime_contract").glob("*.py")))
     if (cow_root / "registry.yaml").is_file():
         paths.append(cow_root / "scripts" / "control_plane.py")
+        paths.append(cow_root / "scripts" / "workflow_engines.py")
+        paths.append(cow_root / "scripts" / "flow_selectors.py")
     return _tree_runtime_hash(paths, relative_to=ROOT)
 
 
@@ -284,36 +293,96 @@ def order_kernel(active: Iterable[str], stages: Dict[str, Any]) -> List[str]:
 
 # -------------------------------------------------------- StateWork registry
 
+def _load_csw_control(cow_root: Path) -> Any:
+    root = Path(cow_root).resolve()
+    key = str(root)
+    if key in _CSW_CONTROL_MODULES:
+        return _CSW_CONTROL_MODULES[key]
+    module_path = root / "scripts" / "control_plane.py"
+    if not module_path.exists():
+        raise PacketDependencyError("CognitiveStateWork control_plane.py is missing")
+    module_name = "cfw_cow_" + hashlib.sha256(key.encode()).hexdigest()[:12]
+    package = types.ModuleType(module_name)
+    package.__path__ = [str(module_path.parent)]
+    sys.modules[module_name] = package
+    spec = importlib.util.spec_from_file_location(
+        module_name + ".control_plane", module_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name + ".control_plane"] = module
+    spec.loader.exec_module(module)
+    _CSW_CONTROL_MODULES[key] = module
+    return module
+
+
+def _load_compiled_csw_registry(cow_root: Path = COW_ROOT) -> Dict[str, Any]:
+    key = str(Path(cow_root).resolve())
+    if key not in _CSW_COMPILED_REGISTRIES:
+        control = _load_csw_control(Path(key))
+        try:
+            _CSW_COMPILED_REGISTRIES[key] = control.load_compiled_registry(Path(key))
+        except Exception as exc:
+            raise PacketDependencyError(f"compiled StateWork registry is invalid: {exc}") from exc
+    return _CSW_COMPILED_REGISTRIES[key]
+
+
+def _flow_selector(cow_root: Path = COW_ROOT) -> Any:
+    return _load_csw_control(Path(cow_root)).FlowSelector
+
+
+def _statework_root(cow_root: Path, statework: Any) -> Path:
+    if isinstance(statework, Mapping) and statework.get("_bundle_root"):
+        return Path(str(statework["_bundle_root"]))
+    statework_id = (str(statework.get("id") or "") if isinstance(statework, Mapping)
+                    else str(statework))
+    entry = next((item for item in _load_compiled_csw_registry(cow_root).get("stateworks", ())
+                  if item.get("id") == statework_id), None)
+    if entry is None:
+        raise PacketDependencyError(f"compiled StateWork {statework_id!r} is unavailable")
+    return Path(str(entry["bundle_root"]))
+
+
 def load_stateworks(cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
-    reg_file = cow_root / "registry.yaml"
-    if not reg_file.exists():
+    if not (Path(cow_root) / "registry.yaml").exists():
         return []
-    registry = load_yaml(reg_file)
+    compiled = _load_compiled_csw_registry(cow_root)
     out = []
-    for name in registry.get("stateworks", []):
-        manifest = cow_root / name / "manifest.yaml"
-        if manifest.exists():
-            data = load_yaml(manifest)
-            data["_manifest_path"] = manifest
-            out.append(data)
+    for entry in compiled.get("stateworks") or ():
+        data = dict(entry.get("manifest") or {})
+        owner = Path(str(entry.get("bundle_root") or ""))
+        if not owner.is_dir():
+            raise PacketDependencyError(f"compiled StateWork {entry.get('id')!r} source root is missing")
+        data["_manifest_path"] = owner / "manifest.yaml"
+        data["_bundle_root"] = str(owner)
+        data["_bundle_hash"] = entry.get("bundle_hash")
+        data["_compiled_engine"] = dict(entry.get("engine") or {})
+        out.append(data)
     for item in out:
-        _validate_statework_runtime_contract(cow_root, str(item.get("id") or ""))
-        _validate_statework_flow_contracts(cow_root, str(item.get("id") or ""))
+        _validate_statework_runtime_contract(cow_root, str(item.get("id") or ""),
+                                             owner_root=Path(item["_bundle_root"]))
+        _validate_statework_flow_contracts(cow_root, str(item.get("id") or ""),
+                                           owner_root=Path(item["_bundle_root"]))
     return out
 
 
-def _validate_statework_flow_contracts(cow_root: Path, statework_id: str) -> None:
-    """Validate selector coverage and the single fallback invariant per StateWork."""
+def _validate_statework_flow_contracts(cow_root: Path, statework_id: str, *,
+                                       owner_root: Optional[Path] = None) -> None:
+    """Validate every source selector against the compiled bundle policy."""
     import yaml
-    flows_dir = cow_root / statework_id / "flows"
+    flows_dir = (owner_root or _statework_root(cow_root, statework_id)) / "flows"
     paths = sorted(flows_dir.glob("*/flow.md")) if flows_dir.is_dir() else []
     if not paths:
         return
+    entry = next((item for item in _load_compiled_csw_registry(cow_root).get("stateworks", ())
+                  if item.get("id") == statework_id), None)
+    if entry is None:
+        raise PacketDependencyError(f"compiled StateWork {statework_id!r} is unavailable")
+    policy = dict((entry.get("manifest") or {}).get("flow_selection") or {})
+    selector = _flow_selector(cow_root)
     fallbacks = []
     for path in paths:
         name = path.parent.name
         pieces = path.read_text(encoding="utf-8").split("---", 2)
-        if len(pieces) < 3:
+        if len(pieces) != 3 or pieces[0].strip():
             raise PacketDependencyError(
                 f"StateWork {statework_id!r} flow {name!r} lacks machine-readable frontmatter")
         try:
@@ -324,26 +393,64 @@ def _validate_statework_flow_contracts(cow_root: Path, statework_id: str) -> Non
         if not isinstance(meta, Mapping) or meta.get("flow") != name:
             raise PacketDependencyError(
                 f"StateWork {statework_id!r} flow {name!r} metadata is invalid")
-        states = meta.get("states") or {}
-        has_selector = bool(meta.get("operations") or meta.get("triggers")
-                            or meta.get("task_shapes") or meta.get("domain_tags")
-                            or (isinstance(states, Mapping) and states.get("from")))
-        if not has_selector and meta.get("fallback") is not True:
+        if "when" in meta:
+            try:
+                selector.validate_predicate(meta["when"])
+            except Exception as exc:
+                raise PacketDependencyError(
+                    f"StateWork {statework_id!r} flow {name!r} selector is invalid") from exc
+        elif meta.get("fallback") is not True:
             raise PacketDependencyError(
-                f"StateWork {statework_id!r} flow {name!r} has no eligibility selectors or fallback=true")
+                f"StateWork {statework_id!r} flow {name!r} needs when or fallback=true")
         if meta.get("fallback") is True:
             fallbacks.append(name)
-    if len(fallbacks) != 1:
+    fallback_policy = str(policy.get("fallback") or "")
+    if ((fallback_policy == "required" and len(fallbacks) != 1)
+            or (fallback_policy == "optional" and len(fallbacks) > 1)
+            or (fallback_policy == "forbidden" and fallbacks)):
         raise PacketDependencyError(
-            f"StateWork {statework_id!r} must declare exactly one fallback flow; found {fallbacks}")
+            f"StateWork {statework_id!r} fallback policy {fallback_policy!r} "
+            f"does not match declared flows {fallbacks}")
 
 
-def _validate_statework_runtime_contract(cow_root: Path, statework_id: str) -> None:
+def _statework_flow_metadata(sw: Mapping[str, Any], cow_root: Path
+                             ) -> Dict[str, Dict[str, Any]]:
+    import yaml
+    sid = str(sw.get("id") or "")
+    owner_root = _statework_root(cow_root, sw)
+    _validate_statework_flow_contracts(cow_root, sid, owner_root=owner_root)
+    flows_dir = owner_root / "flows"
+    result: Dict[str, Dict[str, Any]] = {}
+    for path in sorted(flows_dir.glob("*/flow.md")) if flows_dir.is_dir() else ():
+        name = path.parent.name
+        try:
+            pieces = path.read_text(encoding="utf-8").split("---", 2)
+            meta = yaml.safe_load(pieces[1]) or {}
+        except Exception as exc:
+            raise PacketDependencyError(
+                f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
+        if not isinstance(meta, Mapping) or meta.get("flow") != name:
+            raise PacketDependencyError(
+                f"StateWork {sid!r} flow {name!r} metadata is invalid")
+        result[name] = dict(meta)
+    return result
+
+
+def _validate_statework_runtime_contract(cow_root: Path, statework_id: str, *,
+                                         owner_root: Optional[Path] = None) -> None:
     """Reject model-visible state vocabulary that CSW cannot accept."""
     import yaml
-    owner = cow_root / statework_id
+    owner = owner_root or _statework_root(cow_root, statework_id)
     capsule_path = owner / "runtime.md"
-    contract_path = owner / "transitions.yaml"
+    entry = next((item for item in _load_compiled_csw_registry(cow_root).get("stateworks", ())
+                  if item.get("id") == statework_id), None)
+    manifest = dict((entry or {}).get("manifest") or {})
+    engine = manifest.get("engine") or {}
+    if str(engine.get("kind") or "state_machine") != "state_machine":
+        return
+    contract_name = str(((entry or {}).get("engine") or {}).get(
+        "contract_path") or engine.get("contract") or "transitions.yaml")
+    contract_path = owner / contract_name
     if not capsule_path.is_file() or not contract_path.is_file():
         return
     text = capsule_path.read_text(encoding="utf-8")
@@ -451,14 +558,27 @@ def match_statework(stateworks: List[Dict[str, Any]], domains: Iterable[str],
     return None, []
 
 
+def match_stateworks(stateworks: List[Dict[str, Any]], domains: Iterable[str],
+                     phase: Optional[str] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Match all independently eligible domain roots with explicit ambiguity."""
+    roots: Dict[str, Dict[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for domain in domains:
+        candidate, conflicts = match_statework(stateworks, [domain], phase=phase)
+        ambiguous.update(str(item) for item in conflicts)
+        if candidate is not None:
+            roots[str(candidate.get("id"))] = candidate
+    return [roots[key] for key in sorted(roots)], sorted(ambiguous)
+
+
 # ------------------------------------------------- packet-prerequisite chain
 
 def parse_packet_registry(cow_root: Path = COW_ROOT) -> Dict[str, Any]:
-    reg = cow_root / "schemas" / "packet-registry.yaml"
-    if not reg.exists():
-        return {"packets": {}}
-    data = load_yaml(reg)
-    return data if isinstance(data, dict) else {"packets": {}}
+    try:
+        data = _load_compiled_csw_registry(cow_root).get("packet_registry") or {}
+    except PacketDependencyError:
+        raise
+    return dict(data) if isinstance(data, Mapping) else {"packets": {}}
 
 
 def _consumed_inputs(sw: Dict[str, Any]) -> Tuple[List[str], List[str]]:
@@ -480,34 +600,35 @@ def _consumed_inputs(sw: Dict[str, Any]) -> Tuple[List[str], List[str]]:
 def _load_cow_packet_store(packets: Optional[Iterable[Dict[str, Any]]],
                            cow_root: Path = COW_ROOT):
     """Load CognitiveStateWork's validated PacketStore without importing DP."""
-    module_path = cow_root / "scripts" / "control_plane.py"
-    if not module_path.exists():
-        raise PacketDependencyError("CognitiveStateWork control_plane.py is missing")
-    spec = importlib.util.spec_from_file_location("cfw_cow_control_plane", module_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["cfw_cow_control_plane"] = module
-    spec.loader.exec_module(module)
+    module = _load_csw_control(cow_root)
+    compiled = _load_compiled_csw_registry(cow_root)
     return module.PacketStore(
-        packets, packet_registry_path=cow_root / "schemas" / "packet-registry.yaml")
+        packets, packet_registry_data=compiled.get("packet_registry") or {},
+        packet_schemas=compiled.get("packet_schemas") or {})
 
 
-def plan_statework_chain(statework: Optional[Dict[str, Any]], stateworks: List[Dict[str, Any]],
+def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
                          packet_registry: Dict[str, Any],
                          packet_store: Optional[Dict[str, Dict[str, Any]]] = None,
                          allow_missing_required: bool = True,
                          missing_required: Optional[List[str]] = None,
                          task_id: Optional[str] = None,
                          subject_ref: Optional[str] = None,
+                         statework_subject_refs: Optional[Mapping[str, str]] = None,
                          observation_context: Optional[Mapping[str, Any]] = None,
                          cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
-    """Given a desired StateWork, walk its required consumed packet types.
-    Any required packet that is not present/fresh routes a registered
-    producer (from packet-registry.yaml) first. Returns the ordered chain.
+    """Plan a composable DAG from every desired StateWork root.
+
+    Required packets, declared bundle dependencies, and all roots are merged
+    into one deterministic topological order. Any packet that is not present
+    and fresh routes its registered producer first.
 
     DFS with explicit visiting set: a future A -> B -> C -> A contract fails
     with PacketDependencyCycle instead of recursing forever. Unknown required
     packets raise PacketDependencyError (never silently skipped)."""
-    if statework is None:
+    roots = ([statework] if isinstance(statework, Mapping)
+             else list(statework or ()))
+    if not roots:
         return []
     by_id = {m.get("id"): m for m in stateworks}
     producers = packet_registry.get("packets", {})
@@ -531,6 +652,13 @@ def plan_statework_chain(statework: Optional[Dict[str, Any]], stateworks: List[D
                 f"packet dependency cycle detected at StateWork {sid!r} "
                 f"(chain: {sorted(visiting)} -> {sid})")
         visiting.add(sid)
+        composition = sw.get("composition") or {}
+        for dependency_id in sorted(set(composition.get("requires") or ())):
+            dependency = by_id.get(dependency_id)
+            if dependency is None:
+                raise PacketDependencyError(
+                    f"StateWork {sid!r} requires unavailable StateWork {dependency_id!r}")
+            resolve(dependency)
         required, _optional = _consumed_inputs(sw)
         for packet in required:
             meta = producers.get(packet)
@@ -546,7 +674,7 @@ def plan_statework_chain(statework: Optional[Dict[str, Any]], stateworks: List[D
             # not a substitute for the branch/repository/entity being
             # observed; accepting that fallback would permit cross-subject
             # truth to satisfy a prerequisite.
-            expected_subject = subject_ref
+            expected_subject = (statework_subject_refs or {}).get(str(sid), subject_ref)
             if not expected_subject:
                 current = None
             else:
@@ -566,8 +694,58 @@ def plan_statework_chain(statework: Optional[Dict[str, Any]], stateworks: List[D
         resolved.add(sid)
         chain.append(sw)
 
-    resolve(statework)
+    for root in roots:
+        resolve(root)
+    active_ids = {str(item.get("id")) for item in chain}
+    root_groups: Dict[str, list[tuple[str, str]]] = {}
+    for item in chain:
+        composition = item.get("composition") or {}
+        group = str(composition.get("group") or "")
+        mode = str(composition.get("mode") or "composable")
+        conflicts = active_ids.intersection(
+            set(composition.get("conflicts") or ()))
+        if conflicts:
+            raise PacketDependencyError(
+                f"StateWork {item.get('id')!r} conflicts with active bundles {sorted(conflicts)}")
+    for root in roots:
+        sid = str(root.get("id") or "")
+        composition = root.get("composition") or {}
+        group = str(composition.get("group") or "")
+        if group:
+            root_groups.setdefault(group, []).append(
+                (sid, str(composition.get("mode") or "composable")))
+
+    def is_dependency(consumer_id: str, required_id: str) -> bool:
+        pending = [consumer_id]
+        seen: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            dependencies = set(
+                (by_id.get(current, {}).get("composition") or {}).get("requires") or ())
+            if required_id in dependencies:
+                return True
+            pending.extend(str(value) for value in dependencies)
+        return False
+
+    for group, members in root_groups.items():
+        if len(members) < 2 or not any(mode == "exclusive" for _sid, mode in members):
+            continue
+        for index, (left, _left_mode) in enumerate(members):
+            for right, _right_mode in members[index + 1:]:
+                if not is_dependency(left, right) and not is_dependency(right, left):
+                    raise PacketDependencyError(
+                        f"exclusive StateWork group {group!r} contains independent roots "
+                        f"{sorted((left, right))}")
     return chain
+
+
+def plan_statework_chain(statework: Optional[Dict[str, Any]], stateworks: List[Dict[str, Any]],
+                         packet_registry: Dict[str, Any], **kwargs: Any) -> List[Dict[str, Any]]:
+    """Backward-compatible single-root spelling for plan_statework_dag."""
+    return plan_statework_dag(statework, stateworks, packet_registry, **kwargs)
 
 
 # ---------------------------------------------------------------- guard pack
@@ -1017,6 +1195,8 @@ class PolicySnapshot:
     failure_attribution: str = "none"
     adopted_profile_hashes: Tuple[str, ...] = ()
     shared_workflow_membership: Optional[Mapping[str, Any]] = None
+    shared_workflow_memberships: Tuple[Mapping[str, Any], ...] = ()
+    statework_subject_refs: Mapping[str, str] = field(default_factory=dict)
     policy_revocation_revision: int = 0
     revocation_mode: str = "deferred"
 
@@ -1026,6 +1206,10 @@ class PolicySnapshot:
         object.__setattr__(self, "system_one_policy", _freeze_contracts(self.system_one_policy))
         object.__setattr__(self, "shared_evidence_refs", tuple(self.shared_evidence_refs))
         object.__setattr__(self, "adopted_profile_hashes", tuple(self.adopted_profile_hashes))
+        object.__setattr__(self, "shared_workflow_memberships", tuple(
+            _freeze_contracts(item) for item in self.shared_workflow_memberships))
+        object.__setattr__(self, "statework_subject_refs",
+                           _freeze_contracts(dict(self.statework_subject_refs)))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1070,6 +1254,9 @@ class PolicySnapshot:
             "failure_attribution": self.failure_attribution,
             "adopted_profile_hashes": list(self.adopted_profile_hashes),
             "shared_workflow_membership": dict(self.shared_workflow_membership or {}),
+            "shared_workflow_memberships": [_thaw(item)
+                                            for item in self.shared_workflow_memberships],
+            "statework_subject_refs": _thaw(self.statework_subject_refs),
             "policy_revocation_revision": self.policy_revocation_revision,
             "revocation_mode": self.revocation_mode,
             "phase": self.phase,
@@ -1117,6 +1304,11 @@ class StateWorkPin:
     selected_specialists: Tuple[Tuple[str, str], ...]
     transitions_hash: str = ""
     transitions_contract: Mapping[str, Any] = field(default_factory=dict)
+    workflow_engine_kind: str = "state_machine"
+    workflow_contract_hash: str = ""
+    workflow_contract: Mapping[str, Any] = field(default_factory=dict)
+    flow_selection: Mapping[str, Any] = field(default_factory=dict)
+    subject_ref: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1136,6 +1328,11 @@ class StateWorkPin:
             ],
             "transitions_hash": self.transitions_hash,
             "transitions_contract": _thaw(self.transitions_contract),
+            "workflow_engine_kind": self.workflow_engine_kind,
+            "workflow_contract_hash": self.workflow_contract_hash,
+            "workflow_contract": _thaw(self.workflow_contract),
+            "flow_selection": _thaw(self.flow_selection),
+            "subject_ref": self.subject_ref,
         }
 
 
@@ -1197,6 +1394,8 @@ class EffectivePolicy:
     failure_attribution: str = "none"
     adopted_profile_hashes: Tuple[str, ...] = ()
     shared_workflow_membership: Optional[Mapping[str, Any]] = None
+    shared_workflow_memberships: Tuple[Mapping[str, Any], ...] = ()
+    statework_subject_refs: Mapping[str, str] = field(default_factory=dict)
     policy_revocation_revision: int = 0
     revocation_mode: str = "deferred"
     policy_contract_version: str = "2.2.0"
@@ -1245,6 +1444,9 @@ class EffectivePolicy:
             "failure_attribution": self.failure_attribution,
             "adopted_profile_hashes": list(self.adopted_profile_hashes),
             "shared_workflow_membership": dict(self.shared_workflow_membership or {}),
+            "shared_workflow_memberships": [_thaw(item)
+                                            for item in self.shared_workflow_memberships],
+            "statework_subject_refs": _thaw(self.statework_subject_refs),
             "policy_revocation_revision": self.policy_revocation_revision,
             "revocation_mode": self.revocation_mode,
             "policy_contract_version": self.policy_contract_version,
@@ -1353,7 +1555,12 @@ def _policy_from_bundle(bundle: "RuntimeBundle") -> EffectivePolicy:
             selected_specialists=tuple(
                 tuple(pair) for pair in item.get("selected_specialists", [])),
             transitions_hash=item.get("transitions_hash", ""),
-            transitions_contract=item.get("transitions_contract", {}))
+            transitions_contract=item.get("transitions_contract", {}),
+            workflow_engine_kind=str(item.get("workflow_engine_kind") or "state_machine"),
+            workflow_contract_hash=str(item.get("workflow_contract_hash") or ""),
+            workflow_contract=item.get("workflow_contract", {}),
+            flow_selection=item.get("flow_selection", {}),
+            subject_ref=item.get("subject_ref"))
         for item in bundle.stateworks
     )
     if (capsules, guards, stateworks) != (bundle.policy.capsules,
@@ -1450,73 +1657,35 @@ def enumerate_eligible_routes(sw: Dict[str, Any], cow_root: Path, *,
                                 operation: Optional[str] = None,
                                 trigger: Optional[str] = None,
                                 task_shape: Optional[str] = None,
+                                phase: Optional[str] = None,
                                 current_state: Optional[str] = None,
                                 domain_tags: Optional[Iterable[str]] = None,
                                 suppressed_flows: Optional[Iterable[str]] = None,
                                 suppressed_specialists: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:
     """Enumerate host-computed legal routes without choosing one."""
-    import yaml
     sid = str(sw.get("id"))
     suppressed_flows = set(suppressed_flows or ())
     suppressed_specialists = set(suppressed_specialists or ())
     result: List[Dict[str, Any]] = []
-    flows_dir = cow_root / sid / "flows"
+    owner_root = _statework_root(cow_root, sw)
+    flows_dir = owner_root / "flows"
     if flows_dir.is_dir():
-        _validate_statework_flow_contracts(cow_root, sid)
-        parsed: list[tuple[Path, Dict[str, Any], bool, bool]] = []
-        fallback: Optional[tuple[Path, Dict[str, Any], bool, bool]] = None
-        for path in sorted(flows_dir.glob("*/flow.md")):
+        flow_metadata = _statework_flow_metadata(sw, cow_root)
+        selection = _flow_selector(cow_root).select(
+            flow_metadata,
+            {"operation": operation, "trigger": trigger, "task_shape": task_shape,
+             "phase": phase, "current_state": current_state,
+             "domain_tags": list(domain_tags or ())},
+            dict(sw.get("flow_selection") or {}),
+            excluded=suppressed_flows)
+        for name in selection.candidates:
+            meta = flow_metadata[name]
+            path = flows_dir / name / "flow.md"
             name = path.parent.name
-            if name in suppressed_flows:
-                continue
-            try:
-                meta = yaml.safe_load(path.read_text(encoding="utf-8").split("---", 2)[1]) or {}
-            except Exception as exc:
-                raise PacketDependencyError(f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
-            operations = set(meta.get("operations") or ())
-            triggers = set(meta.get("triggers") or ())
-            shapes = set(meta.get("task_shapes") or ())
-            states = meta.get("states") or {}
-            flow_tags = set(meta.get("domain_tags") or ())
-            has_selector = bool(operations or triggers or shapes or flow_tags
-                                or states.get("from"))
-            entry = (path, meta, has_selector, meta.get("fallback") is True)
-            if entry[3]:
-                fallback = entry
-            parsed.append(entry)
-        eligible = []
-        for path, meta, has_selector, is_fallback in parsed:
-            if is_fallback and not has_selector:
-                continue
-            operations = set(meta.get("operations") or ())
-            triggers = set(meta.get("triggers") or ())
-            shapes = set(meta.get("task_shapes") or ())
-            states = meta.get("states") or {}
-            if operation is not None and operations and operation not in operations:
-                continue
-            if trigger is not None and triggers and trigger not in triggers:
-                continue
-            if task_shape is not None and shapes and task_shape not in shapes:
-                continue
-            if current_state is not None and isinstance(states, Mapping):
-                from_states = set(states.get("from") or ())
-                if from_states and current_state not in from_states:
-                    continue
-            eligible.append((path, meta, has_selector, is_fallback))
-        if not eligible and fallback is not None:
-            eligible = [fallback]
-        for path, meta, _has_selector, _is_fallback in eligible:
-            name = path.parent.name
-            operations = set(meta.get("operations") or ())
-            triggers = set(meta.get("triggers") or ())
-            shapes = set(meta.get("task_shapes") or ())
-            states = meta.get("states") or {}
             budget = {"low": 1, "medium": 2, "high": 3}.get(sw.get("context_budget", "medium"), 2)
             result.append({"route_type": "flow", "route": name, "statework_id": sid,
-                           "eligibility_conditions": {"operations": sorted(operations),
-                                                       "triggers": sorted(triggers),
-                                                       "task_shapes": sorted(shapes),
-                                                       "states": dict(states)},
+                           "eligibility_conditions": {"when": meta.get("when"),
+                                                       "fallback": meta.get("fallback") is True},
                            "context_cost": {"specialist_budget": budget},
                            "dependencies": list(meta.get("required_specialists") or ())})
             root = path.parent
@@ -1525,9 +1694,9 @@ def enumerate_eligible_routes(sw: Dict[str, Any], cow_root: Path, *,
                     continue
                 candidate = (root / specialist).resolve()
                 if candidate.is_file():
-                    try: candidate.relative_to((cow_root / sid).resolve())
+                    try: candidate.relative_to(owner_root.resolve())
                     except ValueError: continue
-                    result.append({"route_type": "specialist", "route": str(candidate.relative_to(cow_root)),
+                    result.append({"route_type": "specialist", "route": f"{sid}/{candidate.relative_to(owner_root).as_posix()}",
                                    "statework_id": sid, "eligibility_conditions": {"flow": name},
                                    "context_cost": {"required": specialist in (meta.get("required_specialists") or ()),
                                                    "specialist_budget": budget},
@@ -1539,6 +1708,7 @@ def select_statework_runtime(
         sw: Dict[str, Any], cow_root: Path,
         requested_flow: Optional[str] = None, *, operation: Optional[str] = None,
         trigger: Optional[str] = None, task_shape: Optional[str] = None,
+        phase: Optional[str] = None,
         current_state: Optional[str] = None,
         domain_tags: Optional[Iterable[str]] = None,
         suppressed_specialists: Optional[Iterable[str]] = None,
@@ -1557,7 +1727,23 @@ def select_statework_runtime(
         "entrypoint": sw.get("entrypoint"),
         "manifest_hash": read_manifest_hash(sw),
     }
-    runtime_path = cow_root / sid / "runtime.md"
+    owner_root = _statework_root(cow_root, sw)
+    compiled_engine = dict(sw.get("_compiled_engine") or {})
+    engine_decl = dict(sw.get("engine") or {})
+    workflow_contract = compiled_engine.get("contract")
+    if not isinstance(workflow_contract, Mapping):
+        workflow_contract = sw.get("transitions_contract")
+    engine_kind = str(compiled_engine.get("kind") or engine_decl.get("kind") or "state_machine")
+    workflow_contract_hash = str(compiled_engine.get("contract_hash") or "")
+    if isinstance(workflow_contract, Mapping) and not workflow_contract_hash:
+        workflow_contract_hash = hashlib.sha256(json.dumps(
+            workflow_contract, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")).hexdigest()
+    item["workflow_engine_kind"] = engine_kind
+    item["workflow_contract"] = dict(workflow_contract or {})
+    item["workflow_contract_hash"] = workflow_contract_hash
+    item["flow_selection"] = dict(sw.get("flow_selection") or {})
+    runtime_path = owner_root / "runtime.md"
     if not runtime_path.exists():
         raise PacketDependencyError(f"StateWork {sid!r} is missing its runtime capsule")
     runtime_text = runtime_path.read_text(encoding="utf-8")
@@ -1567,7 +1753,7 @@ def select_statework_runtime(
     capsules: Dict[str, Tuple[str, str]] = {
         f"statework:{sid}": (runtime_text, runtime_hash)
     }
-    flows_dir = cow_root / sid / "flows"
+    flows_dir = owner_root / "flows"
     flow_paths = sorted(flows_dir.glob("*/flow.md")) if flows_dir.is_dir() else []
     selected_flow_path: Optional[Path] = None
     selected_flow_name = None
@@ -1576,93 +1762,34 @@ def select_statework_runtime(
     preferred_specialists = set(preferred_specialists or ())
     suppressed_flows = set(suppressed_flows or ())
     if flow_paths:
-        _validate_statework_flow_contracts(cow_root, sid)
-        named: Dict[str, Path] = {
-            path.parent.name: path for path in flow_paths
-        }
-        import yaml
-        selectors: Dict[str, Dict[str, Any]] = {}
-        fallback_names: list[str] = []
-        for name, path in named.items():
-            if name in suppressed_flows:
-                continue
-            pieces = path.read_text(encoding="utf-8").split("---", 2)
-            if len(pieces) < 3:
+        flow_metadata = _statework_flow_metadata(sw, cow_root)
+        selection = _flow_selector(cow_root).select(
+            flow_metadata,
+            {"operation": operation, "trigger": trigger, "task_shape": task_shape,
+             "phase": phase, "current_state": current_state,
+             "domain_tags": list(domain_tags or ())},
+            item["flow_selection"], requested=requested_flow,
+            excluded=suppressed_flows)
+        if selection.selected is None:
+            if selection.reason == "error":
+                top_score = max(selection.scores.values(), default=0)
+                tied = sorted(name for name, score in selection.scores.items()
+                              if score == top_score)
                 raise PacketDependencyError(
-                    f"StateWork {sid!r} flow {name!r} is missing machine-readable frontmatter")
-            try:
-                meta = yaml.safe_load(pieces[1]) or {}
-            except Exception as exc:
+                    f"StateWork {sid!r} flow selection is ambiguous: {tied}")
+            if selection.reason == "requested_ineligible":
                 raise PacketDependencyError(
-                    f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
-            if not isinstance(meta, dict):
-                raise PacketDependencyError(f"StateWork {sid!r} flow {name!r} frontmatter must be a mapping")
-            states = meta.get("states") or {}
-            has_selector = bool(meta.get("operations") or meta.get("triggers")
-                                or meta.get("task_shapes") or meta.get("domain_tags")
-                                or (isinstance(states, Mapping) and states.get("from")))
-            if meta.get("fallback") is True:
-                fallback_names.append(name)
-            selectors[name] = meta
-        tags = set(domain_tags or ())
-        scored: List[Tuple[int, str]] = []
-        for name, meta in selectors.items():
-            score = 0
-            operations = set(meta.get("operations") or [])
-            triggers = set(meta.get("triggers") or [])
-            shapes = set(meta.get("task_shapes") or [])
-            flow_tags = set(meta.get("domain_tags") or [])
-            states = meta.get("states") or {}
-            has_selector = bool(operations or triggers or shapes or flow_tags
-                                or (isinstance(states, dict) and states.get("from")))
-            if not has_selector and meta.get("fallback") is True:
-                continue
-            if operation is not None:
-                if operations and operation not in operations:
-                    continue
-                score += int(operation in operations)
-            if trigger is not None:
-                if triggers and trigger not in triggers:
-                    continue
-                score += int(trigger in triggers)
-            if task_shape is not None:
-                if shapes and task_shape not in shapes:
-                    continue
-                score += int(task_shape in shapes)
-            if current_state is not None:
-                state_from = set(states.get("from") or []) if isinstance(states, dict) else set()
-                if state_from and current_state not in state_from:
-                    continue
-                score += int(current_state in state_from)
-            if tags and flow_tags:
-                score += len(tags & flow_tags)
-            scored.append((score, name))
-        if requested_flow:
-            eligible_names = {name for _score, name in scored}
-            if not scored and fallback_names:
-                eligible_names.add(fallback_names[0])
-            if requested_flow not in eligible_names:
+                    f"StateWork {sid!r} requested flow {requested_flow!r} is not eligible")
+            if selection.reason == "blocked":
                 raise PacketDependencyError(
-                    f"StateWork {sid!r} requested flow {requested_flow!r} is not eligible "
-                    f"for operation={operation!r}, trigger={trigger!r}, "
-                    f"shape={task_shape!r}, state={current_state!r}")
-            selected_flow_path = named[requested_flow]
+                    f"StateWork {sid!r} has no matching flow and policy is blocked")
+            if selection.reason == "inactive":
+                item["flow_selection_status"] = "inactive"
         else:
-            if not scored and fallback_names:
-                scored = [(-1, fallback_names[0])]
-            elif not scored:
-                raise PacketDependencyError(
-                    f"StateWork {sid!r} has no flow matching operation={operation!r}, "
-                    f"trigger={trigger!r}, shape={task_shape!r}, state={current_state!r}")
-            scored.sort(key=lambda pair: (-pair[0], pair[1]))
-            if len(scored) > 1 and scored[0][0] == scored[1][0]:
-                raise PacketDependencyError(
-                    f"StateWork {sid!r} flow selection is ambiguous: "
-                    f"{[name for score, name in scored if score == scored[0][0]]}")
-            selected_flow_path = named[scored[0][1]]
+            selected_flow_path = flows_dir / selection.selected / "flow.md"
         if selected_flow_path is not None:
             try:
-                selected_flow_path.resolve().relative_to(cow_root.resolve())
+                selected_flow_path.resolve().relative_to(owner_root.resolve())
             except ValueError as exc:
                 raise PacketDependencyError(
                     f"StateWork {sid!r} flow escapes its owner boundary") from exc
@@ -1670,12 +1797,7 @@ def select_statework_runtime(
             text = selected_flow_path.read_text(encoding="utf-8")
             capsules[f"statework-flow:{sid}:{selected_flow_name}"] = (
                 text, sha256(selected_flow_path))
-            try:
-                import yaml
-                frontmatter = yaml.safe_load(text.split("---", 2)[1]) or {}
-            except Exception as exc:
-                raise PacketDependencyError(
-                    f"StateWork {sid!r} flow {selected_flow_name!r} has invalid frontmatter") from exc
+            frontmatter = flow_metadata[selected_flow_name]
             required = frontmatter.get("required_specialists") or []
             optional = frontmatter.get("optional_specialists") or []
             if frontmatter.get("flow") != selected_flow_name:
@@ -1698,7 +1820,7 @@ def select_statework_runtime(
             budget_limit = {"low": 1, "medium": 2, "high": 3}.get(
                 sw.get("context_budget", "medium"), 2)
             relative_root = selected_flow_path.parent
-            owner_root = (cow_root / sid).resolve()
+            owner_root = owner_root.resolve()
             candidates: list[Tuple[str, bool]] = [
                 (str(path), True) for path in required
             ] + sorted(((str(path), False) for path in optional),
@@ -1729,8 +1851,7 @@ def select_statework_runtime(
             item["flow_states"] = dict(frontmatter.get("states") or {})
             item["flow_metadata"] = {
                 key: frontmatter.get(key)
-                for key in ("flow", "operations", "triggers", "task_shapes",
-                            "domain_tags", "states", "framework_requirements",
+                for key in ("flow", "when", "states", "framework_requirements",
                             "required_specialists", "optional_specialists",
                             "completion", "fallback")
                 if key in frontmatter
@@ -1739,11 +1860,11 @@ def select_statework_runtime(
         capsules[f"statework-specialist:{sid}:{index}"] = (
             path.read_text(encoding="utf-8"), content_hash)
     item["selected_flow"] = (
-        [str(selected_flow_path.relative_to(cow_root)), sha256(selected_flow_path)]
+        [f"{sid}/{selected_flow_path.relative_to(owner_root).as_posix()}", sha256(selected_flow_path)]
         if selected_flow_path else None
     )
     item["selected_specialists"] = [
-        [str(path.relative_to(cow_root)), content_hash]
+        [f"{sid}/{path.relative_to(owner_root).as_posix()}", content_hash]
         for path, content_hash in specialists
     ]
     return item, capsules
@@ -1753,13 +1874,17 @@ def _statework_runtime_pins(
         chain: List[Dict[str, Any]], cow_root: Path,
         requested_flows: Optional[Dict[str, str]] = None, *, operation: Optional[str] = None,
         trigger: Optional[str] = None, task_shape: Optional[str] = None,
+        phase: Optional[str] = None,
         current_state: Optional[str] = None,
         domain_tags: Optional[Iterable[str]] = None,
+        statework_subject_refs: Optional[Mapping[str, str]] = None,
+        default_subject_ref: Optional[str] = None,
         routing_adjustments: Optional[Iterable[Mapping[str, Any]]] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Tuple[str, str]]]:
     """Pin every selected StateWork runtime byte for the task."""
     enriched: List[Dict[str, Any]] = []
     capsules: Dict[str, Tuple[str, str]] = {}
     requested_flows = requested_flows or {}
+    statework_subject_refs = statework_subject_refs or {}
     suppressed_by_statework: Dict[str, set[str]] = {}
     preferred_by_statework: Dict[str, set[str]] = {}
     suppressed_flows_by_statework: Dict[str, set[str]] = {}
@@ -1775,15 +1900,19 @@ def _statework_runtime_pins(
     for sw in chain:
         item, selected = select_statework_runtime(
             sw, cow_root, requested_flows.get(str(sw.get("id"))), operation=operation,
-            trigger=trigger, task_shape=task_shape, current_state=current_state,
+            trigger=trigger, task_shape=task_shape, phase=phase,
+            current_state=current_state,
             domain_tags=domain_tags,
             suppressed_specialists=suppressed_by_statework.get(str(sw.get("id")), ()),
             preferred_specialists=preferred_by_statework.get(str(sw.get("id")), ()),
             suppressed_flows=suppressed_flows_by_statework.get(str(sw.get("id")), ()))
-        transition_path = cow_root / str(sw.get("id")) / "transitions.yaml"
-        if transition_path.exists():
-            item["transitions_hash"] = sha256(transition_path)
-            item["transitions_contract"] = load_yaml(transition_path)
+        if item.get("flow_selection_status") == "inactive":
+            continue
+        item["subject_ref"] = statework_subject_refs.get(
+            str(sw.get("id")), default_subject_ref)
+        if item.get("workflow_engine_kind") == "state_machine":
+            item["transitions_hash"] = item.get("workflow_contract_hash")
+            item["transitions_contract"] = dict(item.get("workflow_contract") or {})
             transition_schema_path = cow_root / "schemas" / "transition-contract.schema.json"
             if transition_schema_path.exists():
                 try:
@@ -1795,8 +1924,7 @@ def _statework_runtime_pins(
                         f"StateWork {sw.get('id')!r} transition contract violates its schema") from exc
             declared_states = set(item.get("transitions_contract", {}).get("states") or [])
             flow_states = item.get("flow_states") or {}
-            referenced = set((flow_states.get("from") or []) +
-                             (flow_states.get("through") or []))
+            referenced = set(flow_states.get("through") or [])
             if referenced and not referenced.issubset(declared_states):
                 raise PacketDependencyError(
                     f"StateWork {sw.get('id')!r} flow references undeclared states "
@@ -1869,6 +1997,9 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         adopted_profile_hashes = tuple(request.adopted_profile_hashes)
         shared_workflow_membership = (dict(request.shared_workflow_membership)
                                       if request.shared_workflow_membership is not None else None)
+        shared_workflow_memberships = tuple(dict(item)
+                                            for item in request.shared_workflow_memberships)
+        statework_subject_refs = dict(request.statework_subject_refs)
         policy_revocation_revision = request.policy_revocation_revision
         revocation_mode = request.revocation_mode
         routing_experiment_plan = dict(request.routing_experiment_plan)
@@ -1906,6 +2037,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         failure_attribution = "none"
         adopted_profile_hashes = ()
         shared_workflow_membership = None
+        shared_workflow_memberships = ()
+        statework_subject_refs = {}
         policy_revocation_revision = 0
         revocation_mode = "deferred"
         routing_experiment_plan = {}
@@ -2029,15 +2162,17 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     # Build the host-computed eligibility snapshot before asking DP.  DP may
     # express preferences over these choices, but it never supplies them.
     pre_stateworks = load_stateworks(cow_root)
-    pre_desired, pre_ambiguous = match_statework(pre_stateworks, domains, phase=phase)
+    pre_desireds, pre_ambiguous = match_stateworks(pre_stateworks, domains, phase=phase)
     if pre_ambiguous:
         raise ValueError(f"ambiguous StateWork match for domain(s) {domains}; candidates: {sorted(pre_ambiguous)}")
     eligible_routes = [{"route_type": "stage", "route": route} for route in profile]
-    if pre_desired is not None:
-        eligible_routes.append({"route_type": "statework", "route": pre_desired.get("id"), "statework_id": pre_desired.get("id")})
+    for root in pre_desireds:
+        eligible_routes.append({"route_type": "statework", "route": root.get("id"),
+                                "statework_id": root.get("id")})
         eligible_routes.extend(enumerate_eligible_routes(
-            pre_desired, cow_root, operation=operation, trigger=trigger,
-            task_shape=shape, current_state=(observation_context or {}).get("state"),
+            root, cow_root, operation=operation, trigger=trigger,
+            task_shape=shape, phase=phase,
+            current_state=(observation_context or {}).get("state"),
             domain_tags=domains))
     for guard in routing_pack_for_context.get("always_on", []) + routing_pack_for_context.get("guards", []):
         eligible_routes.append({"route_type": "guard", "route": str(guard.get("key") or guard.get("id") or "")})
@@ -2124,12 +2259,13 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
                                     or requested_flows):
         raise ValueError("StateWork capability is required by this task but no registry is installed")
     packet_registry = parse_packet_registry(cow_root)
-    desired, ambiguous = pre_desired, pre_ambiguous
+    desired, ambiguous = pre_desireds, pre_ambiguous
     if ambiguous:
         raise ValueError(f"ambiguous StateWork match for domain(s) {domains}; candidates: {sorted(ambiguous)}")
-    if desired is not None and any(
+    selected_root_ids = {root.get("id") for root in desired}
+    if selected_root_ids and any(
             item.get("route_type") == "statework"
-            and item.get("route") == desired.get("id")
+            and item.get("route") in selected_root_ids
             and item.get("disposition") == "suppress"
             for item in routing_adjustments):
         raise ValueError("adaptive routing cannot suppress a statically required StateWork")
@@ -2143,16 +2279,18 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             statework_id = item.get("statework_id")
             if statework_id and (str(statework_id), str(item.get("route") or "")) not in suppressed_flows:
                 effective_requested_flows[str(statework_id)] = str(item.get("route"))
-    chain = plan_statework_chain(desired, stateworks, packet_registry,
-                                 packet_store=packet_store,
-                                 allow_missing_required=allow_missing_required,
-                                 missing_required=missing_required,
-                                 task_id=task_id, subject_ref=subject_ref,
-                                 observation_context=observation_context,
-                                 cow_root=cow_root)
-    if chain and not subject_ref:
+    chain = plan_statework_dag(desired, stateworks, packet_registry,
+                               packet_store=packet_store,
+                               allow_missing_required=allow_missing_required,
+                               missing_required=missing_required,
+                               task_id=task_id, subject_ref=subject_ref,
+                               statework_subject_refs=statework_subject_refs,
+                               observation_context=observation_context,
+                               cow_root=cow_root)
+    if chain and any(not statework_subject_refs.get(str(item.get("id")), subject_ref)
+                     for item in chain):
         raise ValueError(
-            "StateWork-backed tasks require an authoritative subject_ref; "
+            "every active StateWork requires an authoritative subject binding; "
             "task_id is not a subject identity")
 
     # Select flows and pin their transition requirements before constructing
@@ -2160,8 +2298,27 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     # FUSE/WARD requirements even though that flow is selected later.
     enriched_stateworks, statework_capsules = _statework_runtime_pins(
         chain, cow_root, effective_requested_flows, operation=operation, trigger=trigger,
-        task_shape=shape, domain_tags=domains,
+        task_shape=shape, phase=phase, domain_tags=domains,
+        statework_subject_refs=statework_subject_refs,
+        default_subject_ref=subject_ref,
         routing_adjustments=routing_adjustments)
+    active_statework_ids = {str(item.get("id")) for item in enriched_stateworks}
+    inactive_statework_ids = {str(item.get("id")) for item in chain
+                              if str(item.get("id")) not in active_statework_ids}
+    for consumer in enriched_stateworks:
+        consumer_id = str(consumer.get("id"))
+        composition_requires = set(
+            (consumer.get("composition") or {}).get("requires") or ())
+        required_packets, _optional_packets = _consumed_inputs(consumer)
+        packet_producers = {
+            str((packet_registry.get("packets") or {}).get(packet, {}).get("producer") or "")
+            for packet in required_packets
+        }
+        unavailable = (composition_requires | packet_producers) & inactive_statework_ids
+        if unavailable:
+            raise PacketDependencyError(
+                f"active StateWork {consumer_id!r} depends on inactive StateWork "
+                f"{sorted(unavailable)}")
 
     # kernel = union(profile kernel, every active StateWork core_requirements)
     # core_requirements may use owner names (anchor/dox); expand via aliases
@@ -2267,7 +2424,12 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
                      selected_specialists=tuple(
                          tuple(pair) for pair in item["selected_specialists"]),
                      transitions_hash=item.get("transitions_hash", ""),
-                     transitions_contract=item.get("transitions_contract", {}))
+                     transitions_contract=item.get("transitions_contract", {}),
+                     workflow_engine_kind=str(item.get("workflow_engine_kind") or "state_machine"),
+                     workflow_contract_hash=str(item.get("workflow_contract_hash") or ""),
+                     workflow_contract=item.get("workflow_contract", {}),
+                     flow_selection=item.get("flow_selection", {}),
+                     subject_ref=item.get("subject_ref"))
         for item in enriched_stateworks
     )
 
@@ -2376,6 +2538,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         failure_attribution=failure_attribution,
         adopted_profile_hashes=adopted_profile_hashes,
         shared_workflow_membership=shared_workflow_membership,
+        shared_workflow_memberships=shared_workflow_memberships,
+        statework_subject_refs=statework_subject_refs,
         policy_revocation_revision=policy_revocation_revision,
         revocation_mode=revocation_mode,
     )
@@ -2392,7 +2556,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "segment_id": f"segment-{index}",
         "index": index,
         "statework_id": item.get("id"),
-        "subject_ref": subject_ref,
+        "subject_ref": statework_subject_refs.get(str(item.get("id")), subject_ref),
         "input_packet": ((item.get("inputs") or {}).get("required") or [None])[0]
             if isinstance(item.get("inputs"), dict) else None,
         "output_packet": (item.get("handoff") or (item.get("emits") or [None])[0]),
@@ -2458,6 +2622,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         failure_attribution=failure_attribution,
         adopted_profile_hashes=tuple(adopted_profile_hashes),
         shared_workflow_membership=shared_workflow_membership,
+        shared_workflow_memberships=tuple(shared_workflow_memberships),
+        statework_subject_refs=statework_subject_refs,
         policy_revocation_revision=policy_revocation_revision,
         revocation_mode=revocation_mode,
         contracts=policy_documents,

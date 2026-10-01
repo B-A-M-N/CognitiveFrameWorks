@@ -45,7 +45,12 @@ def wheel_files(project: Path) -> set[str]:
             ),
             "CognitiveStateWork": (
                 "from importlib.resources import files; "
-                "assert files('cognitive_statework').joinpath('schemas/packet-registry.yaml').is_file()"
+                "root = files('cognitive_statework'); "
+                "assert root.joinpath('schemas/packet-registry.yaml').is_file(); "
+                "assert root.joinpath('compiled-registry.json').is_file(); "
+                "assert root.joinpath('tuid/manifest.yaml').is_file(); "
+                "from cognitive_statework.flow_selectors import FlowSelector; "
+                "assert FlowSelector"
             ),
             "CognitiveFrameWorks": (
                 "from runtime_contract.routing import _profile_schema_text; "
@@ -68,6 +73,9 @@ def main() -> int:
     assert "digital_psychology/schemas/routing-experiment-plan.schema.json" in dp
     assert "cognitive_statework/schemas/packet-registry.yaml" in csw
     assert "cognitive_statework/schemas/evidence-kinds.yaml" in csw
+    assert "cognitive_statework/compiled-registry.json" in csw
+    assert "cognitive_statework/tuid/manifest.yaml" in csw
+    assert "cognitive_statework/flow_selectors.py" in csw
     assert "runtime_contract/contracts/behavioral-routing-profile.schema.json" in cfw
     assert "runtime_contract/contracts/routing-experiment-plan.schema.json" in cfw
     print("PACKAGE_RESOURCE_TEST=PASS")

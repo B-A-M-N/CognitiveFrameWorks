@@ -119,9 +119,11 @@ class ActivityFact:
     evidence_kinds: Tuple[str, ...] = ()
 
     ACTIVITY_TYPES = frozenset({"action", "tool_result", "validation", "state_transition",
-                                "retry", "goal_progress", "blocker", "operator_correction"})
+                                "workflow_progress", "retry", "goal_progress", "blocker",
+                                "operator_correction"})
     PROGRESS_CLASSES = frozenset({"GOAL_PROGRESS", "BLOCKER_REMOVED", "DIAGNOSTIC_PROGRESS",
-                                  "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS"})
+                                  "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS",
+                                  "WORKFLOW_PROGRESS"})
 
     def __post_init__(self) -> None:
         if not isinstance(self.sequence, int) or self.sequence < 1:
@@ -163,7 +165,7 @@ class ActivityFact:
 @dataclass(frozen=True)
 class WorkflowFact:
     statework_id: str
-    current_state: str
+    current_state: Optional[str]
     progress_class: str
     domain: Optional[str] = None
     purpose: Optional[str] = None
@@ -177,11 +179,15 @@ class WorkflowFact:
     normal_path_rank_before: Optional[int] = None
     normal_path_rank_after: Optional[int] = None
     source: str = "csw_authoritative"
+    subject_ref: Optional[str] = None
+    engine_kind: Optional[str] = None
+    step_id: Optional[str] = None
+    completed: Optional[bool] = None
 
     def __post_init__(self) -> None:
-        for name, limit in (("statework_id", 64), ("current_state", 64),
-                            ("progress_class", 32)):
+        for name, limit in (("statework_id", 64), ("progress_class", 32)):
             _bounded_text(getattr(self, name), name, limit)
+        _bounded_text(self.current_state, "current_state", 64, optional=True)
         if self.progress_class not in {"FORWARD_PROGRESS", "LATERAL", "RECOVERY",
                                        "INVALIDATION", "REGRESSION", "TERMINAL"}:
             raise ValueError("unsupported StateWork progress class")
@@ -189,14 +195,16 @@ class WorkflowFact:
             raise ValueError("workflow facts must have CSW provenance")
         for name, limit in (("domain", 64), ("purpose", 256), ("previous_state", 64),
                             ("edge_id", 128), ("trigger", 64), ("path_class", 64),
-                            ("work_class", 64), ("domain_effect", 64)):
+                            ("work_class", 64), ("domain_effect", 64),
+                            ("subject_ref", 256), ("engine_kind", 64), ("step_id", 128)):
             _bounded_text(getattr(self, name), name, limit, optional=True)
 
     def to_dict(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in (
             "statework_id", "domain", "purpose", "current_state", "previous_state", "edge_id",
             "trigger", "path_class", "progress_class", "work_class", "domain_effect",
-            "revision", "normal_path_rank_before", "normal_path_rank_after", "source")}
+            "revision", "normal_path_rank_before", "normal_path_rank_after", "source",
+            "subject_ref", "engine_kind", "step_id", "completed")}
 
 
 @dataclass(frozen=True)

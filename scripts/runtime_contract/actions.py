@@ -17,6 +17,16 @@ GOAL_RELATIONS = frozenset({
     "advances_primary_goal", "removes_concrete_blocker",
     "required_verification", "diagnostic_support", "unrelated", "ambiguous",
 })
+ACTION_OBJECTIVE_PURPOSES = frozenset({
+    "DIRECT_GOAL", "BLOCKER_REMOVAL", "REQUIRED_VERIFICATION", "DIAGNOSTIC", "INCIDENTAL",
+})
+ACTION_OBJECTIVE_RELATIONS = {
+    "DIRECT_GOAL": "advances_primary_goal",
+    "BLOCKER_REMOVAL": "removes_concrete_blocker",
+    "REQUIRED_VERIFICATION": "required_verification",
+    "DIAGNOSTIC": "diagnostic_support",
+    "INCIDENTAL": "unrelated",
+}
 
 
 def _canonical(value: Any) -> str:
@@ -183,6 +193,63 @@ class ActionDescriptor:
                 **{**self.__dict__, "network_effect": True,
                    "required_authority": self.required_authority or "operator"})
         return self
+
+
+@dataclass(frozen=True)
+class ActionObjectiveBinding:
+    """Host-issued, request-specific task relation for one exact action."""
+
+    action_digest: str
+    purpose_class: str
+    criterion_ids: tuple[str, ...]
+    cause_id: str
+    artifact_revision: Optional[int] = None
+    binding_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if (not isinstance(self.action_digest, str) or len(self.action_digest) != 64
+                or any(ch not in "0123456789abcdef" for ch in self.action_digest)):
+            raise ValueError("objective binding requires an action digest")
+        if self.purpose_class not in ACTION_OBJECTIVE_PURPOSES:
+            raise ValueError("objective binding has an unsupported purpose class")
+        if (not isinstance(self.cause_id, str) or not self.cause_id.strip()
+                or len(self.cause_id) > 256):
+            raise ValueError("objective binding requires a bounded cause ID")
+        criteria = tuple(self.criterion_ids)
+        if (len(criteria) > 8 or len(set(criteria)) != len(criteria)
+                or any(not isinstance(item, str) or not item.strip() or len(item) > 128
+                       for item in criteria)):
+            raise ValueError("objective binding criterion IDs must be unique and bounded")
+        if self.purpose_class in {"DIRECT_GOAL", "REQUIRED_VERIFICATION"} and not criteria:
+            raise ValueError("direct and verification bindings require a criterion")
+        if self.artifact_revision is not None and (
+                not isinstance(self.artifact_revision, int) or self.artifact_revision < 0):
+            raise ValueError("artifact revision must be a non-negative integer")
+        object.__setattr__(self, "criterion_ids", criteria)
+        expected = self._digest()
+        if self.binding_digest and self.binding_digest != expected:
+            raise ValueError("objective binding digest does not match its contents")
+        object.__setattr__(self, "binding_digest", expected)
+
+    def _digest(self) -> str:
+        payload = {"action_digest": self.action_digest,
+                   "purpose_class": self.purpose_class,
+                   "criterion_ids": list(self.criterion_ids),
+                   "cause_id": self.cause_id,
+                   "artifact_revision": self.artifact_revision}
+        return hashlib.sha256(_canonical(payload).encode("utf-8")).hexdigest()
+
+    @property
+    def goal_relation(self) -> str:
+        return ACTION_OBJECTIVE_RELATIONS[self.purpose_class]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"action_digest": self.action_digest,
+                "purpose_class": self.purpose_class,
+                "criterion_ids": list(self.criterion_ids),
+                "cause_id": self.cause_id,
+                "artifact_revision": self.artifact_revision,
+                "binding_digest": self.binding_digest}
 
 
 def action_contract_hash(registry: Optional[Mapping[str, ActionDescriptor]] = None) -> str:

@@ -153,6 +153,8 @@ def render_metacognitive_directive(decision: MetaDecision) -> str:
         lines.append(decision.semantic_attention_note[:220])
     if decision.mode == "BLOCKED":
         lines.append("Stop recovery attempts and report the unresolved blocker to the host.")
+    elif decision.mode == "READY_TO_COMPLETE":
+        lines.append("Invoke the host's authoritative completion and boundary-evidence checks.")
     return "\n".join(lines[:7])
 
 

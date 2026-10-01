@@ -522,17 +522,24 @@ def qualify_stale_host_snapshot() -> tuple[str, str]:
 def prepare_route_root(temp_root: Path) -> None:
     shutil.copytree(COW, temp_root)
     discover = temp_root / "tuid" / "flows" / "discover" / "flow.md"
-    discover.write_text(discover.read_text(encoding="utf-8").replace(
-        "fallback: true", "fallback: false", 1), encoding="utf-8")
+    import yaml
+    discover_parts = discover.read_text(encoding="utf-8").split("---", 2)
+    discover_meta = yaml.safe_load(discover_parts[1]) or {}
+    discover_meta["fallback"] = False
+    discover.write_text(
+        "---\n" + yaml.safe_dump(discover_meta, sort_keys=False).rstrip()
+        + "\n---" + discover_parts[2], encoding="utf-8")
     fallback = temp_root / "tuid" / "flows" / "fallback" / "flow.md"
     fallback.parent.mkdir(parents=True)
     fallback.write_text(
-        "---\nflow: fallback\noperations: [verify]\n"
-        "triggers: [validation_requested]\nstates:\n"
-        "  from: [IMPLEMENTED, EXERCISABLE, VALIDATED]\n"
-        "  through: [VALIDATED]\nfallback: true\n"
+        "---\nflow: fallback\nwhen:\n  all:\n"
+        "    - field: operation\n      in: [verify]\n"
+        "    - field: trigger\n      in: [validation_requested]\n"
+        "    - field: current_state\n      in: [IMPLEMENTED, EXERCISABLE, VALIDATED]\n"
+        "states:\n  through: [VALIDATED]\nfallback: true\n"
         "required_specialists: []\noptional_specialists: []\n---\n"
         "# Lower-ranked fallback verification route\n", encoding="utf-8")
+    resolve._load_csw_control(temp_root).RegistryCompiler(temp_root).compile(write=True)
 
 
 def qualify_routes(mode: str, cow_root: Path) -> tuple[str, str | None, tuple[str, ...]]:

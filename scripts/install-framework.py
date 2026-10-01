@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 import yaml
@@ -222,16 +224,14 @@ def _preflight_sources(statework_root: Path) -> None:
     if statework_root.is_dir() and (not registry_file.is_file() or registry_file.is_symlink()):
         missing.append(str(registry_file))
     if registry_file.is_file():
-        statework_registry = yaml.safe_load(registry_file.read_text(encoding="utf-8")) or {}
-        for name in statework_registry.get("stateworks", []):
-            source_dir = statework_root / name
-            source_skill = source_dir / "SKILL.md"
-            if not source_skill.is_file():
-                source_skill = source_dir / "STATEWORK.md"
-            if not source_skill.is_file() or source_skill.is_symlink():
-                missing.append(str(source_skill))
-            if (source_dir / "manifest.yaml").exists() and (source_dir / "manifest.yaml").is_symlink():
-                missing.append(str(source_dir / "manifest.yaml"))
+        try:
+            for _source_root, bundle_root, _entry in _compiled_statework_bundles(
+                    statework_root):
+                if (not (bundle_root / "manifest.yaml").is_file()
+                        or not (bundle_root / "runtime.md").is_file()):
+                    missing.append(str(bundle_root))
+        except Exception as exc:
+            raise InstallSafetyError(f"StateWork registry compilation failed: {exc}") from exc
     for artifact in (ROOT / "scripts" / "runtime.py", ROOT / "scripts" / "resolve-runtime.py",
                      ROOT / "scripts" / "cognitive_runtime.py", ROOT / "contracts",
                      ROOT / "shared"):
@@ -240,6 +240,35 @@ def _preflight_sources(statework_root: Path) -> None:
     if missing:
         raise InstallSafetyError("mandatory install artifacts are missing or unsafe:\n" +
                                  "\n".join(f"  - {item}" for item in missing))
+
+
+def _compiled_statework_bundles(statework_root: Path):
+    """Compile the source registry and return every trusted bundle source."""
+    root = Path(statework_root).resolve()
+    module_path = root / "scripts" / "control_plane.py"
+    engine_path = root / "scripts" / "workflow_engines.py"
+    selector_path = root / "scripts" / "flow_selectors.py"
+    if not module_path.is_file() or not engine_path.is_file() or not selector_path.is_file():
+        raise InstallSafetyError(
+            "CognitiveStateWork needs control_plane.py, workflow_engines.py, and flow_selectors.py")
+    package_name = "cfw_installer_csw_" + hashlib.sha256(str(root).encode()).hexdigest()[:12]
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(module_path.parent)]
+    sys.modules[package_name] = package
+    spec = importlib.util.spec_from_file_location(package_name + ".control_plane", module_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[package_name + ".control_plane"] = module
+    spec.loader.exec_module(module)
+    compiled = module.RegistryCompiler(root).compile(write=False)
+    result = []
+    for entry in compiled.get("stateworks") or ():
+        source_root_value = str(entry.get("source_root") or ".")
+        source_root = (root if source_root_value == "." else
+                       Path(source_root_value) if Path(source_root_value).is_absolute()
+                       else root / source_root_value)
+        bundle_root = (source_root / str(entry.get("bundle_ref") or ".")).resolve()
+        result.append((source_root, bundle_root, dict(entry)))
+    return result
 
 
 def _main_impl() -> int:
@@ -264,6 +293,8 @@ def _main_impl() -> int:
     except InstallSafetyError as exc:
         print(f"[FAIL] preflight: {exc}")
         return 1
+    compiled_stateworks = (_compiled_statework_bundles(statework_root)
+                           if statework_available else [])
     selected_targets = args.target if args.target is not None else ([] if args.registry else ["agents"])
     try:
         target_specs = _registry_specs(selected_targets, args.registry)
@@ -345,17 +376,13 @@ def _main_impl() -> int:
         # Bundle the StateWork wrappers in the same atomic installation.  A
         # runtime that resolves StateWorks but leaves their host-facing
         # capsules in a separate source checkout is not self-contained.
-        statework_registry = (yaml.safe_load(
-            (statework_root / "registry.yaml").read_text(encoding="utf-8"))
-            if statework_available else {"stateworks": []})
-        for statework_name in statework_registry.get("stateworks", []):
-            source_dir = statework_root / statework_name
+        for _source_root, source_dir, compiled_entry in compiled_stateworks:
+            statework_name = str(compiled_entry["id"])
             source_skill = source_dir / "SKILL.md"
             if not source_skill.exists():
                 source_skill = source_dir / "STATEWORK.md"
             if not source_skill.exists():
-                print(f"  [FAIL] {statework_name}: no SKILL.md or STATEWORK.md")
-                continue
+                source_skill = source_dir / "runtime.md"
             destination = reg / statework_name
             if destination.exists() and not any(item == statework_name or
                                                 item.startswith(statework_name + "/")
@@ -407,20 +434,35 @@ def _main_impl() -> int:
         if statework_available:
             bundled_statework = runtime_dst / "statework"
             bundled_statework.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(statework_root / "registry.yaml", bundled_statework / "registry.yaml")
             shutil.copytree(statework_root / "schemas", bundled_statework / "schemas")
             bundled_scripts = bundled_statework / "scripts"
             bundled_scripts.mkdir(parents=True, exist_ok=True)
-            for filename in ("__init__.py", "control_plane.py",
+            for filename in ("__init__.py", "control_plane.py", "workflow_engines.py",
+                             "flow_selectors.py",
                              "validate-repository-truth.py", "operator_projection.py"):
                 source_script = statework_root / "scripts" / filename
                 if source_script.exists():
                     shutil.copy2(source_script, bundled_scripts / filename)
-            for statework_name in (yaml.safe_load(
-                    (statework_root / "registry.yaml").read_text(encoding="utf-8")
-            ).get("stateworks", [])):
-                shutil.copytree(statework_root / statework_name,
-                                bundled_statework / statework_name)
+            installed_ids = []
+            for _source_root, bundle_root, compiled_entry in compiled_stateworks:
+                statework_name = str(compiled_entry["id"])
+                shutil.copytree(bundle_root, bundled_statework / statework_name)
+                installed_ids.append(statework_name)
+            (bundled_statework / "registry.yaml").write_text(
+                yaml.safe_dump({"version": "2.0.0", "stateworks": installed_ids,
+                                "extension_roots": []}, sort_keys=False),
+                encoding="utf-8")
+            package_name = "cfw_installer_csw_bundle_" + hashlib.sha256(
+                str(bundled_statework.resolve()).encode()).hexdigest()[:12]
+            package = types.ModuleType(package_name)
+            package.__path__ = [str(bundled_scripts)]
+            sys.modules[package_name] = package
+            spec = importlib.util.spec_from_file_location(
+                package_name + ".control_plane", bundled_scripts / "control_plane.py")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[package_name + ".control_plane"] = module
+            spec.loader.exec_module(module)
+            module.RegistryCompiler(bundled_statework).compile(write=True)
         (runtime_dst / "plugin.json").write_text(
             (ROOT / "plugin.json").read_text(encoding="utf-8"), encoding="utf-8")
         for skill in CORE_SKILLS:

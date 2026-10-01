@@ -24,7 +24,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "2.5.0"
+      "const": "2.6.0"
     },
     "event_id": {
       "type": "string",
@@ -305,8 +305,11 @@
         },
         "criterion_ids": {
           "type": "array",
-          "maxItems": 8,
-          "items": { "type": "string", "maxLength": 128 }
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "maxItems": 64
         },
         "route": {
           "type": "string",
@@ -445,20 +448,13 @@
             "BLOCKER_REMOVED",
             "DIAGNOSTIC_PROGRESS",
             "VERIFICATION_PROGRESS",
-            "RECOVERY_PROGRESS"
+            "RECOVERY_PROGRESS",
+            "WORKFLOW_PROGRESS"
           ]
         },
         "criterion_id": {
           "type": "string",
           "maxLength": 128
-        },
-        "criterion_ids": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "maxLength": 128
-          },
-          "maxItems": 64
         },
         "action_fingerprint": {
           "type": "string",
@@ -472,6 +468,19 @@
         "support_actions_since_goal_progress": {
           "type": "integer",
           "minimum": 0
+        },
+        "total_actions_since_goal_progress": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "accounting_lane": {
+          "type": "string",
+          "enum": [
+            "DIRECT",
+            "SUPPORT",
+            "UNCLASSIFIED",
+            "VERIFICATION"
+          ]
         },
         "recovery_epochs_since_goal_progress": {
           "type": "integer",
@@ -637,6 +646,22 @@
         "system_one_route_preference": {
           "type": "string",
           "maxLength": 128
+        },
+        "system_one_legal_routes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "system_one_domain_tags": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          }
         },
         "system_one_answers": {
           "type": "object",

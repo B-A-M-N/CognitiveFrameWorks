@@ -64,6 +64,176 @@ class SemanticSignals:
 
 
 @dataclass(frozen=True)
+class SemanticSignalRecord:
+    question_family: str
+    scenario: str
+    criterion_id: Optional[str]
+    cause_id: Optional[str]
+    candidate_digest: str
+    metacognitive_revision: int
+    value: Any
+    confidence: Optional[float]
+    source_decision_id: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {"question_family": self.question_family, "scenario": self.scenario,
+                "criterion_id": self.criterion_id, "cause_id": self.cause_id,
+                "candidate_digest": self.candidate_digest,
+                "metacognitive_revision": self.metacognitive_revision,
+                "value": self.value, "confidence": self.confidence,
+                "source_decision_id": self.source_decision_id}
+
+
+class SemanticSignalStore:
+    """Bounded task-local semantic signals with explicit decision scope."""
+    _FIELDS = {"action_relation": "action_relation",
+               "progress_relation": "progress_relation",
+               "retry_relation": "equivalent_retry",
+               "goal_drift": "possible_goal_drift",
+               "route_preference": "route_preference"}
+
+    def __init__(self, *, limit: int = 128) -> None:
+        if not 1 <= limit <= 512:
+            raise ValueError("semantic signal store limit must be between 1 and 512")
+        self.limit = limit
+        self._records: dict[tuple[Any, ...], SemanticSignalRecord] = {}
+
+    @property
+    def records(self) -> tuple[SemanticSignalRecord, ...]:
+        return tuple(self._records.values())
+
+    def record(self, *, question_family: str, value: Any, scenario: str,
+               candidate_digest: str, metacognitive_revision: int,
+               source_decision_id: str, criterion_id: Optional[str] = None,
+               cause_id: Optional[str] = None,
+               confidence: Optional[float] = None) -> None:
+        if question_family not in self._FIELDS:
+            raise ValueError("semantic signal family is not registered")
+        if not scenario or not source_decision_id or not candidate_digest:
+            raise ValueError("semantic signal requires scenario, candidate, and decision identities")
+        if len(candidate_digest) != 64 or metacognitive_revision < 0:
+            raise ValueError("semantic signal candidate digest or revision is invalid")
+        if confidence is not None and not 0.0 <= float(confidence) <= 1.0:
+            raise ValueError("semantic signal confidence must be between zero and one")
+        record = SemanticSignalRecord(
+            question_family=question_family, scenario=scenario[:128],
+            criterion_id=criterion_id[:128] if criterion_id else None,
+            cause_id=cause_id[:128] if cause_id else None,
+            candidate_digest=candidate_digest,
+            metacognitive_revision=int(metacognitive_revision), value=value,
+            confidence=float(confidence) if confidence is not None else None,
+            source_decision_id=source_decision_id[:256])
+        key = (record.question_family, record.scenario, record.criterion_id,
+               record.cause_id, record.candidate_digest, record.metacognitive_revision)
+        self._records[key] = record
+        while len(self._records) > self.limit:
+            self._records.pop(next(iter(self._records)))
+
+    def invalidate(self, *, question_families: Optional[set[str]] = None,
+                   scenario: Optional[str] = None, criterion_id: Optional[str] = None,
+                   cause_id: Optional[str] = None,
+                   candidate_digest: Optional[str] = None) -> int:
+        removed = []
+        for key, item in self._records.items():
+            if question_families is not None and item.question_family not in question_families:
+                continue
+            if scenario is not None and item.scenario != scenario:
+                continue
+            if criterion_id is not None and item.criterion_id != criterion_id:
+                continue
+            if cause_id is not None and item.cause_id != cause_id:
+                continue
+            if candidate_digest is not None and item.candidate_digest != candidate_digest:
+                continue
+            removed.append(key)
+        for key in removed:
+            del self._records[key]
+        return len(removed)
+
+    def snapshot(self) -> list[dict[str, object]]:
+        return [item.to_dict() for item in self._records.values()]
+
+    def restore(self, records: Sequence[Mapping[str, Any]]) -> None:
+        if len(records) > self.limit:
+            raise ValueError("semantic signal snapshot exceeds configured bound")
+        self._records.clear()
+        for row in records:
+            self.record(
+                question_family=str(row.get("question_family") or ""),
+                value=row.get("value"), scenario=str(row.get("scenario") or ""),
+                candidate_digest=str(row.get("candidate_digest") or ""),
+                metacognitive_revision=int(row.get("metacognitive_revision", -1)),
+                source_decision_id=str(row.get("source_decision_id") or ""),
+                criterion_id=(str(row["criterion_id"])
+                              if row.get("criterion_id") else None),
+                cause_id=(str(row["cause_id"]) if row.get("cause_id") else None),
+                confidence=(float(row["confidence"])
+                            if row.get("confidence") is not None else None))
+
+    def current(self, *, metacognitive_revision: int,
+                question_families: Optional[set[str]] = None) -> SemanticSignals:
+        eligible = [item for item in self._records.values()
+                    if item.metacognitive_revision == int(metacognitive_revision)
+                    and (question_families is None
+                         or item.question_family in question_families)]
+        if not eligible:
+            return SemanticSignals()
+        # Query families from different candidates/scenarios must not be
+        # accidentally fused. Only records for the most recently observed
+        # candidate context are combined.
+        latest = eligible[-1]
+        context = [item for item in eligible
+                   if (item.scenario, item.candidate_digest, item.cause_id)
+                   == (latest.scenario, latest.candidate_digest, latest.cause_id)]
+        values: dict[str, Any] = {}
+        sources: list[str] = []
+        for item in context:
+            values[self._FIELDS[item.question_family]] = item.value
+            sources.append(item.source_decision_id)
+        return SemanticSignals(**values,
+                               source_decisions=tuple(dict.fromkeys(sources))[:8])
+
+
+@dataclass(frozen=True)
+class VerificationObligation:
+    criterion_id: str
+    artifact_revision: int
+    required_strength: str
+    evidence_kind: Optional[str] = None
+    status: str = "PENDING"
+
+    def __post_init__(self) -> None:
+        if not self.criterion_id or len(self.criterion_id) > 128:
+            raise ValueError("verification obligation requires a bounded criterion id")
+        if self.artifact_revision < 0 or not self.required_strength:
+            raise ValueError("verification obligation revision and strength are required")
+        if self.status not in {"PENDING", "SATISFIED", "INVALIDATED"}:
+            raise ValueError("unsupported verification obligation status")
+
+    def to_dict(self) -> dict[str, object]:
+        return {"criterion_id": self.criterion_id,
+                "artifact_revision": self.artifact_revision,
+                "required_strength": self.required_strength,
+                "evidence_kind": self.evidence_kind, "status": self.status}
+
+
+@dataclass(frozen=True)
+class CompletionReadiness:
+    required_criteria_satisfied: bool
+    boundary_evidence_available: bool
+    unresolved_contradictions: bool
+    active_stateworks_complete: bool
+    pending_verification_obligations: int
+
+    @property
+    def ready(self) -> bool:
+        return (self.required_criteria_satisfied and self.boundary_evidence_available
+                and not self.unresolved_contradictions
+                and self.active_stateworks_complete
+                and self.pending_verification_obligations == 0)
+
+
+@dataclass(frozen=True)
 class MetaDecision:
     mode: str
     reason: str
@@ -74,7 +244,7 @@ class MetaDecision:
 
     def __post_init__(self) -> None:
         if self.mode not in {"DELIVER", "DIAGNOSE", "VERIFY", "RECOVER", "REPLAN",
-                             "BLOCKED", "REINSPECT"}:
+                             "BLOCKED", "REINSPECT", "READY_TO_COMPLETE"}:
             raise ValueError("unsupported metacognitive decision")
         if len(self.active_criterion_ids) > 8 or len(self.source_decisions) > 8:
             raise ValueError("metacognitive decision exceeds bounded references")
@@ -93,12 +263,15 @@ class MetacognitiveController:
     def evaluate(self, state: "MetacognitiveState", *,
                  support_actions_since_progress: int,
                  support_action_limit: int,
+                 total_actions_since_progress: int,
+                 total_action_limit: int,
                  recovery_epochs_since_progress: int,
                  max_recovery_epochs: int,
                  same_approach_retries: int,
                  max_same_approach_retries: int,
                  unresolved_contradiction: bool = False,
-                 semantic: Optional[SemanticSignals] = None) -> MetaDecision:
+                 semantic: Optional[SemanticSignals] = None,
+                 completion_readiness: Optional[CompletionReadiness] = None) -> MetaDecision:
         active = tuple(item.criterion_id for item in state.criteria
                        if item.status != "satisfied")[:8]
         if unresolved_contradiction:
@@ -108,13 +281,17 @@ class MetacognitiveController:
         if support_actions_since_progress >= support_action_limit:
             return MetaDecision("REPLAN", "support-action budget reached", active,
                                 goal_reanchor_required=True)
+        if total_actions_since_progress >= total_action_limit:
+            return MetaDecision("REPLAN", "committed-action budget reached without goal evidence",
+                                active, goal_reanchor_required=True)
         if same_approach_retries >= max_same_approach_retries:
             return MetaDecision("RECOVER", "repeated approach reached its hard limit", active)
         if state.blockers:
             return MetaDecision("DIAGNOSE", "host-observed blocker remains", active)
-        if (state.actions_since_artifact_change == 0 and active
-                and state.verification_actions_since_artifact_change == 0):
-            return MetaDecision("VERIFY", "changed artifact needs first criterion check", active)
+        pending_obligations = state.pending_verification_obligations
+        if pending_obligations:
+            return MetaDecision("VERIFY", "explicit criterion verification obligation is pending",
+                                active)
         note = None
         sources: tuple[str, ...] = ()
         if semantic is not None:
@@ -130,7 +307,14 @@ class MetacognitiveController:
         if active:
             return MetaDecision("DELIVER", "required criterion remains unfinished", active,
                                 semantic_attention_note=note, source_decisions=sources)
-        return MetaDecision("VERIFY", "confirm required criteria and completion evidence",
+        if completion_readiness is not None and completion_readiness.ready:
+            return MetaDecision("READY_TO_COMPLETE", "host completion prerequisites are ready",
+                                semantic_attention_note=note, source_decisions=sources)
+        if (completion_readiness is not None
+                and not completion_readiness.active_stateworks_complete):
+            return MetaDecision("DELIVER", "active workflow still has required steps",
+                                semantic_attention_note=note, source_decisions=sources)
+        return MetaDecision("VERIFY", "completion readiness still requires host evidence",
                             semantic_attention_note=note, source_decisions=sources)
 
 
@@ -147,7 +331,7 @@ class MetacognitiveState:
             raise ValueError("System-1 projection limits exceed the safe bound")
         self._ordinary = deque(maxlen=activity_limit)
         self._important: dict[str, ActivityFact] = {}
-        self._workflows: dict[str, WorkflowFact] = {}
+        self._workflows: dict[tuple[str, str], WorkflowFact] = {}
         self._failed_approaches = deque(maxlen=failed_approach_limit)
         self._important_limit = important_limit
         self._workflow_limit = workflow_limit
@@ -164,6 +348,8 @@ class MetacognitiveState:
         self._recovery_epochs = 0
         self._repeated_branch_count = 0
         self._logical_revision = 0
+        self._verification_requirements: dict[str, tuple[str, Optional[str]]] = {}
+        self._verification_obligations: dict[str, VerificationObligation] = {}
 
     @property
     def criteria(self) -> tuple[CriterionState, ...]:
@@ -171,7 +357,8 @@ class MetacognitiveState:
 
     @property
     def workflows(self) -> tuple[WorkflowFact, ...]:
-        return tuple(self._workflows.values())
+        return tuple(sorted(self._workflows.values(),
+                            key=lambda item: (item.statework_id, item.subject_ref or "")))
 
     @property
     def failed_approaches(self) -> tuple[AttemptSemanticDescriptor, ...]:
@@ -216,6 +403,16 @@ class MetacognitiveState:
         return self._artifact_revision
 
     @property
+    def verification_obligations(self) -> tuple[VerificationObligation, ...]:
+        return tuple(sorted(self._verification_obligations.values(),
+                            key=lambda item: item.criterion_id))
+
+    @property
+    def pending_verification_obligations(self) -> tuple[VerificationObligation, ...]:
+        return tuple(item for item in self.verification_obligations
+                     if item.status == "PENDING")
+
+    @property
     def logical_revision(self) -> int:
         return self._logical_revision
 
@@ -232,6 +429,10 @@ class MetacognitiveState:
                     claim=str(item.get("claim") or "")[:512],
                     kind=str(item.get("kind") or "")[:64])
                 self._logical_revision += 1
+            if current is None or criterion_id not in self._verification_requirements:
+                self._verification_requirements[criterion_id] = (
+                    str(item.get("verification_strength") or "host_observation"),
+                    str(item.get("evidence_kind") or item.get("required_evidence_kind") or "") or None)
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -254,6 +455,8 @@ class MetacognitiveState:
             "logical_revision": self._logical_revision,
             "recovery_epochs": self._recovery_epochs,
             "repeated_branch_count": self._repeated_branch_count,
+            "verification_obligations": [item.to_dict()
+                                         for item in self.verification_obligations],
         }
 
     def restore(self, value: Mapping[str, Any]) -> None:
@@ -267,7 +470,9 @@ class MetacognitiveState:
             "goal_directed_actions_since_goal_progress", "artifact_revision",
             "verification_counts", "verification_fingerprints", "logical_revision",
         }
-        if not isinstance(value, Mapping) or set(value) not in (fields, extended_fields):
+        obligation_fields = extended_fields | {"verification_obligations"}
+        if not isinstance(value, Mapping) or set(value) not in (
+                fields, extended_fields, obligation_fields):
             raise ValueError("malformed metacognitive state snapshot")
 
         def activity(row: Mapping[str, Any]) -> ActivityFact:
@@ -355,6 +560,18 @@ class MetacognitiveState:
         self._logical_revision = int(value.get("logical_revision", next_sequence))
         self._recovery_epochs = int(value["recovery_epochs"])
         self._repeated_branch_count = int(value["repeated_branch_count"])
+        self._verification_obligations = {}
+        for raw in value.get("verification_obligations", ()):
+            if not isinstance(raw, Mapping):
+                raise ValueError("malformed verification obligation snapshot")
+            obligation = VerificationObligation(
+                criterion_id=str(raw.get("criterion_id") or ""),
+                artifact_revision=int(raw.get("artifact_revision", -1)),
+                required_strength=str(raw.get("required_strength") or ""),
+                evidence_kind=(str(raw["evidence_kind"])
+                               if raw.get("evidence_kind") else None),
+                status=str(raw.get("status") or "PENDING"))
+            self._verification_obligations[obligation.criterion_id] = obligation
 
     def record_activity(self, activity_type: str, *, source: str = "host_observed",
                         action_class: Optional[str] = None,
@@ -439,11 +656,24 @@ class MetacognitiveState:
             self._verification_actions_since_artifact_change = 0
             self._verification_counts.clear()
             self._verification_fingerprints.clear()
+            for criterion_id in fact.affected_criterion_ids:
+                requirement = self._verification_requirements.get(
+                    criterion_id, ("host_observation", None))
+                self._verification_obligations[criterion_id] = VerificationObligation(
+                    criterion_id=criterion_id, artifact_revision=self._artifact_revision,
+                    required_strength=requirement[0], evidence_kind=requirement[1])
+                prior = self._criteria.get(criterion_id)
+                if prior is not None:
+                    self._criteria[criterion_id] = CriterionState(
+                        criterion_id=prior.criterion_id, claim=prior.claim, kind=prior.kind,
+                        status="active", evidence_status="invalidated",
+                        evidence_ref_digests=(),
+                        last_progress_sequence=prior.last_progress_sequence)
         if activity_type == "goal_progress" and fact.progress_class in {
                 "GOAL_PROGRESS", "BLOCKER_REMOVED"}:
             self._actions_since_goal_progress = 0
             self._goal_directed_actions_since_goal_progress = 0
-        if activity_type == "retry" and result_class == "equivalent_retry":
+        if activity_type == "retry" and fact.result_class == "equivalent_retry":
             self._repeated_branch_count += 1
         if (activity_type == "action"
                 and verification_relation == "required_verification"
@@ -524,6 +754,10 @@ class MetacognitiveState:
             criterion_id=prior.criterion_id, claim=prior.claim, kind=prior.kind,
             status="satisfied", evidence_status="verified", evidence_ref_digests=refs,
             last_progress_sequence=prior.last_progress_sequence)
+        obligation = self._verification_obligations.get(criterion_id)
+        if obligation is not None and obligation.status == "PENDING":
+            self._verification_obligations[criterion_id] = replace(
+                obligation, status="SATISFIED")
         self._logical_revision += 1
 
     def record_blocker(self, blocker_id: str, summary: str,
@@ -547,7 +781,8 @@ class MetacognitiveState:
             self._logical_revision += 1
 
     def record_workflow(self, fact: WorkflowFact) -> None:
-        self._workflows[fact.statework_id] = fact
+        key = (fact.statework_id, fact.subject_ref or "")
+        self._workflows[key] = fact
         self._logical_revision += 1
         while len(self._workflows) > self._workflow_limit:
             oldest = next(iter(self._workflows))
@@ -555,7 +790,8 @@ class MetacognitiveState:
 
     def record_csw_fact(self, *, statework_id: str, input_state: str,
                         output_state: str, progress_class: str,
-                        workflow_metadata: Optional[Mapping[str, Any]] = None) -> None:
+                        workflow_metadata: Optional[Mapping[str, Any]] = None,
+                        subject_ref: Optional[str] = None) -> None:
         metadata = dict(workflow_metadata or {})
         self.record_workflow(WorkflowFact(
             statework_id=statework_id, current_state=output_state,
@@ -566,19 +802,39 @@ class MetacognitiveState:
             work_class=str(metadata.get("work_class") or "") or None,
             domain_effect=str(metadata.get("domain_effect") or "") or None,
             revision=(int(metadata["revision"]) if metadata.get("revision") is not None else None),
+            subject_ref=subject_ref,
+            engine_kind=str(metadata.get("engine_kind") or "state_machine"),
+            step_id=str(metadata.get("step_id") or metadata.get("edge_id") or "") or None,
+            completed=bool(metadata["completed"]) if "completed" in metadata else None,
             normal_path_rank_before=(int(metadata["normal_path_rank_before"])
                                      if metadata.get("normal_path_rank_before") is not None else None),
             normal_path_rank_after=(int(metadata["normal_path_rank_after"])
                                     if metadata.get("normal_path_rank_after") is not None else None),
             domain=str(metadata.get("domain") or "") or None,
             purpose=str(metadata.get("purpose") or "") or None))
-        self.record_activity("state_transition", source="csw_authoritative",
+        self.record_activity("workflow_progress", source="csw_authoritative",
                              action_class=str(metadata.get("work_class") or "transition"),
                              result_class=progress_class,
-                             progress_class=("RECOVERY_PROGRESS" if progress_class in {
-                                 "RECOVERY", "INVALIDATION", "REGRESSION"} else None))
-        if progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
-            self._recovery_epochs += 1
+                             progress_class="WORKFLOW_PROGRESS")
+
+    def record_generic_workflow_progress(self, *, statework_id: str,
+                                         subject_ref: str,
+                                         engine_kind: str, step_id: str,
+                                         revision: int, progress_class: str,
+                                         completed: bool, work_class: str,
+                                         domain_effect: str,
+                                         evidence_refs: Sequence[str] = ()) -> None:
+        """Store engine-neutral progress without inventing a current state."""
+        fact = WorkflowFact(
+            statework_id=statework_id, current_state=None,
+            progress_class=progress_class, source="csw_authoritative",
+            subject_ref=subject_ref, engine_kind=engine_kind, step_id=step_id,
+            completed=bool(completed), work_class=work_class,
+            domain_effect=domain_effect, revision=int(revision))
+        self.record_workflow(fact)
+        self.record_activity("workflow_progress", source="csw_authoritative",
+                             action_class=work_class, result_class=progress_class,
+                             progress_class="WORKFLOW_PROGRESS")
 
     def record_failed_approach(self, descriptor: AttemptSemanticDescriptor) -> None:
         self._failed_approaches.append(descriptor)
@@ -591,4 +847,6 @@ class MetacognitiveState:
 
 
 __all__ = ["MetacognitiveState", "BlockerFact", "CriterionEvidenceBinding",
-           "SemanticSignals", "MetaDecision", "MetacognitiveController"]
+           "SemanticSignals", "SemanticSignalRecord", "SemanticSignalStore",
+           "VerificationObligation", "CompletionReadiness",
+           "MetaDecision", "MetacognitiveController"]

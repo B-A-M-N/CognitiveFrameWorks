@@ -22,6 +22,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import types
 import uuid
 import yaml
 import yaml
@@ -30,7 +31,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_CONTRACT_ROOT = ROOT / "contracts"
@@ -44,7 +45,8 @@ if str(ROOT / "scripts") not in sys.path:
 import importlib.util
 import importlib.util as _ilu
 from runtime_contract.actions import (
-    ActionDescriptor, ActionStrategy, AgentActionRequest, ConfirmationGrant, HostExecutionContext,
+    ActionDescriptor, ActionObjectiveBinding, ActionStrategy, AgentActionRequest,
+    ConfirmationGrant, HostExecutionContext,
     ProtectedResourcePolicy, action_contract_hash, action_digest,
     default_action_registry, effective_action_registry,
 )
@@ -64,8 +66,8 @@ from runtime_contract.behavioral_fusion import (
     fuse_retry_relation, render_metacognitive_directive,
 )
 from runtime_contract.metacognition import (
-    CriterionEvidenceBinding, MetaDecision, MetacognitiveController,
-    MetacognitiveState, SemanticSignals,
+    CompletionReadiness, CriterionEvidenceBinding, MetaDecision, MetacognitiveController,
+    MetacognitiveState, SemanticSignalStore, SemanticSignals,
 )
 from runtime_contract.system_one import (ActivityFact, AttemptSemanticDescriptor,
                                          BehavioralJudge, SystemOneCapability,
@@ -87,7 +89,7 @@ _STATEWORK_TRANSITIONS = None
 _STATEWORK_TRANSITION_MODULES: Dict[str, Any] = {}
 
 TelemetrySink = Callable[[Dict[str, Any]], None]
-SCHEMA_VERSION = "2.5.0"
+SCHEMA_VERSION = "2.6.0"
 CATEGORIES = {
     "observation", "assumption", "inference", "decision", "action",
     "tool_result", "validation", "correction", "contradiction", "retry",
@@ -220,6 +222,9 @@ class RouteReplanRecommendation:
     confidence: float
     state_revision: int
     target_statework_id: str
+    source_metacognitive_revision: int
+    legal_routes_digest: str
+    policy_hash: str
     legal_children: Mapping[str, resolve_runtime.RuntimeBundle] = field(repr=False)
     semantic_decision_ref: Optional[str] = None
 
@@ -732,6 +737,27 @@ class HostIngress:
         self._session = session
         self._capability = capability
 
+    def bind_action_objective(self, action: Mapping[str, Any] | AgentActionRequest, *,
+                              purpose_class: str, criterion_ids: Iterable[str] = (),
+                              cause_id: str = "primary-objective",
+                              artifact_revision: Optional[int] = None
+                              ) -> ActionObjectiveBinding:
+        """Bind one exact action to host-accepted task criteria."""
+        if purpose_class == "REQUIRED_VERIFICATION" and artifact_revision is None:
+            artifact_revision = self._session.metacognitive_state.artifact_revision
+        return self._session._bind_action_objective(
+            self._capability, action, purpose_class=purpose_class,
+            criterion_ids=criterion_ids, cause_id=cause_id,
+            artifact_revision=artifact_revision)
+
+    def prepare_action(self, action: Mapping[str, Any] | AgentActionRequest, *,
+                       objective_binding: Optional[ActionObjectiveBinding] = None
+                       ) -> ActionPreparation:
+        """Prepare an action with an optional binding issued by this host session."""
+        return self._session._prepare_action(
+            action, capability=self._capability,
+            objective_binding=objective_binding)
+
     def record_observation(self, observation_type: str,
                            subject_ref: Optional[str] = None,
                            *, details: Optional[Mapping[str, Any]] = None) -> str:
@@ -798,6 +824,12 @@ class HostIngress:
         self._session._record_goal_progress(
             self._capability, cause_id=cause_id, evidence_ref=evidence_ref,
             criterion_id=criterion_id, progress_class=progress_class)
+
+    def record_criterion_verified(self, *, criterion_id: str,
+                                  evidence_ref: str) -> None:
+        self._session._record_criterion_verified(
+            self._capability, criterion_id=criterion_id,
+            evidence_ref=evidence_ref)
 
     def system_one_decision_for_action(self, action_request_id: str) -> Optional[str]:
         """Host-only correlation lookup for a later independent outcome."""
@@ -925,12 +957,31 @@ class HostIngress:
 
 
 class StateAuthority:
-    """Host interface for combined CSW authority; the session never owns it."""
+    """Engine-neutral host interface for authoritative workflow state."""
     def inspect(self, *, statework_id: str, subject_ref: str, contract_hash: str) -> Dict[str, Any]:
         raise NotImplementedError
     def commit(self, *, statework_id: str, subject_ref: str, contract_hash: str,
                expected_revision: int, output_state: str, evidence_refs: list[str], trigger: str,
                evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def workflow_contract_identity(self, statework_id: str,
+                                   contract_hash: str) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def inspect_workflow(self, *, statework_id: str, subject_ref: str,
+                         contract_hash: str) -> Any:
+        raise NotImplementedError
+
+    def resolve_legacy_step(self, *, statework_id: str, subject_ref: str,
+                            contract_hash: str, to_state: str,
+                            trigger: Optional[str]) -> str:
+        raise NotImplementedError
+
+    def apply_workflow_step(self, *, statework_id: str, subject_ref: str,
+                            contract_hash: str, step_id: str,
+                            expected_revision: int,
+                            evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Any:
         raise NotImplementedError
 
 
@@ -1008,9 +1059,11 @@ class CSWStateAuthority(StateAuthority):
                  evidence_path: Optional[Path] = None,
                  namespace_id: str = "default", application_id: str = "cognitiveframeworks-runtime",
                  application_instance_id: str = "cognitiveframeworks-runtime",
-                 workflow_id: str = "default-workflow") -> None:
+                 workflow_id: str = "default-workflow",
+                 statework_memberships: Optional[Mapping[str, Mapping[str, Any]]] = None) -> None:
         self.root = Path(root)
         self.control = _statework_transition_engines(self.root)
+        self.compiled_registry = self.control.load_compiled_registry(self.root)
         self.state_store = self.control.SubjectStateStore(
             Path(state_path) if state_path else self.root / "state" / "subjects.json")
         self.evidence_store = self.control.EvidenceStore()
@@ -1019,9 +1072,15 @@ class CSWStateAuthority(StateAuthority):
         object.__setattr__(self, "application_id", str(application_id))
         object.__setattr__(self, "application_instance_id", str(application_instance_id))
         object.__setattr__(self, "workflow_id", str(workflow_id))
+        self.statework_memberships = {
+            str(key): MappingProxyType(dict(value))
+            for key, value in (statework_memberships or {}).items()}
         object.__setattr__(self, "_frozen_scope", True)
         self._controllers: Dict[str, Any] = {}
         self._load_evidence()
+        self.workflow_authority = self.control.WorkflowAuthority(
+            root=self.root, state_store=self.state_store,
+            evidence_store=self.evidence_store)
 
     def __setattr__(self, name: str, value: Any) -> None:
         if getattr(self, "_frozen_scope", False) and name in {
@@ -1030,13 +1089,16 @@ class CSWStateAuthority(StateAuthority):
         object.__setattr__(self, name, value)
 
     def bind_scope(self, *, namespace_id: str, application_id: str,
-                   application_instance_id: str, workflow_id: str) -> "CSWStateAuthority":
+                   application_instance_id: str, workflow_id: str,
+                   statework_memberships: Optional[Mapping[str, Mapping[str, Any]]] = None
+                   ) -> "CSWStateAuthority":
         """Return a task-scoped view while sharing durable storage services."""
         return CSWStateAuthority(
             self.root, state_path=self.state_store.path,
             evidence_path=self.evidence_path, namespace_id=namespace_id,
             application_id=application_id, application_instance_id=application_instance_id,
-            workflow_id=workflow_id)
+            workflow_id=workflow_id,
+            statework_memberships=statework_memberships)
 
     def _load_evidence(self) -> None:
         if not self.evidence_path.exists():
@@ -1049,15 +1111,80 @@ class CSWStateAuthority(StateAuthority):
             self.evidence_store = self.control.EvidenceStore.load_attested(records)
 
     def _contract(self, statework_id: str, contract_hash: str) -> tuple[Dict[str, Any], str]:
-        import yaml
-        path = self.root / statework_id / "transitions.yaml"
-        if not path.is_file():
-            raise ValueError(f"CSW StateWork {statework_id!r} is unavailable")
-        contract = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        actual = hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
-        if actual != contract_hash:
-            raise ValueError("CFW pinned contract does not match CSW authority contract")
-        return contract, actual
+        identity = self.workflow_authority.workflow_contract_identity(
+            statework_id, contract_hash)
+        return dict(identity["contract"]), str(identity["contract_hash"])
+
+    def _workflow_identity(self, *, statework_id: str, subject_ref: str,
+                           contract_hash: str) -> Any:
+        contract_identity = self.workflow_authority.workflow_contract_identity(
+            statework_id, contract_hash)
+        membership = self.statework_memberships.get(statework_id) or {}
+        if membership and membership.get("subject_ref") != subject_ref:
+            raise PermissionError("workflow subject differs from its host membership binding")
+        return self.control.WorkflowIdentity(
+            namespace_id=str(membership.get("namespace_id") or self.namespace_id),
+            application_id=str(membership.get("application_id") or self.application_id),
+            application_instance_id=str(membership.get("application_instance_id")
+                                        or self.application_instance_id),
+            workflow_id=str(membership.get("workflow_id") or self.workflow_id),
+            subject_ref=subject_ref,
+            statework_id=statework_id,
+            contract_version=str(contract_identity["contract_version"]))
+
+    def workflow_contract_identity(self, statework_id: str,
+                                   contract_hash: str) -> Dict[str, Any]:
+        return self.workflow_authority.workflow_contract_identity(
+            statework_id, contract_hash)
+
+    def inspect_workflow(self, *, statework_id: str, subject_ref: str,
+                         contract_hash: str) -> Any:
+        identity = self._workflow_identity(
+            statework_id=statework_id, subject_ref=subject_ref,
+            contract_hash=contract_hash)
+        return self.workflow_authority.inspect_workflow(
+            identity, contract_hash=contract_hash)
+
+    def resolve_legacy_step(self, *, statework_id: str, subject_ref: str,
+                            contract_hash: str, to_state: str,
+                            trigger: Optional[str]) -> str:
+        identity = self._workflow_identity(
+            statework_id=statework_id, subject_ref=subject_ref,
+            contract_hash=contract_hash)
+        return self.workflow_authority.resolve_legacy_step(
+            identity, contract_hash=contract_hash, to_state=to_state,
+            trigger=trigger)
+
+    def apply_workflow_step(self, *, statework_id: str, subject_ref: str,
+                            contract_hash: str, step_id: str,
+                            expected_revision: int,
+                            evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Any:
+        identity = self._workflow_identity(
+            statework_id=statework_id, subject_ref=subject_ref,
+            contract_hash=contract_hash)
+        scoped_refs: list[str] = []
+        for record in evidence_records or ():
+            copied = dict(record)
+            original_ref = str(copied.get("ref") or "")
+            if not original_ref:
+                raise ValueError("CSW evidence record requires a ref")
+            scoped_ref = "evidence:" + hashlib.sha256(
+                (f"{identity.namespace_id}|{identity.application_id}|"
+                 f"{identity.application_instance_id}|{identity.workflow_id}|"
+                 f"{statework_id}|{subject_ref}|{original_ref}").encode("utf-8")
+            ).hexdigest()
+            copied.update({"ref": scoped_ref, "origin_ref": original_ref,
+                           "namespace_id": identity.namespace_id,
+                           "application_id": identity.application_id,
+                           "application_instance_id": identity.application_instance_id,
+                           "workflow_id": identity.workflow_id})
+            self.evidence_store.create(copied)
+            scoped_refs.append(scoped_ref)
+        if scoped_refs:
+            self.evidence_store.save(self.evidence_path)
+        return self.workflow_authority.apply_step(
+            identity, contract_hash=contract_hash, step_id=step_id,
+            evidence_refs=scoped_refs, expected_revision=expected_revision)
 
     def _identity(self, *, statework_id: str, subject_ref: str, contract: Mapping[str, Any]) -> Dict[str, Any]:
         return {"namespace_id": self.namespace_id, "application_id": self.application_id,
@@ -1067,54 +1194,36 @@ class CSWStateAuthority(StateAuthority):
                 "contract_version": str(contract.get("version") or "1.0.0")}
 
     def inspect(self, *, statework_id: str, subject_ref: str, contract_hash: str) -> Dict[str, Any]:
-        contract, _ = self._contract(statework_id, contract_hash)
-        identity = self._identity(statework_id=statework_id, subject_ref=subject_ref, contract=contract)
-        key = self.control.SubjectStateStore.key(identity)
-        if key not in self._controllers:
-            registry = self.control.load_evidence_kind_registry(self.root / "schemas" / "evidence-kinds.yaml")
-            self._controllers[key] = self.control.StandaloneStateWorkController(
-                contract=contract, identity=identity, state_store=self.state_store,
-                evidence_store=self.evidence_store, evidence_registry=registry)
-        return self._controllers[key].inspect()
+        snapshot = self.inspect_workflow(statework_id=statework_id,
+                                         subject_ref=subject_ref,
+                                         contract_hash=contract_hash)
+        return {"state": snapshot.current_state, "current_state": snapshot.current_state,
+                "revision": snapshot.revision, "updated_at": None,
+                "engine_kind": snapshot.engine_kind,
+                "completed": snapshot.completed,
+                "workflow_data": dict(snapshot.data)}
 
     def commit(self, *, statework_id: str, subject_ref: str, contract_hash: str,
                expected_revision: int, output_state: str, evidence_refs: list[str], trigger: str,
                evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Dict[str, Any]:
-        contract, _ = self._contract(statework_id, contract_hash)
-        identity = self._identity(statework_id=statework_id, subject_ref=subject_ref, contract=contract)
-        key = self.control.SubjectStateStore.key(identity)
-        controller = self._controllers.get(key)
-        if controller is None:
-            self.inspect(statework_id=statework_id, subject_ref=subject_ref, contract_hash=contract_hash)
-            controller = self._controllers[key]
-        scoped_refs: list[str] = []
-        for record in (evidence_records or []):
-            copied = dict(record)
-            original_ref = str(copied.get("ref") or "")
-            if not original_ref:
-                raise ValueError("CSW evidence record requires a ref")
-            scoped_ref = "evidence:" + hashlib.sha256(
-                (f"{identity['namespace_id']}|{identity['application_id']}|"
-                 f"{identity['application_instance_id']}|{identity['workflow_id']}|"
-                 f"{statework_id}|{subject_ref}|{original_ref}").encode("utf-8")
-            ).hexdigest()
-            copied["ref"] = scoped_ref
-            copied["origin_ref"] = original_ref
-            copied["namespace_id"] = identity["namespace_id"]
-            copied["application_id"] = identity["application_id"]
-            copied["application_instance_id"] = identity["application_instance_id"]
-            copied["workflow_id"] = identity["workflow_id"]
-            self.evidence_store.create(copied)
-            scoped_refs.append(scoped_ref)
-        if scoped_refs:
-            # Evidence must be durable before a state transition can reference it.
-            self.evidence_store.save(self.evidence_path)
-        decision = controller.request_transition(
-            to_state=output_state, trigger=trigger, evidence_refs=scoped_refs,
-            expected_revision=expected_revision)
+        snapshot = self.inspect_workflow(statework_id=statework_id,
+                                         subject_ref=subject_ref,
+                                         contract_hash=contract_hash)
+        step_id = self.resolve_legacy_step(
+            statework_id=statework_id, subject_ref=subject_ref,
+            contract_hash=contract_hash, to_state=output_state, trigger=trigger)
+        decision = self.apply_workflow_step(
+            statework_id=statework_id, subject_ref=subject_ref,
+            contract_hash=contract_hash, step_id=step_id,
+            expected_revision=expected_revision, evidence_records=evidence_records)
         if not decision.allowed:
-            raise ValueError(f"CSW authority blocked transition: {decision.reason}")
-        return {**controller.inspect(), "transition": decision.progress_facts()}
+            raise ValueError(f"CSW authority blocked workflow step: {decision.reason}")
+        return {"state": decision.current_state, "current_state": decision.current_state,
+                "revision": decision.revision, "updated_at": None,
+                "engine_kind": decision.engine_kind,
+                "completed": decision.completed,
+                "workflow_data": dict(decision.state_data),
+                "transition": decision.to_dict()}
 
 
 @dataclass
@@ -1176,6 +1285,7 @@ class RuntimeSession:
     adopted_profile_hashes: tuple[str, ...] = ()
     execution_identity: Optional[ExecutionIdentity] = None
     shared_workflow_membership: Optional[Mapping[str, Any]] = None
+    shared_workflow_memberships: tuple[Mapping[str, Any], ...] = ()
     policy_revocation_revision: int = 0
     revocation_mode: str = "deferred"
     authority_revision: int = 0
@@ -1202,6 +1312,8 @@ class RuntimeSession:
         default_factory=MetacognitiveController, repr=False)
     semantic_signals: SemanticSignals = field(default_factory=SemanticSignals, repr=False)
     semantic_signals_revision: int = field(default=-1, repr=False)
+    semantic_signal_store: SemanticSignalStore = field(
+        default_factory=SemanticSignalStore, repr=False)
     metacognitive_decision: MetaDecision = field(
         default_factory=lambda: MetaDecision("DELIVER", "task initialized"), repr=False)
     system_one_sequence: int = 0
@@ -1209,6 +1321,8 @@ class RuntimeSession:
     system_one_outcomes: set[str] = field(default_factory=set, repr=False)
     _pending_action_requests: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     _pending_retry_candidates: Dict[str, ActivityFact] = field(default_factory=dict, repr=False)
+    _action_objective_bindings: Dict[str, ActionObjectiveBinding] = field(
+        default_factory=dict, repr=False)
     policy_epoch_record: Optional[PolicyEpochRecord] = field(default=None, repr=False)
     _system_one_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
     _system_one_provider_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
@@ -1233,7 +1347,8 @@ class RuntimeSession:
                 "interaction_id", "parent_session_id", "delegator_agent_id",
                 "delegate_agent_id", "delegation_id", "role", "parent_decision_ref",
                 "shared_evidence_refs", "delegation_topology", "premise_digest", "failure_attribution",
-                "adopted_profile_hashes", "execution_identity", "shared_workflow_membership", "policy_revocation_revision", "revocation_mode",
+                "adopted_profile_hashes", "execution_identity", "shared_workflow_membership",
+                "shared_workflow_memberships", "policy_revocation_revision", "revocation_mode",
                 "policy_revocation_authority", "membership_authority", "operator_read_model",
                 "convergence",
                 "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
@@ -1241,10 +1356,11 @@ class RuntimeSession:
                 "attempt_semantics", "_semantic_retry_same",
                 "shared_branch_ledger", "system_one_judge", "metacognitive_state",
                 "system_one_projector", "metacognitive_controller", "semantic_signals",
-                "semantic_signals_revision",
+                "semantic_signals_revision", "semantic_signal_store",
                 "metacognitive_decision",
                 "system_one_sequence", "system_one_decisions", "system_one_outcomes",
-        "_pending_action_requests", "_pending_retry_candidates", "policy_epoch_record"}:
+        "_pending_action_requests", "_pending_retry_candidates",
+        "_action_objective_bindings", "policy_epoch_record"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -1439,12 +1555,48 @@ class RuntimeSession:
         goal = self.bundle.pinned.get("goal_contract") or {}
         verification = goal.get("verification_policy") or {}
         state = self.convergence.state("primary-objective") if self.convergence else None
+        required_criteria = [item for item in goal.get("acceptance_criteria", ())
+                             if item.get("required", True)]
+        completion_readiness = None
+        if required_criteria:
+            criterion_states = {item.criterion_id: item
+                                for item in self.metacognitive_state.criteria}
+            criteria_satisfied = all(
+                criterion_states.get(str(item.get("criterion_id"))) is not None
+                and criterion_states[str(item.get("criterion_id"))].status == "satisfied"
+                for item in required_criteria)
+            active_ids = set(getattr(self, "active_statework_ids", set()))
+            workflow_by_id = {item.statework_id: item
+                              for item in self.metacognitive_state.workflows}
+            workflows_complete = all(
+                workflow_by_id.get(statework_id) is not None
+                and workflow_by_id[statework_id].progress_class == "TERMINAL"
+                for statework_id in active_ids)
+            completion_readiness = CompletionReadiness(
+                required_criteria_satisfied=criteria_satisfied,
+                boundary_evidence_available=criteria_satisfied,
+                unresolved_contradictions=any(
+                    not bool(item.get("resolved")) for item in self.contradictions.values()),
+                active_stateworks_complete=workflows_complete,
+                pending_verification_obligations=len(
+                    self.metacognitive_state.pending_verification_obligations))
+        current_semantic = (semantic if semantic is not None else
+                            self.semantic_signal_store.current(
+                                metacognitive_revision=self.metacognitive_state.logical_revision,
+                                question_families={"action_relation", "progress_relation",
+                                                   "retry_relation", "goal_drift"})
+                            if self.semantic_signals_revision
+                            == self.metacognitive_state.logical_revision else SemanticSignals())
         decision = self.metacognitive_controller.evaluate(
             self.metacognitive_state,
             support_actions_since_progress=(
                 state.support_actions_since_goal_progress if state else 0),
             support_action_limit=int(verification.get(
                 "support_actions_before_goal_reanchor", 5) or 5),
+            total_actions_since_progress=(
+                state.total_actions_since_goal_progress if state else 0),
+            total_action_limit=int(verification.get(
+                "max_committed_actions_without_goal_progress", 15) or 15),
             recovery_epochs_since_progress=(
                 state.recovery_epochs_since_goal_progress if state else 0),
             max_recovery_epochs=int(verification.get(
@@ -1454,10 +1606,8 @@ class RuntimeSession:
                 "max_same_approach_retries", 2) or 2),
             unresolved_contradiction=any(
                 not bool(item.get("resolved")) for item in self.contradictions.values()),
-            semantic=(semantic if semantic is not None else
-                      self.semantic_signals
-                      if self.semantic_signals_revision == self.metacognitive_state.logical_revision
-                      else SemanticSignals()))
+            semantic=current_semantic,
+            completion_readiness=completion_readiness)
         if decision != self.metacognitive_decision:
             object.__setattr__(self, "metacognitive_decision", decision)
             self._journal("metacognitive_decision_recorded", decision=decision.to_dict(),
@@ -1606,10 +1756,44 @@ class RuntimeSession:
         signals = SemanticFusion.signals(
             judgment, policy=policy, calibrated=calibrated)
         prior_decision = self.metacognitive_decision
-        object.__setattr__(self, "semantic_signals", signals)
+        candidate_digest = hashlib.sha256(json.dumps({
+            "candidate": candidate.to_dict(),
+            "legal_routes": sorted(route_candidates),
+        }, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+        scenario = (f"route:{route_statework_id}" if route_statework_id else
+                    f"action:{action_request_id or action_invocation_id}" if action_request_id or action_invocation_id else
+                    f"task:{self.bundle.task_id}")
+        answer_by_family = {family: (judgment.answer(family) if judgment else None)
+                            for family in questions}
+        for family, field_name in {
+                "action_relation": "action_relation",
+                "progress_relation": "progress_relation",
+                "retry_relation": "equivalent_retry",
+                "goal_drift": "possible_goal_drift",
+                "route_preference": "route_preference"}.items():
+            value = getattr(signals, field_name)
+            if value is None:
+                continue
+            answer = answer_by_family.get(family)
+            self.semantic_signal_store.record(
+                question_family=family, value=value, scenario=scenario,
+                criterion_id=(candidate.affected_criterion_ids[0]
+                              if candidate.affected_criterion_ids else None),
+                cause_id="primary-objective", candidate_digest=candidate_digest,
+                metacognitive_revision=query_meta_revision,
+                source_decision_id=(judgment.request_id if judgment else frame.request_id),
+                confidence=(answer.calibrated_confidence if answer else None))
+        refreshed_signals = self.semantic_signal_store.current(
+            metacognitive_revision=query_meta_revision,
+            question_families={"action_relation", "progress_relation", "retry_relation",
+                               "goal_drift", "route_preference"})
+        object.__setattr__(self, "semantic_signals", refreshed_signals)
         object.__setattr__(self, "semantic_signals_revision",
                            query_meta_revision)
-        next_decision = self._evaluate_metacognition()
+        self._journal("semantic_signal_store_changed",
+                      records=self.semantic_signal_store.snapshot(),
+                      metacognitive_revision=query_meta_revision)
+        next_decision = self._evaluate_metacognition(semantic=refreshed_signals)
         control_changed = (next_decision.mode, next_decision.reason,
                            next_decision.goal_reanchor_required) != (
                                prior_decision.mode, prior_decision.reason,
@@ -1682,6 +1866,9 @@ class RuntimeSession:
                                       if control_changed else None),
             "source_decision_ids": list(signals.source_decisions),
             "system_one_answers": answers,
+            "system_one_legal_routes": sorted(route_candidates),
+            "system_one_domain_tags": sorted(
+                map(str, frame.state.task.get("domain_tags") or ())),
         }
         if action_request_id:
             payload["action_request_id"] = action_request_id
@@ -1848,40 +2035,38 @@ class RuntimeSession:
             trigger = self.bundle.pinned.get("trigger")
             current_state = self.statework_states.get(
                 (target_statework_id, self.current_segment.subject_ref or ""))
-            scores: Dict[str, tuple[int, int]] = {}
+            flow_contracts: Dict[str, Mapping[str, Any]] = {}
             for route, child in children.items():
                 pin = next((item for item in child.stateworks
                             if item.get("id") == target_statework_id), None)
                 selected_flow = pin.get("selected_flow") if pin else None
                 if not selected_flow:
-                    scores[route] = (0, 0)
                     continue
                 flow_path = Path(child.statework_root) / str(selected_flow[0])
                 parts = flow_path.read_text(encoding="utf-8").split("---", 2)
                 metadata = yaml.safe_load(parts[1]) if len(parts) == 3 else {}
                 metadata = metadata if isinstance(metadata, Mapping) else {}
-                hits = 0
-                specificity = 0
-                for key, value in (("operations", operation), ("triggers", trigger),
-                                   ("task_shapes", task_shape)):
-                    declared = set(metadata.get(key) or ())
-                    if declared:
-                        specificity += 1
-                        hits += int(value in declared)
-                declared_domains = set(metadata.get("domain_tags") or ())
-                if declared_domains:
-                    specificity += 1
-                    hits += len(domains & declared_domains)
-                states = metadata.get("states") or {}
-                declared_states = set(states.get("from") or ()) if isinstance(states, Mapping) else set()
-                if declared_states:
-                    specificity += 1
-                    hits += int(current_state in declared_states)
-                if metadata.get("fallback") is True:
-                    hits -= 1
-                scores[route] = (hits, specificity)
+                flow_contracts[route] = metadata
+            target_pin = next((item for item in self.bundle.stateworks
+                               if item.get("id") == target_statework_id), None)
+            flow_policy = dict((target_pin or {}).get("flow_selection") or {})
+            selector = resolve_runtime._flow_selector(
+                Path(self.bundle.statework_root))
+            selection = selector.select(
+                flow_contracts,
+                {"operation": operation, "trigger": trigger,
+                 "task_shape": task_shape, "phase": self.bundle.pinned.get("phase"),
+                 "domain_tags": sorted(domains), "current_state": current_state},
+                flow_policy)
+            scores = dict(selection.scores)
+            if not scores:
+                self._record_route_replan_blocker(
+                    target_statework_id=target_statework_id,
+                    reason="no legal route matches the current selector context")
+                return None
             top_score = max(scores.values())
-            top_routes = sorted(route for route, score in scores.items() if score == top_score)
+            top_routes = sorted(route for route, score in scores.items()
+                                if score == top_score)
             if len(top_routes) == 1:
                 selected = top_routes[0]
                 source = "metacognition"
@@ -1901,9 +2086,6 @@ class RuntimeSession:
                 judgment = self._system_one_query(
                     questions=("route_preference",), candidate=candidate,
                     subject_ref=self.current_segment.subject_ref,
-                    # Semantic inference may resolve only the deterministic
-                    # top-score tie. Lower-ranked legal flows are not choice
-                    # candidates for the provider.
                     route_candidates=tuple(top_routes),
                     route_state_revision=state_revision,
                     route_statework_id=target_statework_id)
@@ -1962,7 +2144,12 @@ class RuntimeSession:
             source_state_digest=state_digest,
             request_digest=request_digest, sequence=sequence,
             confidence=float(confidence), state_revision=state_revision,
-            target_statework_id=target_statework_id, legal_children=children,
+            target_statework_id=target_statework_id,
+            source_metacognitive_revision=self.metacognitive_state.logical_revision,
+            legal_routes_digest=hashlib.sha256(json.dumps(
+                sorted(children), separators=(",", ":")).encode()).hexdigest(),
+            policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
+            legal_children=children,
             semantic_decision_ref=semantic_decision_ref)
         self._journal("route_replan_recommended", recommendation={
             "route": recommendation.route,
@@ -1976,6 +2163,9 @@ class RuntimeSession:
             "state_revision": state_revision,
             "target_statework_id": target_statework_id,
             "legal_routes": sorted(children),
+            "source_metacognitive_revision": recommendation.source_metacognitive_revision,
+            "legal_routes_digest": recommendation.legal_routes_digest,
+            "policy_hash": recommendation.policy_hash,
         })
         return recommendation
 
@@ -1990,10 +2180,18 @@ class RuntimeSession:
             raise PermissionError("a terminated task cannot enter a child policy epoch")
         if self._pending_action_requests:
             raise PermissionError("child policy epoch requires no pending action calls")
-        if recommendation.sequence != self.system_one_sequence:
-            raise PermissionError("route recommendation is stale after subsequent System-1 activity")
+        if (recommendation.source == "semantic_advisory"
+                and recommendation.sequence != self.system_one_sequence):
+            raise PermissionError("semantic route recommendation is stale after subsequent System-1 activity")
         if current_state_revision != recommendation.state_revision:
             raise PermissionError("StateWork revision changed after route ranking")
+        if recommendation.source_metacognitive_revision != self.metacognitive_state.logical_revision:
+            raise PermissionError("route recommendation is stale after metacognitive state changed")
+        expected_routes_digest = hashlib.sha256(json.dumps(
+            sorted(recommendation.legal_children), separators=(",", ":")).encode()).hexdigest()
+        if (recommendation.legal_routes_digest != expected_routes_digest
+                or recommendation.policy_hash != self.bundle.pinned.get("policy_hash")):
+            raise PermissionError("route recommendation no longer matches its pinned policy and candidates")
         if selected_route not in recommendation.legal_children:
             raise PermissionError("host selected a route outside the resolved legal candidates")
         if recommendation.source == "semantic_advisory":
@@ -2174,26 +2372,31 @@ class RuntimeSession:
         snapshots: list[dict[str, Any]] = []
         for statework in self.bundle.stateworks:
             statework_id = str(statework.get("id") or "")
-            contract = statework.get("transitions_contract") or {}
-            state = self.statework_states.get((statework_id, subject))
+            engine_kind = str(statework.get("workflow_engine_kind") or "state_machine")
+            contract = (statework.get("transitions_contract") or {}
+                        if engine_kind == "state_machine"
+                        else statework.get("workflow_contract") or {})
+            bound_subject = str(statework.get("subject_ref") or subject or "")
+            state = self.statework_states.get((statework_id, bound_subject))
             revision = None
-            if self.state_authority is not None and subject:
+            if self.state_authority is not None and bound_subject:
                 try:
-                    contract_hash = hashlib.sha256(json.dumps(
-                        contract, sort_keys=True, separators=(",", ":"), default=str
-                    ).encode("utf-8")).hexdigest()
-                    authoritative = self.state_authority.inspect(
-                        statework_id=statework_id, subject_ref=subject,
+                    contract_hash = str(statework.get("workflow_contract_hash") or
+                        hashlib.sha256(json.dumps(contract, sort_keys=True,
+                            separators=(",", ":"), default=str).encode("utf-8")).hexdigest())
+                    authoritative = self.state_authority.inspect_workflow(
+                        statework_id=statework_id, subject_ref=bound_subject,
                         contract_hash=contract_hash)
-                    state = authoritative.get("state")
-                    revision = authoritative.get("revision")
+                    state = authoritative.current_state
+                    revision = authoritative.revision
                 except Exception as exc:
                     revision = None
                     state = f"unavailable:{type(exc).__name__}"
             snapshots.append({
                 "statework_id": statework_id,
-                "subject_ref": subject,
+                "subject_ref": bound_subject,
                 "state": state,
+                "engine_kind": engine_kind,
                 "revision": revision,
             })
         return snapshots
@@ -2250,11 +2453,26 @@ class RuntimeSession:
             "route_outcomes": [dict(value) for value in self.route_outcomes.values()],
         }
 
-    def _membership_current(self) -> bool:
-        membership = self.shared_workflow_membership
+    def _membership_for(self, statework_id: Optional[str]) -> Optional[Mapping[str, Any]]:
+        if statework_id:
+            for membership in self.shared_workflow_memberships:
+                if membership.get("statework_id") == statework_id:
+                    return membership
+            membership = self.shared_workflow_membership
+            if membership and membership.get("statework_id") == statework_id:
+                return membership
+            return None
+        return self.shared_workflow_membership
+
+    def _membership_current(self, statework_id: Optional[str] = None,
+                            subject_ref: Optional[str] = None) -> bool:
+        membership = self._membership_for(
+            statework_id or self.current_segment.statework_id)
         if not membership:
             return True
         if self.membership_authority is None:
+            return False
+        if subject_ref is not None and membership.get("subject_ref") != subject_ref:
             return False
         return self.membership_authority.validate(
             membership, session=self, operation="transition")
@@ -2267,21 +2485,34 @@ class RuntimeSession:
         try:
             for statework in self.bundle.stateworks:
                 statework_id = str(statework.get("id") or "")
-                contract = statework.get("transitions_contract") or {}
-                subject = self.bundle.policy.subject_ref
-                contract_hash = hashlib.sha256(json.dumps(
-                    contract, sort_keys=True, separators=(",", ":"), default=str
-                ).encode("utf-8")).hexdigest()
-                snapshot = self.state_authority.inspect(
-                    statework_id=statework_id, subject_ref=subject,
-                    contract_hash=contract_hash)
+                engine_kind = str(statework.get("workflow_engine_kind") or "state_machine")
+                contract = (statework.get("transitions_contract") or {}
+                            if engine_kind == "state_machine"
+                            else statework.get("workflow_contract") or {})
+                subject = str(statework.get("subject_ref")
+                              or self.bundle.policy.subject_ref or "")
+                if not subject:
+                    raise ValueError(f"StateWork {statework_id!r} has no bound subject")
+                contract_hash = str(statework.get("workflow_contract_hash") or
+                    hashlib.sha256(json.dumps(contract, sort_keys=True,
+                        separators=(",", ":"), default=str).encode("utf-8")).hexdigest())
                 key = (statework_id, subject)
-                current = str(snapshot.get("state") or contract.get("initial_state") or "")
-                self.statework_states[key] = current
-                self.statework_entry_times[key] = str(snapshot.get("updated_at") or "")
+                inspect_workflow = getattr(self.state_authority, "inspect_workflow", None)
+                if callable(inspect_workflow):
+                    snapshot = inspect_workflow(
+                        statework_id=statework_id, subject_ref=subject,
+                        contract_hash=contract_hash)
+                    current, revision = snapshot.current_state, snapshot.revision
+                else:
+                    legacy = self.state_authority.inspect(
+                        statework_id=statework_id, subject_ref=subject,
+                        contract_hash=contract_hash)
+                    current, revision = legacy.get("state"), legacy.get("revision", 0)
+                if current is not None:
+                    self.statework_states[key] = str(current)
                 object.__setattr__(
                     self, "authority_revision",
-                    max(self.authority_revision, int(snapshot.get("revision", 0) or 0)))
+                    max(self.authority_revision, int(revision or 0)))
             return True
         except Exception as exc:
             self._emit_runtime({"category": "blocker", "event_type": "state_authority_unavailable",
@@ -2295,7 +2526,23 @@ class RuntimeSession:
 
     def prepare_action(self, action: Dict[str, Any] | AgentActionRequest) -> ActionPreparation:
         """Authorize an action and return its unique request ID for its eventual result."""
+        return self._prepare_action(action)
+
+    def _prepare_action(self, action: Dict[str, Any] | AgentActionRequest, *,
+                        capability: Optional[_HostCapability] = None,
+                        objective_binding: Optional[ActionObjectiveBinding] = None
+                        ) -> ActionPreparation:
         request = self._request(action)
+        binding: Optional[ActionObjectiveBinding] = None
+        if objective_binding is not None:
+            self._require_host(capability)
+            binding = self._action_objective_bindings.pop(
+                objective_binding.binding_digest, None)
+            if binding != objective_binding or binding.action_digest != request.digest:
+                raise PermissionError("objective binding is unissued, replayed, or for another action")
+            if (binding.artifact_revision is not None
+                    and binding.artifact_revision != self.metacognitive_state.artifact_revision):
+                raise PermissionError("objective binding expired after an artifact revision change")
         action_request_id = f"action-request-{uuid.uuid4()}"
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
@@ -2316,30 +2563,65 @@ class RuntimeSession:
                     raise ValueError("tool hooks must return GateDecision or None")
                 decision = self._more_restrictive(decision, hook_decision)
 
-        # System-1 sees this action only after every hard host check. Semantic
-        # action relevance informs attention, while the host descriptor alone
-        # determines hard budgets and gate outcomes.
+        # System-1 sees this action only after every hard host check. Objective
+        # accounting comes from an exact host-issued request binding; tool
+        # descriptors continue to describe authority and capability only.
         if decision == GateDecision.ALLOW:
             target_ref = next((request.arguments.get(key) for key in ("target", "path", "resource")
                                if isinstance(request.arguments.get(key), str)), None)
+            host_relation = binding.goal_relation if binding else "ambiguous"
+            criterion_ids = binding.criterion_ids if binding else ()
             candidate = self.metacognitive_state.make_candidate(
                 "action", source="host_observed",
                 action_class=descriptor.action_class or descriptor.tool_type,
-                host_declared_relation=descriptor.goal_relation,
+                host_declared_relation=host_relation,
                 target_kind=descriptor.target_kind,
                 target_scope=descriptor.target_scope,
                 target_ref=target_ref,
-                proposed_purpose=descriptor.goal_intent,
+                proposed_purpose=(binding.purpose_class if binding else None),
                 proposed_purpose_source="host_observed",
-                affected_criterion_ids=descriptor.affected_criterion_ids)
+                affected_criterion_ids=criterion_ids)
             goal = self.bundle.pinned.get("goal_contract") or {}
-            if goal and descriptor.goal_relation == "ambiguous":
+            semantic_relation = None
+            semantic_influenced = False
+            if goal:
+                semantic_descriptor = replace(descriptor, goal_relation="ambiguous")
                 self._system_one_query(
                     questions=("action_relation", "goal_drift"), candidate=candidate,
                     subject_ref=request.subject_ref, action_request_id=action_request_id,
-                    descriptor=descriptor)
-            host_relation = descriptor.goal_relation
-            candidate = replace(candidate, host_declared_relation=host_relation)
+                    descriptor=semantic_descriptor)
+                semantic_decision = next((item for item in reversed(
+                    tuple(self.system_one_decisions.values()))
+                    if item.get("action_request_id") == action_request_id), None)
+                if semantic_decision is not None:
+                    semantic_relation = semantic_decision.get("fused_action_relation")
+                    semantic_influenced = bool(semantic_decision.get("influenced"))
+            if binding is None:
+                if (semantic_influenced and semantic_relation in {
+                        "required_verification", "diagnostic_support", "unrelated"}):
+                    action_lane = "SUPPORT"
+                else:
+                    action_lane = "UNCLASSIFIED"
+            else:
+                action_lane = {
+                    "DIRECT_GOAL": "DIRECT",
+                    "BLOCKER_REMOVAL": "DIRECT",
+                    "REQUIRED_VERIFICATION": "VERIFICATION",
+                    "DIAGNOSTIC": "SUPPORT",
+                    "INCIDENTAL": "SUPPORT",
+                }[binding.purpose_class]
+                if (semantic_influenced and semantic_relation
+                        and semantic_relation != binding.goal_relation):
+                    self._emit_runtime({
+                        "category": "decision", "event_type": "objective_binding_disagreement",
+                        "subject": request.subject_ref,
+                        "payload": {
+                            "summary": "semantic action meaning differs from host objective binding",
+                            "result_class": "scrutiny_increased",
+                            "binding_digest": binding.binding_digest,
+                            "host_relation": binding.goal_relation,
+                            "semantic_relation": str(semantic_relation),
+                        }})
             verification = (goal.get("verification_policy") or {})
             if host_relation == "required_verification":
                 violation = self.metacognitive_state.verification_limit_exceeded(
@@ -2359,7 +2641,9 @@ class RuntimeSession:
                     and self.convergence.needs_goal_reanchor(
                         cause_id="primary-objective",
                         support_limit=int(verification.get(
-                            "support_actions_before_goal_reanchor", 5) or 5))):
+                            "support_actions_before_goal_reanchor", 5) or 5),
+                        total_action_limit=int(verification.get(
+                            "max_committed_actions_without_goal_progress", 15) or 15))):
                 decision = GateDecision.REQUIRE_GOAL_REANCHOR
 
         if decision == GateDecision.ALLOW:
@@ -2367,7 +2651,9 @@ class RuntimeSession:
                 "descriptor": descriptor.__dict__.copy(),
                 "subject_ref": request.subject_ref,
                 "sequence": self.system_one_sequence,
-                "relation": descriptor.goal_relation,
+                "relation": host_relation,
+                "accounting_lane": action_lane,
+                "objective_binding": binding.to_dict() if binding else None,
                 "candidate": candidate,
             }
             attempt_ref = str(request.arguments.get("attempt_ref") or "")
@@ -2919,6 +3205,30 @@ class RuntimeSession:
         if capability is not self._host_capability:
             raise PermissionError("evidence ingestion requires the host capability")
 
+    def _bind_action_objective(
+            self, capability: _HostCapability,
+            action: Mapping[str, Any] | AgentActionRequest, *,
+            purpose_class: str, criterion_ids: Iterable[str], cause_id: str,
+            artifact_revision: Optional[int]) -> ActionObjectiveBinding:
+        self._require_host(capability)
+        request = self._request(action)
+        criteria = tuple(criterion_ids)
+        known = {item.criterion_id for item in self.metacognitive_state.criteria}
+        if not set(criteria).issubset(known):
+            raise ValueError("objective binding references an unknown task criterion")
+        if artifact_revision is not None and artifact_revision != self.metacognitive_state.artifact_revision:
+            raise ValueError("objective binding references a stale artifact revision")
+        binding = ActionObjectiveBinding(
+            action_digest=request.digest, purpose_class=purpose_class,
+            criterion_ids=criteria, cause_id=cause_id,
+            artifact_revision=artifact_revision)
+        self._action_objective_bindings[binding.binding_digest] = binding
+        while len(self._action_objective_bindings) > 512:
+            self._action_objective_bindings.pop(next(iter(self._action_objective_bindings)))
+        self._journal("action_objective_binding_issued",
+                      binding=binding.to_dict(), subject_ref=request.subject_ref)
+        return binding
+
     def _record_route_decision(self, capability: _HostCapability, *, route: str,
                                route_type: str,
                                selection_reason: str = "host_selected",
@@ -3246,6 +3556,8 @@ class RuntimeSession:
             "tool_type": tool_type, "result_class": result_class,
             "subject_ref": subject_ref, "evidence_id": evidence_id,
             "action_request_id": action_request_id,
+            "accounting_lane": str((pending or {}).get("accounting_lane") or "UNCLASSIFIED"),
+            "objective_binding": dict((pending or {}).get("objective_binding") or {}),
             "actual_result": dict(actual_result or {}),
         }
         self._journal("tool_invocation_completed", invocation_id=invocation_id,
@@ -3291,13 +3603,23 @@ class RuntimeSession:
                       snapshot=self.metacognitive_state.snapshot())
         if (self.convergence is not None
                 and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"):
-            host_relation = str((pending or {}).get("relation") or "ambiguous")
-            if host_relation not in {"advances_primary_goal", "removes_concrete_blocker",
-                                     "required_verification"}:
-                # Unknown and ambiguous operations count conservatively as
-                # support. No tool-name list decides task relevance.
-                state = self.convergence.record_support_action(cause_id="primary-objective")
-                self._record_convergence("support_action")
+            lane = str((pending or {}).get("accounting_lane") or "UNCLASSIFIED")
+            state = self.convergence.record_committed_action(
+                cause_id="primary-objective", lane=lane)
+            self._record_convergence("committed_action")
+            self._emit_runtime({
+                "category": "tool_result", "event_type": "action_accounting_recorded",
+                "subject": subject_ref, "evidence_refs": [evidence_id],
+                "payload": {
+                    "summary": "host-correlated committed action entered task convergence ledger",
+                    "result_class": lane.lower(),
+                    "accounting_lane": lane,
+                    "total_actions_since_goal_progress": (
+                        state.total_actions_since_goal_progress),
+                    "support_actions_since_goal_progress": (
+                        state.support_actions_since_goal_progress),
+                }})
+            if lane == "SUPPORT":
                 self._record_support_action_event(
                     evidence_id=evidence_id, subject_ref=subject_ref,
                     support_count=state.support_actions_since_goal_progress)
@@ -3446,31 +3768,40 @@ class RuntimeSession:
                        "output_state": output_state,
                        "payload": {"summary": "unknown StateWork", "result_class": "blocked"}})
             return GateDecision.BLOCK
+        bound_subject = statework.get("subject_ref") or self.bundle.policy.subject_ref
+        if bound_subject and str(bound_subject) != subject_ref:
+            return GateDecision.BLOCK
         active_ids = getattr(self, "active_statework_ids", set())
         if active_ids and statework_id not in active_ids:
             self._emit_runtime({"category": "blocker", "event_type": "inactive_statework_transition",
                        "subject": subject_ref,
                        "payload": {"summary": statework_id[:128], "result_class": "blocked"}})
             return GateDecision.BLOCK
-        control = _statework_transition_engines(
-            Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
+        if not self._membership_current(statework_id, subject_ref):
+            return GateDecision.BLOCK
         contract = statework.get("transitions_contract") or {}
         if not contract:
             raise ValueError(f"StateWork {statework_id!r} has no pinned transition contract")
-        evidence_registry = control.load_evidence_kind_registry()
-        engine = control.TransitionEngine(
-            contract, evidence_registry=evidence_registry, require_registered=True)
         state_key = (statework_id, subject_ref)
         contract_hash = hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
-        if self.state_authority is not None:
-            authoritative = self.state_authority.inspect(
-                statework_id=statework_id, subject_ref=subject_ref, contract_hash=contract_hash)
-            current = str(authoritative.get("state") or contract["initial_state"])
-            authoritative_revision = int(authoritative.get("revision", 0) or 0)
-        else:
-            authoritative = None
-            authoritative_revision = 0
-            current = self.statework_states.get(state_key, contract["initial_state"])
+        if self.state_authority is None or not all(callable(getattr(self.state_authority, name, None))
+                for name in ("inspect_workflow", "resolve_legacy_step", "apply_workflow_step")):
+            self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_unavailable",
+                       "subject": subject_ref,
+                       "payload": {"summary": "generic WorkflowAuthority is unavailable",
+                                   "result_class": "blocked"}})
+            return GateDecision.BLOCK
+        try:
+            authoritative = self.state_authority.inspect_workflow(
+                statework_id=statework_id, subject_ref=subject_ref,
+                contract_hash=contract_hash)
+        except Exception as exc:
+            self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_unavailable",
+                       "subject": subject_ref,
+                       "payload": {"summary": str(exc)[:512], "result_class": "blocked"}})
+            return GateDecision.BLOCK
+        current = str(authoritative.current_state or contract["initial_state"])
+        authoritative_revision = int(authoritative.revision or 0)
         if input_state is not None and input_state != current:
             self._emit_runtime({"category": "blocker", "event_type": "state_conflict",
                        "subject": subject_ref, "input_state": input_state,
@@ -3479,51 +3810,42 @@ class RuntimeSession:
                                    "result_class": "re-observation required"}})
             return GateDecision.REQUIRE_REINSPECTION
         origin = input_state or current
-        entry_time = self.statework_entry_times.get(state_key)
-        matching_edges = engine.matching_edges(origin, output_state, trigger)
-        freshness = (matching_edges[0].get("evidence_freshness")
-                     if len(matching_edges) == 1 else None) or {}
-        freshness_mode = freshness.get("mode", "after_state_entry")
         try:
             verified_evidence = self.ledger.resolve(
-                list(evidence_refs or []), subject_ref=subject_ref,
-                fresh_after=entry_time if freshness_mode == "after_state_entry" else None)
-            max_age = freshness.get("max_age_seconds")
-            if max_age is not None:
-                now = datetime.now(timezone.utc)
-                for item in verified_evidence:
-                    observed = datetime.fromisoformat(
-                        str(item["observed_at"]).replace("Z", "+00:00"))
-                    if (now - observed).total_seconds() > int(max_age):
-                        raise ValueError("transition evidence exceeds its declared max age")
+                list(evidence_refs or []), subject_ref=subject_ref)
+            step_id = self.state_authority.resolve_legacy_step(
+                statework_id=statework_id, subject_ref=subject_ref,
+                contract_hash=contract_hash, to_state=output_state,
+                trigger=trigger)
         except ValueError as exc:
             self._emit_runtime({"category": "blocker", "event_type": "unverified_evidence",
                        "subject": subject_ref,
                        "payload": {"summary": str(exc)[:512], "result_class": "blocked"}})
             return GateDecision.BLOCK
-        decision = engine.transition(subject_ref, origin, output_state, trigger=trigger,
-                                     evidence_refs=verified_evidence)
-        transition_facts = decision.progress_facts()
+        try:
+            decision = self.state_authority.apply_workflow_step(
+                statework_id=statework_id, subject_ref=subject_ref,
+                contract_hash=contract_hash, step_id=step_id,
+                expected_revision=authoritative_revision,
+                evidence_records=verified_evidence)
+        except Exception as exc:
+            self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_conflict",
+                       "subject": subject_ref, "input_state": origin,
+                       "output_state": output_state,
+                       "payload": {"summary": str(exc)[:512],
+                                   "result_class": "re-inspection required"}})
+            return GateDecision.REQUIRE_REINSPECTION
+        transition_facts = decision.to_dict()
+        transition_facts.update({"edge_id": step_id, "trigger": trigger,
+                                 "current_state": decision.current_state,
+                                 "previous_state": decision.previous_state})
         self._emit_runtime({"category": "state_transition", "event_type": "transition_attempted",
                    "subject": subject_ref, "input_state": origin, "output_state": output_state,
                    "payload": {"summary": decision.reason,
                                "result_class": "allowed" if decision.allowed else "blocked"}})
         if not decision.allowed:
             return GateDecision.BLOCK
-        if self.state_authority is not None:
-            try:
-                committed = self.state_authority.commit(
-                    statework_id=statework_id, subject_ref=subject_ref,
-                    contract_hash=contract_hash, expected_revision=authoritative_revision,
-                    output_state=output_state, evidence_refs=[item["ref"] for item in verified_evidence],
-                    trigger=trigger or "", evidence_records=verified_evidence)
-            except Exception as exc:
-                self._emit_runtime({"category": "blocker", "event_type": "state_authority_conflict",
-                           "subject": subject_ref, "input_state": origin, "output_state": output_state,
-                           "payload": {"summary": str(exc)[:512], "result_class": "re-inspection required"}})
-                return GateDecision.REQUIRE_REINSPECTION
-            authoritative_revision = int(committed.get("revision", authoritative_revision + 1) or authoritative_revision + 1)
-            transition_facts = dict(committed.get("transition") or transition_facts)
+        authoritative_revision = int(decision.revision or authoritative_revision + 1)
         manifest = statework
         prior_revision = sum(
             1 for item in self.state_segments
@@ -3539,7 +3861,7 @@ class RuntimeSession:
         self.metacognitive_state.record_csw_fact(
             statework_id=statework_id, input_state=origin, output_state=output_state,
             progress_class=str(transition_facts.get("progress_class") or "LATERAL"),
-            workflow_metadata=transition_facts)
+            workflow_metadata=transition_facts, subject_ref=subject_ref)
         self._journal("system_one_projection_changed",
                       snapshot=self.metacognitive_state.snapshot())
         entry_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -3556,29 +3878,17 @@ class RuntimeSession:
             evidence_refs=state_segment.evidence_refs,
             recorded_at=state_segment.recorded_at, statework_id=state_segment.statework_id))
         csw_progress_class = str(transition_facts.get("progress_class") or "LATERAL")
-        if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
-            progress_class = "RECOVERY_PROGRESS"
-        elif csw_progress_class == "TERMINAL":
-            progress_class = "VERIFICATION_PROGRESS"
-        elif csw_progress_class == "FORWARD_PROGRESS":
-            progress_class = "DIAGNOSTIC_PROGRESS"
-        else:
-            progress_class = "DIAGNOSTIC_PROGRESS"
+        progress_class = "WORKFLOW_PROGRESS"
         if self.convergence is not None:
             progress_digest = hashlib.sha256(json.dumps({
                 "statework_id": statework_id, "subject_ref": subject_ref,
                 "input_state": origin, "output_state": output_state,
                 "edge_id": transition_facts.get("edge_id"),
             }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-            if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
-                self.convergence.record_recovery_epoch(cause_id="primary-objective")
-            elif csw_progress_class in {"FORWARD_PROGRESS", "TERMINAL"}:
-                self.convergence.record_progress(
-                    cause_id="primary-objective", progress_digest=progress_digest,
-                    progress_class=progress_class,
-                    evidence_ref=(verified_evidence[-1]["ref"] if verified_evidence else None))
-            else:
-                self.convergence.record_support_action(cause_id="primary-objective")
+            self.convergence.record_progress(
+                cause_id="primary-objective", progress_digest=progress_digest,
+                progress_class="WORKFLOW_PROGRESS",
+                evidence_ref=(verified_evidence[-1]["ref"] if verified_evidence else None))
         self._journal("state_transition_allowed", statework_id=statework_id,
                       subject_ref=subject_ref, input_state=origin,
                       output_state=output_state, evidence_refs=[item["ref"] for item in verified_evidence],
@@ -3596,6 +3906,130 @@ class RuntimeSession:
                         "result_class": progress_class.lower(),
                         "progress_class": progress_class,
                         "csw_progress_class": csw_progress_class}})
+        return GateDecision.ALLOW
+
+    def record_workflow_step(self, statework_id: str, subject_ref: str,
+                             step_id: str, *,
+                             evidence_refs: Optional[List[str]] = None,
+                             expected_revision: Optional[int] = None) -> GateDecision:
+        """Apply one engine-neutral workflow step through CSW authority."""
+        statework = next((item for item in self.bundle.stateworks
+                          if item.get("id") == statework_id), None)
+        if statework is None or statework_id not in self.active_statework_ids:
+            self._emit_runtime({"category": "blocker", "event_type": "inactive_statework_transition",
+                       "subject": subject_ref,
+                       "payload": {"summary": str(statework_id)[:128],
+                                   "result_class": "blocked"}})
+            return GateDecision.BLOCK
+        bound_subject = statework.get("subject_ref") or self.bundle.policy.subject_ref
+        if bound_subject and str(bound_subject) != subject_ref:
+            return GateDecision.BLOCK
+        if not self._membership_current(statework_id, subject_ref):
+            return GateDecision.BLOCK
+        authority = self.state_authority
+        if authority is None or not callable(getattr(authority, "inspect_workflow", None)):
+            self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_unavailable",
+                       "subject": subject_ref,
+                       "payload": {"summary": "generic WorkflowAuthority is unavailable",
+                                   "result_class": "blocked"}})
+            return GateDecision.BLOCK
+        contract = statework.get("workflow_contract") or {}
+        contract_hash = str(statework.get("workflow_contract_hash") or "")
+        if not contract or not contract_hash:
+            raise ValueError(f"StateWork {statework_id!r} has no pinned workflow contract")
+        try:
+            snapshot = authority.inspect_workflow(
+                statework_id=statework_id, subject_ref=subject_ref,
+                contract_hash=contract_hash)
+            revision = int(snapshot.revision)
+            if expected_revision is not None and revision != int(expected_revision):
+                raise ValueError("workflow revision changed; re-inspection required")
+            verified_evidence = self.ledger.resolve(
+                list(evidence_refs or ()), subject_ref=subject_ref)
+            decision = authority.apply_workflow_step(
+                statework_id=statework_id, subject_ref=subject_ref,
+                contract_hash=contract_hash, step_id=step_id,
+                expected_revision=revision, evidence_records=verified_evidence)
+        except Exception as exc:
+            self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_conflict",
+                       "subject": subject_ref,
+                       "payload": {"summary": str(exc)[:512],
+                                   "result_class": "re-inspection required"}})
+            return GateDecision.REQUIRE_REINSPECTION
+        if not decision.allowed:
+            self._emit_runtime({"category": "state_transition", "event_type": "workflow_step_blocked",
+                       "subject": subject_ref,
+                       "payload": {"summary": decision.reason[:512],
+                                   "workflow_engine": decision.engine_kind,
+                                   "step_id": decision.step_id,
+                                   "result_class": "blocked"}})
+            return GateDecision.BLOCK
+
+        evidence_ids = [str(item["ref"]) for item in verified_evidence]
+        metadata = decision.to_dict()
+        metadata.update({"edge_id": decision.step_id,
+                         "work_class": decision.work_class,
+                         "domain_effect": decision.domain_effect,
+                         "engine_kind": decision.engine_kind})
+        prior_state, next_state = decision.previous_state, decision.current_state
+        timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        if prior_state is not None and next_state is not None:
+            state_key = (statework_id, subject_ref)
+            self.statework_states[state_key] = str(next_state)
+            self.statework_entry_times[state_key] = timestamp
+            self.metacognitive_state.record_csw_fact(
+                statework_id=statework_id, input_state=str(prior_state),
+                output_state=str(next_state), progress_class=decision.progress_class,
+                workflow_metadata=metadata, subject_ref=subject_ref)
+            prior_revision = sum(
+                1 for item in self.state_segments
+                if item.statework_id == statework_id and item.subject_ref == subject_ref)
+            segment = StateSegment(
+                segment_id=f"segment-{uuid.uuid4()}", task_id=self.bundle.task_id,
+                subject_ref=subject_ref, input_state=str(prior_state),
+                output_state=str(next_state), evidence_refs=tuple(evidence_ids),
+                recorded_at=timestamp, statework_id=statework_id)
+            self.state_segments.append(segment)
+            self._journal("state_transition_allowed", statework_id=statework_id,
+                          subject_ref=subject_ref, input_state=str(prior_state),
+                          output_state=str(next_state), evidence_refs=evidence_ids,
+                          recorded_at=timestamp, segment_id=segment.segment_id,
+                          transition=metadata, progress_class="WORKFLOW_PROGRESS",
+                          csw_progress_class=decision.progress_class)
+        else:
+            self.metacognitive_state.record_generic_workflow_progress(
+                statework_id=statework_id, subject_ref=subject_ref,
+                engine_kind=decision.engine_kind, step_id=decision.step_id,
+                revision=decision.revision, progress_class=decision.progress_class,
+                completed=decision.completed, work_class=decision.work_class,
+                domain_effect=decision.domain_effect, evidence_refs=evidence_ids)
+            self._journal("workflow_step_allowed", statework_id=statework_id,
+                          subject_ref=subject_ref, engine_kind=decision.engine_kind,
+                          step_id=decision.step_id, revision=decision.revision,
+                          progress_class=decision.progress_class,
+                          completed=decision.completed, evidence_refs=evidence_ids,
+                          work_class=decision.work_class,
+                          domain_effect=decision.domain_effect, recorded_at=timestamp)
+        if self.convergence is not None:
+            progress_digest = hashlib.sha256(json.dumps({
+                "statework_id": statework_id, "subject_ref": subject_ref,
+                "engine_kind": decision.engine_kind, "step_id": decision.step_id,
+                "revision": decision.revision,
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            self.convergence.record_progress(
+                cause_id="primary-objective", progress_digest=progress_digest,
+                progress_class="WORKFLOW_PROGRESS",
+                evidence_ref=evidence_ids[-1] if evidence_ids else None)
+        self._emit_runtime({"category": "state_transition",
+                    "event_type": "workflow_step_progress",
+                    "subject": subject_ref,
+                    "payload": {"summary": "CSW workflow step was applied",
+                                "workflow_engine": decision.engine_kind,
+                                "step_id": decision.step_id,
+                                "workflow_revision": decision.revision,
+                                "workflow_progress_class": decision.progress_class,
+                                "progress_class": "WORKFLOW_PROGRESS"}})
+        self._record_convergence("workflow_progress")
         return GateDecision.ALLOW
 
     def _publish_handoff(self, capability: _HostCapability, packet: Dict[str, Any], *,
@@ -3638,10 +4072,13 @@ class RuntimeSession:
                 "schemas" / "packet-registry.yaml",
                 storage_path=packet_root / f"{safe_task}.json")
         packet_meta = self._packet_store.registry.get(packet.get("packet_type"), {})
-        freshness_validator = packet_meta.get("freshness_validator")
-        if freshness_validator and observation_context is None:
+        freshness_contract = packet_meta.get("freshness")
+        if freshness_contract is None and packet_meta.get("freshness_validator"):
+            freshness_contract = {"strategy": "trusted_validator",
+                                 "validator_id": packet_meta.get("freshness_validator")}
+        if freshness_contract not in (None, "immutable") and observation_context is None:
             raise ValueError("freshness validation context is mandatory for this handoff packet")
-        if not freshness_validator and packet_meta.get("freshness") != "immutable":
+        if freshness_contract is None:
             raise ValueError("packet registry must explicitly declare freshness semantics")
         if observation_context is not None and not self._packet_store.validate_current(
                 packet, observation_context=observation_context):
@@ -3884,11 +4321,35 @@ class RuntimeSession:
         if expected_subject and record.subject_ref != expected_subject:
             raise ValueError("goal progress evidence subject does not match the active task")
         supported_kinds = {
-            "validator_result", "repository_evidence", "repository_truth",
+            "tool_result", "validator_result", "repository_evidence", "repository_truth",
             "state_transition", "completion_boundary", "rendered_observation",
         }
         if record.kind not in supported_kinds:
             raise ValueError("goal progress requires criterion-bound host evidence of an accepted kind")
+        if criterion_id is None:
+            raise ValueError("goal progress requires a criterion evidence binding")
+        criterion_contract = next((item for item in
+            (self.bundle.pinned.get("goal_contract") or {}).get("acceptance_criteria", ())
+            if str(item.get("criterion_id")) == criterion_id), None)
+        if criterion_contract is None:
+            raise ValueError("goal progress references an unknown acceptance criterion")
+        expected_evidence_kinds = self._criterion_evidence_kinds(
+            str(criterion_contract.get("kind") or ""))
+        if expected_evidence_kinds and record.kind not in expected_evidence_kinds:
+            raise ValueError("goal progress evidence kind does not match the criterion contract")
+        if record.kind == "tool_result":
+            invocation = next((item for item in self.host_invocations.values()
+                               if item.get("evidence_id") == evidence_ref), None)
+            actual = dict((invocation or {}).get("actual_result") or {})
+            binding = dict((invocation or {}).get("objective_binding") or {})
+            if (not invocation or invocation.get("accounting_lane") != "DIRECT"
+                    or binding.get("purpose_class") not in {"DIRECT_GOAL", "BLOCKER_REMOVAL"}
+                    or criterion_id not in set(binding.get("criterion_ids") or ())
+                    or invocation.get("result_class") not in {"success", "completed", "changed"}
+                    or actual.get("artifact_changed") is not True):
+                raise ValueError(
+                    "tool-result progress requires a successful direct action bound to the criterion "
+                    "and host-confirmed artifact change")
         authority = (
             "validator" if str(record.issuer or "").startswith("validator:") else
             "operator" if str(record.issuer or "").startswith("operator:") else
@@ -3940,6 +4401,37 @@ class RuntimeSession:
                         "result_class": "goal_progress",
                         "progress_class": progress_class,
                         "criterion_id": criterion_id or ""}})
+
+    def _record_criterion_verified(self, capability: _HostCapability, *,
+                                   criterion_id: str, evidence_ref: str) -> None:
+        """Satisfy a criterion only after resolving its pinned evidence policy."""
+        self._require_host(capability)
+        goal = self.bundle.pinned.get("goal_contract") or {}
+        criterion = next((item for item in goal.get("acceptance_criteria", ())
+                          if str(item.get("criterion_id")) == criterion_id), None)
+        if criterion is None:
+            raise ValueError("verification references an unknown pinned criterion")
+        allowed_kinds = self._criterion_evidence_kinds(str(criterion.get("kind") or ""))
+        try:
+            resolved = self.ledger.resolve(
+                [evidence_ref], subject_ref=self.bundle.policy.subject_ref,
+                allowed_kinds=allowed_kinds or None)
+        except ValueError as exc:
+            raise ValueError("criterion verification requires accepted current host evidence") from exc
+        record = resolved[0]
+        if str(criterion.get("verification_strength") or "host_observation") == "validator":
+            if not str(record.get("issuer") or "").startswith("validator:"):
+                raise ValueError("criterion requires validator-issued evidence")
+        self.metacognitive_state.mark_criterion_satisfied(
+            criterion_id, evidence_ref=evidence_ref,
+            evidence_kind=str(record.get("kind") or ""))
+        self._journal("system_one_projection_changed",
+                      snapshot=self.metacognitive_state.snapshot())
+        self._emit_runtime({
+            "category": "validation", "event_type": "criterion_verified",
+            "subject": record.get("subject_ref"), "evidence_refs": [evidence_ref],
+            "payload": {"summary": "host evidence satisfied a pinned criterion",
+                        "result_class": "verified", "criterion_id": criterion_id}})
 
     def _record_recovery_epoch(self, capability: _HostCapability, *,
                                cause_id: str, reason: str) -> None:
@@ -4575,6 +5067,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
        failure_attribution=bundle.pinned.get("failure_attribution") or "none",
        adopted_profile_hashes=tuple(bundle.pinned.get("adopted_profile_hashes") or ()),
        shared_workflow_membership=bundle.pinned.get("shared_workflow_membership"),
+       shared_workflow_memberships=tuple(
+           MappingProxyType(dict(item)) for item in
+           bundle.pinned.get("shared_workflow_memberships", ())),
        policy_revocation_revision=int(bundle.pinned.get("policy_revocation_revision", 0) or 0),
        revocation_mode=str(bundle.pinned.get("revocation_mode") or "deferred"),
        policy_epoch_record=policy_epoch_record)
@@ -4607,23 +5102,37 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
         if not bundle.stateworks:
             raise ValueError("combined_enforcing requires at least one StateWork-backed task")
         if isinstance(state_authority, CSWStateAuthority):
-            membership = bundle.pinned.get("shared_workflow_membership")
-            if membership:
-                required = ("workflow_id", "statework_id", "subject_ref")
-                if any(not membership.get(name) for name in required):
-                    raise ValueError("shared workflow membership is incomplete")
+            memberships = list(session.shared_workflow_memberships)
+            if session.shared_workflow_membership and not any(
+                    dict(item) == dict(session.shared_workflow_membership)
+                    for item in memberships):
+                memberships.append(MappingProxyType(
+                    dict(session.shared_workflow_membership)))
+            expected_subjects = dict(bundle.pinned.get("statework_subject_refs") or {})
+            authorized_memberships: Dict[str, Mapping[str, Any]] = {}
+            for membership in memberships:
+                statework_id = str(membership.get("statework_id") or "")
+                if (not statework_id or statework_id not in {
+                        str(item.get("id")) for item in bundle.stateworks}):
+                    raise ValueError("shared workflow membership names an inactive StateWork")
+                expected_subject = expected_subjects.get(statework_id, bundle.policy.subject_ref)
                 for field, expected in (
                     ("namespace_id", bundle.pinned["namespace_id"]),
                     ("application_id", bundle.pinned["application_id"]),
                     ("application_instance_id", bundle.pinned["application_instance_id"]),
-                    ("subject_ref", bundle.policy.subject_ref),
+                    ("subject_ref", expected_subject),
                 ):
                     if membership.get(field) != expected:
-                        raise ValueError(f"shared workflow membership {field} differs from task identity")
+                        raise ValueError(
+                            f"shared workflow membership {field} differs from its StateWork binding")
+                if statework_id in authorized_memberships:
+                    raise ValueError("a StateWork cannot have multiple workflow memberships")
                 if membership_authority is None or not membership_authority.validate(
                         membership, session=session, operation="transition"):
                     raise PermissionError("shared workflow membership is not host-authorized")
-                workflow_id = str(membership["workflow_id"])
+                authorized_memberships[statework_id] = membership
+            if len(authorized_memberships) == 1:
+                workflow_id = str(next(iter(authorized_memberships.values()))["workflow_id"])
             else:
                 workflow_id = (
                     f"private:{bundle.pinned['namespace_id']}:"
@@ -4632,10 +5141,41 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                 namespace_id=bundle.pinned["namespace_id"],
                 application_id=bundle.pinned["application_id"],
                 application_instance_id=bundle.pinned["application_instance_id"],
-                workflow_id=workflow_id)
-            if bundle.pinned.get("shared_workflow_membership"):
+                workflow_id=workflow_id,
+                statework_memberships=authorized_memberships)
+            if authorized_memberships:
                 shared_branch_path = resolve_runtime.runtime_state_dir() / "shared-branches.sqlite3"
                 session.shared_branch_ledger = SharedBranchLedger(shared_branch_path)
+    if state_authority is None and runtime_mode != "combined_enforcing":
+        # Even a private workflow uses CSW's engine-neutral authority. Keep its
+        # durable store task-scoped so standalone sessions cannot share state by
+        # accidentally reusing a display subject.
+        task_scope = hashlib.sha256(("|".join((
+            bundle.pinned.get("namespace_id", "default"),
+            bundle.pinned.get("application_id", "unknown-application"),
+            bundle.pinned.get("application_instance_id", "unknown-instance"),
+            bundle.task_id,
+        ))).encode("utf-8")).hexdigest()
+        authority_dir = resolve_runtime.runtime_state_dir() / "workflow-authorities" / task_scope
+        state_authority = CSWStateAuthority(
+            source_root, state_path=authority_dir / "subjects.json",
+            evidence_path=authority_dir / "evidence.json",
+            namespace_id=bundle.pinned.get("namespace_id", "default"),
+            application_id=bundle.pinned.get("application_id", "cognitiveframeworks-runtime"),
+            application_instance_id=bundle.pinned.get(
+                "application_instance_id", "cognitiveframeworks-runtime"),
+            workflow_id=(f"private:{bundle.task_id}:{session.agent_instance_id}"),
+            statework_memberships={str(item.get("statework_id")): item
+                                   for item in session.shared_workflow_memberships})
+    elif isinstance(state_authority, CSWStateAuthority) and runtime_mode != "combined_enforcing":
+        state_authority = state_authority.bind_scope(
+            namespace_id=bundle.pinned.get("namespace_id", "default"),
+            application_id=bundle.pinned.get("application_id", "cognitiveframeworks-runtime"),
+            application_instance_id=bundle.pinned.get(
+                "application_instance_id", "cognitiveframeworks-runtime"),
+            workflow_id=state_authority.workflow_id,
+            statework_memberships={str(item.get("statework_id")): item
+                                   for item in session.shared_workflow_memberships})
     if runtime_mode == "standalone_advisory" and state_authority is not None:
         raise ValueError("standalone_advisory cannot combine with shared StateWork authority")
     session.state_authority = state_authority
@@ -4845,6 +5385,9 @@ def _restore_session(session: RuntimeSession) -> None:
                 session.system_one_sequence, int(record.get("sequence", 0) or 0))
         elif event_type == "system_one_projection_changed":
             session.metacognitive_state.restore(record.get("snapshot") or {})
+        elif event_type == "semantic_signal_store_changed":
+            if int(record.get("metacognitive_revision", -1)) >= 0:
+                session.semantic_signal_store.restore(record.get("records") or ())
         elif event_type == "system_one_decision_recorded":
             decision = dict(record.get("decision") or {})
             decision_id = str(decision.get("decision_id") or "")
@@ -4918,18 +5461,14 @@ def _restore_session(session: RuntimeSession) -> None:
             csw_progress_class = str(record.get("csw_progress_class")
                                       or transition.get("progress_class")
                                       or "LATERAL")
-            if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
-                progress_class = "RECOVERY_PROGRESS"
-            elif csw_progress_class == "TERMINAL":
-                progress_class = "VERIFICATION_PROGRESS"
-            else:
-                progress_class = "DIAGNOSTIC_PROGRESS"
+            progress_class = "WORKFLOW_PROGRESS"
             session.metacognitive_state.record_csw_fact(
                 statework_id=key[0],
                 input_state=str(record["input_state"]),
                 output_state=str(record["output_state"]),
                 progress_class=csw_progress_class,
-                workflow_metadata=transition)
+                workflow_metadata=transition,
+                subject_ref=key[1])
             if session.convergence is not None:
                 progress_digest = hashlib.sha256(json.dumps({
                     "statework_id": key[0], "subject_ref": key[1],
@@ -4937,24 +5476,36 @@ def _restore_session(session: RuntimeSession) -> None:
                     "output_state": record.get("output_state"),
                     "edge_id": transition.get("edge_id"),
                 }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-                if csw_progress_class in {"RECOVERY", "INVALIDATION", "REGRESSION"}:
-                    session.convergence.record_recovery_epoch(
-                        cause_id="primary-objective")
-                elif csw_progress_class == "TERMINAL":
-                    evidence_refs = list(record.get("evidence_refs") or ())
-                    session.convergence.record_progress(
-                        cause_id="primary-objective", progress_digest=progress_digest,
-                        progress_class="VERIFICATION_PROGRESS",
-                        evidence_ref=evidence_refs[-1] if evidence_refs else None)
-                elif csw_progress_class == "FORWARD_PROGRESS":
-                    evidence_refs = list(record.get("evidence_refs") or ())
-                    session.convergence.record_progress(
-                        cause_id="primary-objective", progress_digest=progress_digest,
-                        progress_class="DIAGNOSTIC_PROGRESS",
-                        evidence_ref=evidence_refs[-1] if evidence_refs else None)
-                else:
-                    session.convergence.record_support_action(
-                        cause_id="primary-objective")
+                evidence_refs = list(record.get("evidence_refs") or ())
+                session.convergence.record_progress(
+                    cause_id="primary-objective", progress_digest=progress_digest,
+                    progress_class="WORKFLOW_PROGRESS",
+                    evidence_ref=evidence_refs[-1] if evidence_refs else None)
+        elif event_type == "workflow_step_allowed":
+            session.metacognitive_state.record_generic_workflow_progress(
+                statework_id=str(record["statework_id"]),
+                subject_ref=str(record["subject_ref"]),
+                engine_kind=str(record["engine_kind"]),
+                step_id=str(record["step_id"]),
+                revision=int(record["revision"]),
+                progress_class=str(record["progress_class"]),
+                completed=bool(record["completed"]),
+                work_class=str(record.get("work_class") or "workflow"),
+                domain_effect=str(record.get("domain_effect") or "workflow"),
+                evidence_refs=tuple(record.get("evidence_refs") or ()))
+            if session.convergence is not None:
+                digest = hashlib.sha256(json.dumps({
+                    "statework_id": record.get("statework_id"),
+                    "subject_ref": record.get("subject_ref"),
+                    "engine_kind": record.get("engine_kind"),
+                    "step_id": record.get("step_id"),
+                    "revision": record.get("revision"),
+                }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                refs = list(record.get("evidence_refs") or ())
+                session.convergence.record_progress(
+                    cause_id="primary-objective", progress_digest=digest,
+                    progress_class="WORKFLOW_PROGRESS",
+                    evidence_ref=refs[-1] if refs else None)
         elif event_type == "handoff_attested":
             session.handoffs[str(record["packet_id"])] = {
                 "packet_id": record["packet_id"], "producer": record.get("producer"),
@@ -5011,6 +5562,7 @@ def _restore_session(session: RuntimeSession) -> None:
     object.__setattr__(session, "metacognitive_decision", MetaDecision("DELIVER", "session restored"))
     session._pending_action_requests.clear()
     session._pending_retry_candidates.clear()
+    session._action_objective_bindings.clear()
     if session.system_one_judge is not None:
         identity = SystemOneIdentity(
             namespace_id=session.execution_identity.namespace_id,
@@ -5046,9 +5598,14 @@ def _statework_transition_engines(cow_root: Optional[Path] = None):
     if cache_key in _STATEWORK_TRANSITION_MODULES:
         return _STATEWORK_TRANSITION_MODULES[cache_key]
     module_path = root / "scripts" / "control_plane.py"
-    spec = importlib.util.spec_from_file_location("cfw_cow_control_plane_runtime", module_path)
+    package_name = "cfw_cow_runtime_" + hashlib.sha256(str(root).encode()).hexdigest()[:12]
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(module_path.parent)]
+    sys.modules[package_name] = package
+    spec = importlib.util.spec_from_file_location(
+        package_name + ".control_plane", module_path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["cfw_cow_control_plane_runtime"] = module
+    sys.modules[package_name + ".control_plane"] = module
     spec.loader.exec_module(module)
     _STATEWORK_TRANSITIONS = module
     _STATEWORK_TRANSITION_MODULES[cache_key] = module
@@ -5096,13 +5653,17 @@ def context_for(session: RuntimeSession) -> str:
             "user's requested outcome; framework workflow is support work.")
     verification = goal.get("verification_policy") or {}
     support_limit = int(verification.get("support_actions_before_goal_reanchor", 5) or 5)
+    total_action_limit = int(
+        verification.get("max_committed_actions_without_goal_progress", 15) or 15)
     if (goal.get("work_mode") == "delivery" and session.convergence is not None
             and session.convergence.needs_goal_reanchor(
-                cause_id="primary-objective", support_limit=support_limit)):
-        support_count = session.convergence.state("primary-objective").support_actions_since_goal_progress
+                cause_id="primary-objective", support_limit=support_limit,
+                total_action_limit=total_action_limit)):
+        convergence_state = session.convergence.state("primary-objective")
         parts.append(
             "===== GOAL REANCHOR REQUIRED =====\n"
-            f"No primary-deliverable progress in {support_count} support actions. "
+            f"No primary-deliverable progress in {convergence_state.total_actions_since_goal_progress} committed actions; "
+            f"{convergence_state.support_actions_since_goal_progress} were host-classified support. "
             f"Primary outcome: {goal.get('objective', '')}\n"
             "Next action must advance a required criterion or establish a concrete blocker.")
     criterion_claims = {str(item.get("criterion_id")): str(item.get("claim") or "")

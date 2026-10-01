@@ -3,7 +3,7 @@
   "$id": "https://cognitivestateframeworks.dev/contracts/system-one-protocol.schema.json",
   "title": "CFW System-1 protocol",
   "type": "object",
-  "protocol_version": "2.1.0",
+  "protocol_version": "2.2.0",
   "x-question-registry": {
     "action_relation": {
       "family": "action_relation",
@@ -224,6 +224,7 @@
             "tool_result",
             "validation",
             "state_transition",
+            "workflow_progress",
             "retry",
             "goal_progress",
             "blocker",
@@ -313,6 +314,7 @@
             "BLOCKER_REMOVED",
             "DIAGNOSTIC_PROGRESS",
             "VERIFICATION_PROGRESS",
+            "WORKFLOW_PROGRESS",
             "RECOVERY_PROGRESS",
             null
           ]
@@ -345,7 +347,11 @@
         "revision",
         "normal_path_rank_before",
         "normal_path_rank_after",
-        "source"
+        "source",
+        "subject_ref",
+        "engine_kind",
+        "step_id",
+        "completed"
       ],
       "properties": {
         "statework_id": {
@@ -368,7 +374,10 @@
           "maxLength": 256
         },
         "current_state": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1,
           "maxLength": 64
         },
@@ -447,6 +456,33 @@
         },
         "source": {
           "const": "csw_authoritative"
+        },
+        "subject_ref": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        },
+        "engine_kind": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "step_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "completed": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

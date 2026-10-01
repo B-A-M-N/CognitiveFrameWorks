@@ -135,6 +135,7 @@ class VerificationPolicy:
     """Task-specific limits for support work and recovery."""
 
     support_actions_before_goal_reanchor: int = 5
+    max_committed_actions_without_goal_progress: int = 15
     max_recovery_epochs_without_goal_progress: int = 3
     max_same_approach_retries: int = 2
     max_verification_actions_without_artifact_change: int = 2
@@ -142,6 +143,7 @@ class VerificationPolicy:
 
     def __post_init__(self) -> None:
         for name in ("support_actions_before_goal_reanchor",
+                     "max_committed_actions_without_goal_progress",
                      "max_recovery_epochs_without_goal_progress",
                      "max_same_approach_retries",
                      "max_verification_actions_without_artifact_change",
@@ -152,6 +154,8 @@ class VerificationPolicy:
 
     def to_dict(self) -> dict[str, int]:
         return {"support_actions_before_goal_reanchor": self.support_actions_before_goal_reanchor,
+                "max_committed_actions_without_goal_progress": (
+                    self.max_committed_actions_without_goal_progress),
                 "max_recovery_epochs_without_goal_progress": self.max_recovery_epochs_without_goal_progress,
                 "max_same_approach_retries": self.max_same_approach_retries,
                 "max_verification_actions_without_artifact_change": (
@@ -260,6 +264,8 @@ class TaskRequest:
     failure_attribution: str = "none"
     adopted_profile_hashes: Tuple[str, ...] = ()
     shared_workflow_membership: Optional[Mapping[str, Any]] = None
+    shared_workflow_memberships: Tuple[Mapping[str, Any], ...] = ()
+    statework_subject_refs: Mapping[str, str] = field(default_factory=dict)
     policy_revocation_revision: int = 0
     revocation_mode: str = "deferred"
     # Host-predeclared adaptive experiment.  This is never populated from
@@ -311,6 +317,32 @@ class TaskRequest:
             if int(revision or 0) < 1:
                 raise ValueError("shared workflow membership requires a positive membership revision")
             object.__setattr__(self, "shared_workflow_membership", MappingProxyType(membership))
+        memberships = [dict(item) for item in self.shared_workflow_memberships]
+        if self.shared_workflow_membership is not None and not any(
+                dict(item) == dict(self.shared_workflow_membership) for item in memberships):
+            memberships.append(dict(self.shared_workflow_membership))
+        if len(memberships) > 16:
+            raise ValueError("shared_workflow_memberships is limited to 16 grants")
+        required_membership_identity = {
+            "namespace_id", "application_id", "application_instance_id",
+            "workflow_id", "statework_id", "subject_ref"}
+        for membership in memberships:
+            if not required_membership_identity.issubset(membership) or any(
+                    not isinstance(membership.get(name), str) or not membership.get(name)
+                    for name in required_membership_identity):
+                raise ValueError("shared workflow membership has an invalid identity contract")
+            revision = membership.get("membership_revision", membership.get("authorization_revision"))
+            if int(revision or 0) < 1:
+                raise ValueError("shared workflow membership requires a positive membership revision")
+        object.__setattr__(self, "shared_workflow_memberships", tuple(
+            MappingProxyType(item) for item in memberships))
+        subjects = dict(self.statework_subject_refs)
+        if len(subjects) > 32 or any(
+                not isinstance(key, str) or not key.strip() or len(key) > 64
+                or not isinstance(value, str) or not value.strip() or len(value) > 256
+                for key, value in subjects.items()):
+            raise ValueError("statework_subject_refs must map bounded StateWork IDs to subjects")
+        object.__setattr__(self, "statework_subject_refs", MappingProxyType(subjects))
         if self.policy_revocation_revision < 0:
             raise ValueError("policy_revocation_revision must be non-negative")
         if self.revocation_mode not in {"deferred", "immediate"}:

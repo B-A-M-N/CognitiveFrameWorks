@@ -146,7 +146,7 @@ def shared_state_race(root: Path) -> None:
 
 def dp_event(index: int, event_id: str) -> dict:
     return {
-        "schema_version": "2.5.0", "event_id": event_id,
+        "schema_version": "2.6.0", "event_id": event_id,
         "timestamp": "2026-09-24T12:00:00Z", "task_id": "task",
         "agent_id": "agent", "agent_instance_id": "agent",
         "session_id": "session", "attempt_id": "attempt-1",

@@ -84,7 +84,7 @@ def test_tool_capability_does_not_activate_action_wrappers_but_planning_does():
     assert "fuse" not in session.lifecycle.active
     assert "ward" not in session.lifecycle.active
 
-    session.before_tool_planning()
+    session.before_tool_planning({"tool_binding_id": "delete", "arguments": {}})
     assert {"fuse", "ward"}.issubset(session.lifecycle.active)
     session._host_ingress().record_tool_result("read", "success", invocation_id="read-1")
     assert "fuse" not in session.lifecycle.active
@@ -180,7 +180,11 @@ def test_tuid_implement_task_cannot_select_test_flow():
         task_shape="test", current_state="IMPLEMENTED")
     assert implement["flow_metadata"]["flow"] == "implement"
     assert test["flow_metadata"]["flow"] == "test"
-    assert test["flow_metadata"]["operations"] == ["test", "verify", "validate"]
+    selector = resolve._flow_selector(resolve.COW_ROOT)
+    context = {"operation": "test", "trigger": "test_requested",
+               "task_shape": "test", "current_state": "IMPLEMENTED"}
+    assert not selector.evaluate(implement["flow_metadata"]["when"], context)[0]
+    assert selector.evaluate(test["flow_metadata"]["when"], context)[0]
 
 
 def test_tuid_completion_is_claim_sensitive():
@@ -290,10 +294,10 @@ def test_successful_completion_requires_a_nonempty_goal_contract():
 def test_twenty_turn_delivery_scenario_reanchors_instead_of_looping():
     resolve, runtime = _modules()
     goal = TaskGoalContract(
-        objective="Change component X to match the requested visual reference.",
-        deliverable_kind="visual_ui", work_mode="delivery",
+        objective="Implement the requested component behavior.",
+        deliverable_kind="code_behavior", work_mode="delivery",
         acceptance_criteria=(
-            AcceptanceCriterion("C1", "Visual composition matches the reference", "static_visual"),
+            AcceptanceCriterion("C1", "Component behavior matches the request", "code_behavior"),
         ),
         verification_policy=VerificationPolicy(
             support_actions_before_goal_reanchor=5))
@@ -307,12 +311,16 @@ def test_twenty_turn_delivery_scenario_reanchors_instead_of_looping():
     # Mutate after one narrow inspection; a green test run is not goal progress.
     assert session.before_action({"tool_binding_id": "inspect", "arguments": {}}) == runtime.GateDecision.ALLOW
     host.record_tool_result("inspect", "success", invocation_id="inspect-1")
-    assert session.before_action({"tool_binding_id": "write", "arguments": {
-        "target": "component.py"}}) == runtime.GateDecision.ALLOW
-    write_evidence = host.record_tool_result(
+    write_action = {"tool_binding_id": "write", "arguments": {"target": "component.py"}}
+    binding = host.bind_action_objective(
+        write_action, purpose_class="DIRECT_GOAL", criterion_ids=("C1",))
+    prepared = host.prepare_action(write_action, objective_binding=binding)
+    assert prepared.decision == runtime.GateDecision.ALLOW
+    changed = host.record_tool_result(
         "write", "success", invocation_id="write-1",
+        action_request_id=prepared.action_request_id,
         actual_result={"artifact_changed": True})
-    host.record_goal_progress(cause_id="primary-objective", evidence_ref=write_evidence,
+    host.record_goal_progress(cause_id="primary-objective", evidence_ref=changed,
                               criterion_id="C1")
 
     observed_reanchor = False
@@ -332,7 +340,67 @@ def test_twenty_turn_delivery_scenario_reanchors_instead_of_looping():
         assert "fuse" not in session.lifecycle.active
         assert "ward" not in session.lifecycle.active
     assert observed_reanchor
-    assert session.convergence.state("primary-objective").last_goal_progress_seq > 0
+
+
+def test_host_objective_binding_is_request_specific_and_resets_only_on_evidence():
+    resolve, runtime = _modules()
+    goal = TaskGoalContract(
+        objective="Implement the requested behavior.", deliverable_kind="code_behavior",
+        work_mode="delivery",
+        acceptance_criteria=(AcceptanceCriterion("C1", "Requested behavior exists", "code_behavior"),))
+    bundle = resolve.resolve(TaskRequest(
+        task_id="objective-binding", application_id="test", shape="implement",
+        goal_contract=goal))
+    session = runtime.start(bundle, telemetry_disabled=True,
+                            session_nonce="objective-binding")
+    host = session._host_ingress()
+    action = {"tool_binding_id": "read", "arguments": {"target": "src/feature.py"}}
+    binding = host.bind_action_objective(
+        action, purpose_class="DIRECT_GOAL", criterion_ids=("C1",))
+    prepared = host.prepare_action(action, objective_binding=binding)
+    assert prepared.decision == runtime.GateDecision.ALLOW
+    pending = session._pending_action_requests[prepared.action_request_id]
+    assert pending["relation"] == "advances_primary_goal"
+    assert pending["accounting_lane"] == "DIRECT"
+    evidence = host.record_tool_result(
+        "read", "success", action_request_id=prepared.action_request_id,
+        actual_result={"artifact_changed": True})
+    state = session.convergence.state("primary-objective")
+    assert state.total_actions_since_goal_progress == 1
+    assert state.support_actions_since_goal_progress == 0
+
+    host.record_goal_progress(cause_id="primary-objective", evidence_ref=evidence,
+                              criterion_id="C1")
+    state = session.convergence.state("primary-objective")
+    assert state.total_actions_since_goal_progress == 0
+    assert state.support_actions_since_goal_progress == 0
+
+
+def test_model_supplied_objective_claim_is_unclassified_and_not_support():
+    resolve, runtime = _modules()
+    goal = TaskGoalContract(
+        objective="Implement the requested behavior.", deliverable_kind="code_behavior",
+        work_mode="delivery",
+        acceptance_criteria=(AcceptanceCriterion("C1", "Requested behavior exists", "behavior"),))
+    bundle = resolve.resolve(TaskRequest(
+        task_id="unbound-objective", application_id="test", shape="implement",
+        goal_contract=goal))
+    session = runtime.start(bundle, telemetry_disabled=True,
+                            session_nonce="unbound-objective")
+    host = session._host_ingress()
+    action = {"tool_binding_id": "read", "arguments": {"target": "src/feature.py"},
+              "objective_binding": {"purpose_class": "DIRECT_GOAL", "criterion_ids": ["C1"]}}
+    prepared = session.prepare_action(action)
+    assert prepared.decision == runtime.GateDecision.ALLOW
+    pending = session._pending_action_requests[prepared.action_request_id]
+    assert pending["relation"] == "ambiguous"
+    assert pending["accounting_lane"] == "UNCLASSIFIED"
+    host.record_tool_result("read", "success", action_request_id=prepared.action_request_id,
+                            actual_result={"artifact_changed": False})
+    state = session.convergence.state("primary-objective")
+    assert state.total_actions_since_goal_progress == 1
+    assert state.support_actions_since_goal_progress == 0
+    assert session.convergence.state("primary-objective").last_goal_progress_seq == 0
 
     claim = CompletionClaim.create(
         claim_id="green-tests-only", task_id=bundle.task_id,

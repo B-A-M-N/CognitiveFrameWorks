@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-CONVERGENCE_SCHEMA_VERSION = "1.0.0"
+CONVERGENCE_SCHEMA_VERSION = "1.1.0"
 
 # Terminal dispositions. SUCCEEDED keeps the strict completion-permit path.
 DISPOSITIONS = {"RUNNING", "SUCCEEDED", "BLOCKED", "FAILED", "HANDOFF"}
@@ -34,8 +34,9 @@ GATE_ALLOW = None
 
 PROGRESS_CLASSES = {
     "GOAL_PROGRESS", "BLOCKER_REMOVED", "DIAGNOSTIC_PROGRESS",
-    "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS",
+    "VERIFICATION_PROGRESS", "RECOVERY_PROGRESS", "WORKFLOW_PROGRESS",
 }
+ACTION_ACCOUNTING_LANES = {"DIRECT", "SUPPORT", "UNCLASSIFIED", "VERIFICATION"}
 
 
 def _canonical(value: Any) -> str:
@@ -253,6 +254,9 @@ class RetryState:
     last_goal_progress_seq: int = 0
     last_support_progress_seq: int = 0
     support_actions_since_goal_progress: int = 0
+    total_actions_since_goal_progress: int = 0
+    workflow_steps_since_goal_progress: int = 0
+    last_workflow_progress_seq: int = 0
     recovery_epochs_since_goal_progress: int = 0
     last_progress_class: Optional[str] = None
     disposition: str = "RUNNING"
@@ -277,6 +281,9 @@ class RetryState:
             "last_goal_progress_seq": self.last_goal_progress_seq,
             "last_support_progress_seq": self.last_support_progress_seq,
             "support_actions_since_goal_progress": self.support_actions_since_goal_progress,
+            "total_actions_since_goal_progress": self.total_actions_since_goal_progress,
+            "workflow_steps_since_goal_progress": self.workflow_steps_since_goal_progress,
+            "last_workflow_progress_seq": self.last_workflow_progress_seq,
             "recovery_epochs_since_goal_progress": self.recovery_epochs_since_goal_progress,
             "last_progress_class": self.last_progress_class,
             "disposition": self.disposition,
@@ -306,6 +313,11 @@ class RetryState:
         state.last_support_progress_seq = int(data.get("last_support_progress_seq", 0) or 0)
         state.support_actions_since_goal_progress = int(
             data.get("support_actions_since_goal_progress", 0) or 0)
+        state.total_actions_since_goal_progress = int(
+            data.get("total_actions_since_goal_progress", 0) or 0)
+        state.workflow_steps_since_goal_progress = int(
+            data.get("workflow_steps_since_goal_progress", 0) or 0)
+        state.last_workflow_progress_seq = int(data.get("last_workflow_progress_seq", 0) or 0)
         state.recovery_epochs_since_goal_progress = int(
             data.get("recovery_epochs_since_goal_progress", 0) or 0)
         state.last_progress_class = (str(data["last_progress_class"])
@@ -413,10 +425,15 @@ class ConvergenceController:
         if progress_class in {"GOAL_PROGRESS", "BLOCKER_REMOVED"}:
             state.last_goal_progress_seq = state.progress_sequence
             state.support_actions_since_goal_progress = 0
+            state.total_actions_since_goal_progress = 0
+            state.workflow_steps_since_goal_progress = 0
             state.recovery_epochs_since_goal_progress = 0
             state.recovery_epochs = 0
             state.no_progress_epochs = 0
             state.same_approach_retries = 0
+        elif progress_class == "WORKFLOW_PROGRESS":
+            state.last_workflow_progress_seq = state.progress_sequence
+            state.workflow_steps_since_goal_progress += 1
         else:
             state.last_support_progress_seq = state.progress_sequence
             state.support_actions_since_goal_progress += 1
@@ -425,11 +442,21 @@ class ConvergenceController:
         return state
 
     def record_support_action(self, *, cause_id: str) -> RetryState:
+        return self.record_committed_action(cause_id=cause_id, lane="SUPPORT")
+
+    def record_committed_action(self, *, cause_id: str, lane: str) -> RetryState:
+        """Account a host-observed action without treating ambiguity as support."""
+        if lane not in ACTION_ACCOUNTING_LANES:
+            raise ValueError(f"unsupported action accounting lane {lane!r}")
         state = self.state(cause_id)
         state.progress_sequence += 1
-        state.last_support_progress_seq = state.progress_sequence
-        state.support_actions_since_goal_progress += 1
-        state.last_progress_class = "DIAGNOSTIC_PROGRESS"
+        state.total_actions_since_goal_progress += 1
+        if lane == "SUPPORT":
+            state.last_support_progress_seq = state.progress_sequence
+            state.support_actions_since_goal_progress += 1
+            state.last_progress_class = "SUPPORT_ACTION"
+        else:
+            state.last_progress_class = f"ACTION_{lane}"
         return state
 
     def record_recovery_epoch(self, *, cause_id: str) -> RetryState:
@@ -441,9 +468,12 @@ class ConvergenceController:
             state.no_progress_epochs += 1
         return state
 
-    def needs_goal_reanchor(self, *, cause_id: str, support_limit: int) -> bool:
+    def needs_goal_reanchor(self, *, cause_id: str, support_limit: int,
+                            total_action_limit: int | None = None) -> bool:
         state = self.state(cause_id)
-        return state.support_actions_since_goal_progress >= int(support_limit)
+        return (state.support_actions_since_goal_progress >= int(support_limit)
+                or (total_action_limit is not None
+                    and state.total_actions_since_goal_progress >= int(total_action_limit)))
 
     def reject_path(self, *, cause_id: str, action_fingerprint: str,
                     hypothesis_fingerprint: str, evidence_ref: str | None,
@@ -524,7 +554,7 @@ class ConvergenceController:
     def restore(self, payload: Mapping[str, Any]) -> None:
         if not isinstance(payload, Mapping):
             return
-        if payload.get("schema_version") != CONVERGENCE_SCHEMA_VERSION:
+        if payload.get("schema_version") not in {"1.0.0", CONVERGENCE_SCHEMA_VERSION}:
             return
         self.max_recovery_epochs_without_progress = int(
             payload.get("max_recovery_epochs_without_progress") or

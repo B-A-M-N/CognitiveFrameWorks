@@ -74,6 +74,41 @@ def test_objective_progress_resets_no_progress_budget():
     assert controller.state("c1").recovery_epochs == 0
 
 
+def test_total_support_and_workflow_progress_are_independent_and_durable():
+    controller = _controller()
+    controller.record_committed_action(cause_id="c1", lane="UNCLASSIFIED")
+    controller.record_committed_action(cause_id="c1", lane="DIRECT")
+    assert controller.state("c1").total_actions_since_goal_progress == 2
+    assert controller.state("c1").support_actions_since_goal_progress == 0
+
+    controller.record_progress(cause_id="c1", progress_digest="w1",
+                               progress_class="WORKFLOW_PROGRESS")
+    controller.record_progress(cause_id="c1", progress_digest="w2",
+                               progress_class="WORKFLOW_PROGRESS")
+    state = controller.state("c1")
+    assert state.workflow_steps_since_goal_progress == 2
+    assert state.total_actions_since_goal_progress == 2
+    assert state.support_actions_since_goal_progress == 0
+
+    controller.record_committed_action(cause_id="c1", lane="SUPPORT")
+    assert controller.state("c1").total_actions_since_goal_progress == 3
+    assert controller.state("c1").support_actions_since_goal_progress == 1
+
+    restored = _controller()
+    restored.restore(controller.export())
+    state = restored.state("c1")
+    assert state.total_actions_since_goal_progress == 3
+    assert state.support_actions_since_goal_progress == 1
+    assert state.workflow_steps_since_goal_progress == 2
+
+    restored.record_progress(cause_id="c1", progress_digest="goal-evidence",
+                             progress_class="GOAL_PROGRESS")
+    state = restored.state("c1")
+    assert state.total_actions_since_goal_progress == 0
+    assert state.support_actions_since_goal_progress == 0
+    assert state.workflow_steps_since_goal_progress == 0
+
+
 def test_exhausted_budget_terminates_instead_of_reinspecting():
     controller = _controller(max_recovery_epochs_without_progress=1)
     controller.record_failure(cause_id="c1", action_fingerprint="a1",

@@ -229,6 +229,7 @@
           "type": ["object", "null"],
           "properties": {
             "support_actions_before_goal_reanchor": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_committed_actions_without_goal_progress": { "type": "integer", "minimum": 1, "maximum": 100 },
             "max_recovery_epochs_without_goal_progress": { "type": "integer", "minimum": 1, "maximum": 100 },
             "max_same_approach_retries": { "type": "integer", "minimum": 1, "maximum": 100 }
           },

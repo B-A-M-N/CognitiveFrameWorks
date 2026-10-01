@@ -25,7 +25,7 @@ for value in (str(ROOT / "scripts"), str(DP), str(COW / "scripts")):
 
 def event(index: int, event_id: str, *, throttle: bool = False) -> dict:
     return {
-        "schema_version": "2.5.0", "event_id": event_id,
+        "schema_version": "2.6.0", "event_id": event_id,
         "timestamp": "2026-09-24T12:00:00Z", "task_id": f"task-{index}",
         "agent_id": f"agent-{index}", "agent_instance_id": f"agent-{index}",
         "session_id": "session", "attempt_id": "attempt-1",
