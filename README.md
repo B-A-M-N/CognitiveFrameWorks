@@ -456,11 +456,6 @@ Structural tests establish deterministic policy, authority, state, and integrati
 
 These projects are released under the [MIT License](LICENSE). Contributions are welcome through repository issues and pull requests. Please include a focused regression or acceptance check for behavior changes, keep authority boundaries explicit, and do not claim model-performance improvements without the corresponding qualification evidence.
 
-## FreeInference attribution
-This work benefited in some way from inference provided by [freeinference.org](https://freeinference.org/).
-
-These are independent developments that are not reviewed, endorsed, or sponsored by FreeInference. If you find these projects genuinely useful, please consider donating to or sponsoring FreeInference, which provides a vital inference service.
-
 ## Release qualification
 
 Structural public-beta checks, hostile integration, real-agent behavioral
@@ -486,3 +481,9 @@ Even a shared profile is not automatically adopted. Each new CFW task must list 
 ## Cognitive Cockpit
 
 The optional read-only cockpit is available with `python3 scripts/cfw-ops.py` for the terminal view or `python3 scripts/cfw-ops.py --web` for a localhost-only browser view. It presents Overview, Workflow, Learning, Timeline, and Health data from the same sanitized operator-event stream. It never receives host session tokens, signing keys, or authority capabilities, and closing it does not terminate tasks.
+
+## FreeInference Acknowledgement
+
+This work benefited in some way from inference provided by [freeinference.org](https://freeinference.org/).
+
+These are independent developments that are not reviewed, endorsed, or sponsored by FreeInference. If you find these projects useful, please consider donating to or sponsoring FreeInference, which provides a vital inference service.
