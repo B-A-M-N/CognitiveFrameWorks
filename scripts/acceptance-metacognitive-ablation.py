@@ -101,6 +101,7 @@ class FixtureSemanticBackend:
         from lib.system_one_contracts import SystemOneCapability
 
         self.route_options = []
+        self.failed_hypotheses = []
         self._capability = SystemOneCapability(
             backend_id=self.backend_id,
             model_id=self.model_id,
@@ -131,6 +132,8 @@ class FixtureSemanticBackend:
 
         if "route_preference" in frame.question_ids:
             self.route_options.append(tuple(frame.state.legal_routes))
+        self.failed_hypotheses.append(tuple(
+            item.hypothesis_summary for item in frame.state.failed_approaches))
         preferred = {
             "action_relation": "advances_primary_goal",
             "progress_relation": "goal_progress",
@@ -200,6 +203,10 @@ class FixtureSemanticJudge:
     @property
     def route_options(self):
         return self.backend.route_options
+
+    @property
+    def failed_hypotheses(self):
+        return self.backend.failed_hypotheses
 
     def capability(self):
         return self._capability
@@ -279,6 +286,49 @@ def qualify_delivery_trace(mode: str) -> tuple[int, int, str, str]:
         action_registry=registry)
     host = session._host_ingress()
 
+    failed_hypothesis = "The dependency cache is stale."
+    first_attempt = host.begin_attempt(
+        attempt_ref="failed-dependency-cache-hypothesis",
+        cause_id="primary-objective",
+        premise_digest=digest("dependency-cache-is-stale"),
+        action_plan={"tool": "inspect-dependency-cache", "target": "lockfile"},
+        semantic_descriptor={
+            "cause_class": "dependency_resolution",
+            "hypothesis_summary": failed_hypothesis,
+            "mechanism": "Stale cached metadata prevents resolution.",
+            "evidence_target": "lockfile",
+            "planned_action_class": "inspect",
+            "planned_target_kind": "dependency_manifest",
+            "failed_result_class": "no_change",
+            "affected_criterion_ids": ("C1",),
+            "source": "host_observed",
+        })
+    failure_ref = host.record_observation(
+        "attempt_failure_evidence", subject,
+        details={"result_class": "no_change"})
+    host.record_attempt_failure(
+        attempt_ref=first_attempt.attempt_ref, evidence_ref=failure_ref)
+    revised_attempt = host.begin_attempt(
+        attempt_ref="revised-dependency-hypothesis",
+        cause_id="primary-objective",
+        premise_digest=digest("dependency-registry-is-unavailable"),
+        action_plan={"tool": "inspect-registry", "target": "network-route"},
+        parent_attempt_ref=first_attempt.attempt_ref,
+        semantic_descriptor={
+            "cause_class": "dependency_resolution",
+            "hypothesis_summary": "The package registry is unavailable.",
+            "mechanism": "Registry requests fail before package metadata arrives.",
+            "evidence_target": "registry_status",
+            "planned_action_class": "inspect",
+            "planned_target_kind": "network_service",
+            "failed_result_class": "pending",
+            "affected_criterion_ids": ("C1",),
+            "source": "host_observed",
+        })
+    assert revised_attempt.premise_digest != first_attempt.premise_digest
+    assert failed_hypothesis in tuple(
+        item.hypothesis_summary for item in session.metacognitive_state.failed_approaches)
+
     before = session.metacognitive_decision
     prepared = session.prepare_action(runtime.AgentActionRequest(
         binding_id="ambiguous-action", arguments={"target": "src/feature.py"},
@@ -286,6 +336,8 @@ def qualify_delivery_trace(mode: str) -> tuple[int, int, str, str]:
     assert prepared.decision == runtime.GateDecision.ALLOW
     after_proposal = session._evaluate_metacognition()
     assert after_proposal.mode == before.mode == "DELIVER"
+    if judge is not None:
+        assert failed_hypothesis in judge.failed_hypotheses[0]
     host.record_tool_result(
         "ambiguous-action", "success", subject,
         action_request_id=prepared.action_request_id,
@@ -421,7 +473,8 @@ def main() -> int:
             delivery = {mode: qualify_delivery_trace(mode) for mode in modes}
             assert all(item[0] >= 5 and item[1] == 1 and item[2] == "DELIVER"
                        and item[3] == "BLOCKED" for item in delivery.values())
-            print("A/B/C delivery trace: hard progress and recovery limits preserved")
+            print("A/B/C delivery trace: revised hypotheses, hard progress, and "
+                  "recovery limits preserved")
 
             verification = {mode: qualify_verification_budget(mode) for mode in modes}
             assert verification == {mode: ("allow", "allow", "block") for mode in modes}
