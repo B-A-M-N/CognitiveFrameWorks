@@ -5,7 +5,7 @@ Covers the review's test list for the framework side:
 - quick/performance profiles satisfy hard dependencies (requires closure)
 - order_after lifecycle: anchor_closeout after fuse/ward/flow/dox_closeout;
   dox_closeout after flow/ward; flow after anchor_open
-- StateWork core_requirements merge into the kernel (alias-expanded) without
+- StateWork namespaced integration requirements merge into the kernel without
   changing canonical lifecycle order
 - missing required packet routes the producer first; packet_store presence
   skips the producer; optional inputs never recurse
@@ -206,15 +206,20 @@ def main() -> int:
     except resolve.PacketDependencyError:
         check("unknown required packet raises", True)
 
-    # StateWork core_requirements merge (getter requires ward)
+    # StateWork namespaced integration requirements (getter requires ward)
     merged = resolve.requires_closure(resolve.expand(profiles["implement"], aliases), stage_by_id)
     for sw in chain:
-        for req in sw.get("core_requirements", []):
-            for concrete in resolve.expand([req], aliases):
-                if concrete not in merged:
-                    merged.append(concrete)
+        integrations = [sw.get("integrations") or {},
+                        sw.get("flow_integrations") or {}]
+        for integration_set in integrations:
+            capabilities = integration_set.get("cognitiveframeworks", {})
+            for req in (list(capabilities.get("required") or ())
+                        + list(capabilities.get("enhancements") or ())):
+                for concrete in resolve.expand([req], aliases):
+                    if concrete not in merged:
+                        merged.append(concrete)
     kernel = resolve.order_kernel(merged, stage_by_id)
-    check("getter core_requirements (ward) merged", "ward" in kernel, str(kernel))
+    check("getter integration requirement (ward) merged", "ward" in kernel, str(kernel))
     check("core additions don't reorder base kernel",
           kernel.index("anchor_closeout") > kernel.index("fuse") > kernel.index("anchor_open") > kernel.index("owl"), str(kernel))
 
@@ -552,7 +557,7 @@ def main() -> int:
     check("state change is an immutable segment, not policy mutation",
           len(transition_session.state_segments) == 1 and
           transition_session.state_segments[0].output_state == "OBSERVED" and
-          transition_session.bundle.policy.stateworks[0].transitions_contract)
+          transition_session.bundle.policy.stateworks[0].workflow_contract_hash)
     check("illegal StateWork transition blocked",
           transition_session.record_state_transition(
               "tuid", "ui:tuid", "VALIDATED", trigger="validate",

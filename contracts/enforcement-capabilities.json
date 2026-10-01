@@ -25,7 +25,7 @@
       "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": false}
     },
     "retry.changed_hypothesis": {
-      "version": "1", "hooks": ["before_retry"], "modes": ["structural"],
+      "version": "2", "hooks": ["before_retry"], "modes": ["structural"],
       "parameter_schema": {"type": "object", "properties": {}, "additionalProperties": false}
     },
     "stale_model.reinspect": {

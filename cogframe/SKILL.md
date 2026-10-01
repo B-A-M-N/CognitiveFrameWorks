@@ -10,8 +10,9 @@ individually. This dispatcher is the pipeline: consult it once at task
 start, load ONLY the subset the task needs, and apply them in order.
 
 cogframe does NOT hard-code the vocabulary of any domain. It inspects the
-StateWork registry and activates the best-matching domain StateWork (0-1
-primary, plus flow-level specialists as needed). StateWorks are
+StateWork registry and activates a compatible composition of domain StateWorks
+(zero or more roots, plus required dependencies and flow-level specialists).
+StateWorks are
 **discovered/routed by manifests and exposed to supported runtimes through
 generated skill wrappers** — this file stays small as the registry grows.
 
@@ -24,7 +25,7 @@ For every non-trivial task:
    tool-using implementation / performance review / doc-constrained edit).
 2. Load the minimum FrameWorks kernel for that shape.
 3. Query the StateWork registry (see below).
-4. Activate the best-matching StateWork (0-1 primary + minimal specialists).
+4. Activate the best-matching StateWork composition and its minimal specialists.
 5. Route typed handoff packets between StateWorks when the domain changes.
 ```
 
@@ -50,38 +51,51 @@ never the routing prose. A manifest-entry shape is:
 
 ```yaml
 id: infrae
+domain: infrastructure_state
+purpose: Model, change, and verify infrastructure state with current evidence.
+name: Infrae
 entrypoint: infrae/STATEWORK.md
+advisory_entrypoint: SKILL.md
 triggers:
   - infrastructure
   - topology
   - capacity
   - deployment
   - incident
-phase: domain_state
-consumes:
-  - task_context
+phase_tags: [domain_state]
+inputs:
+  required: [task_context]
+  optional: []
 emits:
   - infrastructure_truth_packet
   - infrastructure_evidence_packet
-core_requirements:
-  - owl
-  - anchor
 context_budget: medium
-exclusive_group: infrastructure_state
+composition:
+  group: infrastructure_state
+  mode: exclusive
+  requires: []
+  conflicts: []
+integrations:
+  cognitiveframeworks:
+    required: [owl]
+    enhancements: [anchor]
+flow_selection:
+  fallback: optional
+  ambiguity: error
+  no_match: inactive
 ```
 
-Dispatch rule: activate at most one primary StateWork per exclusive group, and
-only flows the task actually touches. Do not load a StateWork's whole file
-tree on activation — load its entrypoint, then its active flow, then at most
+Dispatch rule: select only compatible StateWorks and activate at most one per
+exclusive group. Load only each selected entrypoint, active flow, and at most
 two relevant specialists. If a StateWork's handoff packet is already present
 and current, prefer it over re-observation.
 
 ## Composition
 
-StateWorks never call each other. When a task crosses domains, the producing
-StateWork emits a typed handoff packet; the composition layer (the operator,
-or this dispatcher) routes it. Domain changes activate a new primary StateWork
-with the prior packet as its `input_state`, never by merging StateWorks.
+StateWorks never call each other. The composition layer resolves dependencies,
+conflicts, and typed packet inputs before activating compatible workflows. When
+a task crosses domains, the producing StateWork emits a typed handoff packet;
+the composition layer routes it to the consumer that declares the input.
 
 ## Execution Order
 

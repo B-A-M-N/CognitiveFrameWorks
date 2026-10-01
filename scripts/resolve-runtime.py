@@ -10,7 +10,7 @@ Composition contract (no imports of DigitalPsychology code):
     ├─ StateWork registry: deterministic best match + ambiguity handling
     ├─ plan required consumed-packet prerequisites (typed handoffs,
     │   producer chain, cycle detection; optional inputs never recurse)
-    ├─ kernel = union(profile kernel, statework core_requirements)
+    ├─ kernel = union(profile kernel, host integration requirements)
     ├─ order kernel by manifest order_after edges + requires closure
     │   (canonical manifest order for ties; no append-order influence)
     ├─ guard pack = always-on shared/runtime-kernel.yaml
@@ -355,10 +355,10 @@ def load_stateworks(cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
         data["_bundle_root"] = str(owner)
         data["_bundle_hash"] = entry.get("bundle_hash")
         data["_compiled_engine"] = dict(entry.get("engine") or {})
+        data["_runtime_capsule"] = str(entry.get("runtime_capsule") or "")
+        data["_runtime_capsule_hash"] = str(entry.get("runtime_capsule_hash") or "")
         out.append(data)
     for item in out:
-        _validate_statework_runtime_contract(cow_root, str(item.get("id") or ""),
-                                             owner_root=Path(item["_bundle_root"]))
         _validate_statework_flow_contracts(cow_root, str(item.get("id") or ""),
                                            owner_root=Path(item["_bundle_root"]))
     return out
@@ -436,56 +436,6 @@ def _statework_flow_metadata(sw: Mapping[str, Any], cow_root: Path
     return result
 
 
-def _validate_statework_runtime_contract(cow_root: Path, statework_id: str, *,
-                                         owner_root: Optional[Path] = None) -> None:
-    """Reject model-visible state vocabulary that CSW cannot accept."""
-    import yaml
-    owner = owner_root or _statework_root(cow_root, statework_id)
-    capsule_path = owner / "runtime.md"
-    entry = next((item for item in _load_compiled_csw_registry(cow_root).get("stateworks", ())
-                  if item.get("id") == statework_id), None)
-    manifest = dict((entry or {}).get("manifest") or {})
-    engine = manifest.get("engine") or {}
-    if str(engine.get("kind") or "state_machine") != "state_machine":
-        return
-    contract_name = str(((entry or {}).get("engine") or {}).get(
-        "contract_path") or engine.get("contract") or "transitions.yaml")
-    contract_path = owner / contract_name
-    if not capsule_path.is_file() or not contract_path.is_file():
-        return
-    text = capsule_path.read_text(encoding="utf-8")
-    match = re.search(r"(?im)^#{1,6}\s+State vocabulary\s*$([\s\S]*?)(?=^#{1,6}\s+|\Z)", text)
-    if not match:
-        return
-    try:
-        contract = yaml.safe_load(contract_path.read_text(encoding="utf-8")) or {}
-    except Exception as exc:
-        raise PacketDependencyError(
-            f"StateWork {statework_id!r} transition contract is invalid") from exc
-    declared_states = set(str(value) for value in contract.get("states") or ())
-    edges = list(contract.get("transitions") or ())
-    vocabulary = match.group(1)
-    pair_re = re.compile(
-        r"\b([A-Z][A-Z0-9_]*(?:\s*/\s*[A-Z][A-Z0-9_]*)*)\s*→\s*"
-        r"([A-Z][A-Z0-9_]*(?:\s*/\s*[A-Z][A-Z0-9_]*)*)\b")
-    for origin_text, destination_text in pair_re.findall(vocabulary):
-        origins = [part.strip() for part in origin_text.split("/")]
-        destinations = [part.strip() for part in destination_text.split("/")]
-        for origin in origins:
-            if origin not in declared_states:
-                raise PacketDependencyError(
-                    f"StateWork {statework_id!r} runtime capsule references undeclared state {origin!r}")
-            for destination in destinations:
-                if destination not in declared_states:
-                    raise PacketDependencyError(
-                        f"StateWork {statework_id!r} runtime capsule references undeclared state {destination!r}")
-                if not any(edge.get("from") in {origin, "*"}
-                           and edge.get("to") == destination for edge in edges):
-                    raise PacketDependencyError(
-                        f"StateWork {statework_id!r} runtime capsule references undeclared transition "
-                        f"{origin!r} -> {destination!r}")
-
-
 def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
 
@@ -503,7 +453,9 @@ def match_statework(stateworks: List[Dict[str, Any]], domains: Iterable[str],
     4. tie -> explicit ambiguity (never first-match)
     """
     if phase is not None:
-        stateworks = [m for m in stateworks if m.get("phase") == phase]
+        stateworks = [m for m in stateworks
+                      if phase in set(m.get("phase_tags") or
+                                      ([m.get("phase")] if m.get("phase") else []))]
     if not stateworks:
         return None, []
     domain_list = [d.strip() for d in domains if d.strip()]
@@ -1302,11 +1254,9 @@ class StateWorkPin:
     runtime_hash: str
     selected_flow: Optional[Tuple[str, str]]
     selected_specialists: Tuple[Tuple[str, str], ...]
-    transitions_hash: str = ""
-    transitions_contract: Mapping[str, Any] = field(default_factory=dict)
     workflow_engine_kind: str = "state_machine"
+    workflow_contract_version: str = ""
     workflow_contract_hash: str = ""
-    workflow_contract: Mapping[str, Any] = field(default_factory=dict)
     flow_selection: Mapping[str, Any] = field(default_factory=dict)
     subject_ref: Optional[str] = None
 
@@ -1326,11 +1276,9 @@ class StateWorkPin:
                 {"path": path, "content_hash": content_hash}
                 for path, content_hash in self.selected_specialists
             ],
-            "transitions_hash": self.transitions_hash,
-            "transitions_contract": _thaw(self.transitions_contract),
             "workflow_engine_kind": self.workflow_engine_kind,
+            "workflow_contract_version": self.workflow_contract_version,
             "workflow_contract_hash": self.workflow_contract_hash,
-            "workflow_contract": _thaw(self.workflow_contract),
             "flow_selection": _thaw(self.flow_selection),
             "subject_ref": self.subject_ref,
         }
@@ -1554,11 +1502,9 @@ def _policy_from_bundle(bundle: "RuntimeBundle") -> EffectivePolicy:
                            if item.get("selected_flow") else None),
             selected_specialists=tuple(
                 tuple(pair) for pair in item.get("selected_specialists", [])),
-            transitions_hash=item.get("transitions_hash", ""),
-            transitions_contract=item.get("transitions_contract", {}),
             workflow_engine_kind=str(item.get("workflow_engine_kind") or "state_machine"),
+            workflow_contract_version=str(item.get("workflow_contract_version") or ""),
             workflow_contract_hash=str(item.get("workflow_contract_hash") or ""),
-            workflow_contract=item.get("workflow_contract", {}),
             flow_selection=item.get("flow_selection", {}),
             subject_ref=item.get("subject_ref"))
         for item in bundle.stateworks
@@ -1730,24 +1676,22 @@ def select_statework_runtime(
     owner_root = _statework_root(cow_root, sw)
     compiled_engine = dict(sw.get("_compiled_engine") or {})
     engine_decl = dict(sw.get("engine") or {})
-    workflow_contract = compiled_engine.get("contract")
-    if not isinstance(workflow_contract, Mapping):
-        workflow_contract = sw.get("transitions_contract")
     engine_kind = str(compiled_engine.get("kind") or engine_decl.get("kind") or "state_machine")
     workflow_contract_hash = str(compiled_engine.get("contract_hash") or "")
-    if isinstance(workflow_contract, Mapping) and not workflow_contract_hash:
-        workflow_contract_hash = hashlib.sha256(json.dumps(
-            workflow_contract, sort_keys=True, separators=(",", ":"), default=str
-        ).encode("utf-8")).hexdigest()
+    workflow_contract_version = str(
+        compiled_engine.get("contract_version") or engine_decl.get("contract_version") or "")
+    if not workflow_contract_hash:
+        raise PacketDependencyError(
+            f"StateWork {sid!r} has no content-pinned workflow contract")
     item["workflow_engine_kind"] = engine_kind
-    item["workflow_contract"] = dict(workflow_contract or {})
+    item["workflow_contract_version"] = workflow_contract_version
     item["workflow_contract_hash"] = workflow_contract_hash
     item["flow_selection"] = dict(sw.get("flow_selection") or {})
-    runtime_path = owner_root / "runtime.md"
-    if not runtime_path.exists():
-        raise PacketDependencyError(f"StateWork {sid!r} is missing its runtime capsule")
-    runtime_text = runtime_path.read_text(encoding="utf-8")
-    runtime_hash = sha256(runtime_path)
+    runtime_text = str(sw.get("_runtime_capsule") or "")
+    runtime_hash = hashlib.sha256(runtime_text.encode("utf-8")).hexdigest()
+    if not runtime_text or runtime_hash != str(sw.get("_runtime_capsule_hash") or ""):
+        raise PacketDependencyError(
+            f"StateWork {sid!r} has no valid compiled runtime capsule")
     item["runtime_hash"] = runtime_hash
 
     capsules: Dict[str, Tuple[str, str]] = {
@@ -1847,11 +1791,10 @@ def select_statework_runtime(
                 raise PacketDependencyError(
                     f"StateWork {sid!r} selected specialists exceed budget "
                     f"({len(specialists)} > {budget_limit})")
-            item["flow_requirements"] = list(frontmatter.get("framework_requirements") or [])
-            item["flow_states"] = dict(frontmatter.get("states") or {})
+            item["flow_integrations"] = dict(frontmatter.get("integrations") or {})
             item["flow_metadata"] = {
                 key: frontmatter.get(key)
-                for key in ("flow", "when", "states", "framework_requirements",
+                for key in ("flow", "when", "integrations",
                             "required_specialists", "optional_specialists",
                             "completion", "fallback")
                 if key in frontmatter
@@ -1910,31 +1853,6 @@ def _statework_runtime_pins(
             continue
         item["subject_ref"] = statework_subject_refs.get(
             str(sw.get("id")), default_subject_ref)
-        if item.get("workflow_engine_kind") == "state_machine":
-            item["transitions_hash"] = item.get("workflow_contract_hash")
-            item["transitions_contract"] = dict(item.get("workflow_contract") or {})
-            transition_schema_path = cow_root / "schemas" / "transition-contract.schema.json"
-            if transition_schema_path.exists():
-                try:
-                    import jsonschema
-                    jsonschema.validate(instance=item["transitions_contract"],
-                                        schema=_load_json(transition_schema_path))
-                except Exception as exc:
-                    raise PacketDependencyError(
-                        f"StateWork {sw.get('id')!r} transition contract violates its schema") from exc
-            declared_states = set(item.get("transitions_contract", {}).get("states") or [])
-            flow_states = item.get("flow_states") or {}
-            referenced = set(flow_states.get("through") or [])
-            if referenced and not referenced.issubset(declared_states):
-                raise PacketDependencyError(
-                    f"StateWork {sw.get('id')!r} flow references undeclared states "
-                    f"{sorted(referenced - declared_states)}")
-            item["transition_requirements"] = sorted({
-                requirement
-                for edge in item["transitions_contract"].get("transitions", [])
-                if trigger is None or edge.get("trigger") == trigger
-                for requirement in edge.get("framework_requirements", [])
-            })
         enriched.append(item)
         capsules.update(selected)
     return enriched, capsules
@@ -2320,27 +2238,20 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
                 f"active StateWork {consumer_id!r} depends on inactive StateWork "
                 f"{sorted(unavailable)}")
 
-    # kernel = union(profile kernel, every active StateWork core_requirements)
-    # core_requirements may use owner names (anchor/dox); expand via aliases
-    # so the final kernel contains only concrete stage ids.
+    # Host integrations contribute runtime requirements without making CSW
+    # core understand any particular integration's capability vocabulary.
     merged = list(kernel_stages)
     for sw in enriched_stateworks:
-        for req in sw.get("core_requirements", []):
-            for concrete in expand([req], aliases):
-                if concrete not in merged:
-                    merged.append(concrete)
-        for req in sw.get("framework_enhancements", []):
-            for concrete in expand([req], aliases):
-                if concrete not in merged:
-                    merged.append(concrete)
-        for req in sw.get("flow_requirements", []):
-            for concrete in expand([req], aliases):
-                if concrete not in merged:
-                    merged.append(concrete)
-        for req in sw.get("transition_requirements", []):
-            for concrete in expand([req], aliases):
-                if concrete not in merged:
-                    merged.append(concrete)
+        integrations = [sw.get("integrations") or {},
+                        sw.get("flow_integrations") or {}]
+        for integration_set in integrations:
+            integration = integration_set.get("cognitiveframeworks", {})
+            requirements = (list(integration.get("required") or ())
+                            + list(integration.get("enhancements") or ()))
+            for req in requirements:
+                for concrete in expand([req], aliases):
+                    if concrete not in merged:
+                        merged.append(concrete)
     merged = requires_closure(merged, stages)
     kernel_ordered = order_kernel(merged, stages)
 
@@ -2411,8 +2322,11 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         cow_root, effective_actions)
     policy_documents["runtime_build_manifest_hash"] = (
         policy_documents["runtime_build_manifest"]["manifest_hash"])
-    policy_documents["statework_transitions"] = {
-        item["id"]: item.get("transitions_contract", {}) for item in enriched_stateworks
+    policy_documents["statework_workflows"] = {
+        item["id"]: {"engine_kind": item.get("workflow_engine_kind"),
+                     "contract_version": item.get("workflow_contract_version"),
+                     "contract_hash": item.get("workflow_contract_hash")}
+        for item in enriched_stateworks
     }
     statework_pins = tuple(
         StateWorkPin(id=item["id"], version=item["version"],
@@ -2423,11 +2337,9 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
                                     if item["selected_flow"] else None),
                      selected_specialists=tuple(
                          tuple(pair) for pair in item["selected_specialists"]),
-                     transitions_hash=item.get("transitions_hash", ""),
-                     transitions_contract=item.get("transitions_contract", {}),
                      workflow_engine_kind=str(item.get("workflow_engine_kind") or "state_machine"),
+                     workflow_contract_version=str(item.get("workflow_contract_version") or ""),
                      workflow_contract_hash=str(item.get("workflow_contract_hash") or ""),
-                     workflow_contract=item.get("workflow_contract", {}),
                      flow_selection=item.get("flow_selection", {}),
                      subject_ref=item.get("subject_ref"))
         for item in enriched_stateworks

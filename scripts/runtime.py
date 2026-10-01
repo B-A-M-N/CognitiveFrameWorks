@@ -1062,7 +1062,7 @@ class CSWStateAuthority(StateAuthority):
                  workflow_id: str = "default-workflow",
                  statework_memberships: Optional[Mapping[str, Mapping[str, Any]]] = None) -> None:
         self.root = Path(root)
-        self.control = _statework_transition_engines(self.root)
+        self.control = _load_statework_control_plane(self.root)
         self.compiled_registry = self.control.load_compiled_registry(self.root)
         self.state_store = self.control.SubjectStateStore(
             Path(state_path) if state_path else self.root / "state" / "subjects.json")
@@ -1940,8 +1940,8 @@ class RuntimeSession:
                 raise PermissionError("child route reordered or replaced StateWorks")
             if left.get("id") == target_statework_id:
                 parent_target, child_target = left, right
-                flow_derived_fields = {"selected_flow", "flow_requirements",
-                                       "flow_metadata", "flow_states"}
+                flow_derived_fields = {"selected_flow", "flow_integrations",
+                                       "flow_metadata"}
                 for key in set(left) | set(right):
                     if (key not in flow_derived_fields
                             and left.get(key) != right.get(key)):
@@ -2372,18 +2372,14 @@ class RuntimeSession:
         snapshots: list[dict[str, Any]] = []
         for statework in self.bundle.stateworks:
             statework_id = str(statework.get("id") or "")
-            engine_kind = str(statework.get("workflow_engine_kind") or "state_machine")
-            contract = (statework.get("transitions_contract") or {}
-                        if engine_kind == "state_machine"
-                        else statework.get("workflow_contract") or {})
             bound_subject = str(statework.get("subject_ref") or subject or "")
             state = self.statework_states.get((statework_id, bound_subject))
             revision = None
             if self.state_authority is not None and bound_subject:
                 try:
-                    contract_hash = str(statework.get("workflow_contract_hash") or
-                        hashlib.sha256(json.dumps(contract, sort_keys=True,
-                            separators=(",", ":"), default=str).encode("utf-8")).hexdigest())
+                    contract_hash = str(statework.get("workflow_contract_hash") or "")
+                    if not contract_hash:
+                        raise ValueError("StateWork has no pinned workflow contract identity")
                     authoritative = self.state_authority.inspect_workflow(
                         statework_id=statework_id, subject_ref=bound_subject,
                         contract_hash=contract_hash)
@@ -2485,17 +2481,13 @@ class RuntimeSession:
         try:
             for statework in self.bundle.stateworks:
                 statework_id = str(statework.get("id") or "")
-                engine_kind = str(statework.get("workflow_engine_kind") or "state_machine")
-                contract = (statework.get("transitions_contract") or {}
-                            if engine_kind == "state_machine"
-                            else statework.get("workflow_contract") or {})
                 subject = str(statework.get("subject_ref")
                               or self.bundle.policy.subject_ref or "")
                 if not subject:
                     raise ValueError(f"StateWork {statework_id!r} has no bound subject")
-                contract_hash = str(statework.get("workflow_contract_hash") or
-                    hashlib.sha256(json.dumps(contract, sort_keys=True,
-                        separators=(",", ":"), default=str).encode("utf-8")).hexdigest())
+                contract_hash = str(statework.get("workflow_contract_hash") or "")
+                if not contract_hash:
+                    raise ValueError(f"StateWork {statework_id!r} has no pinned workflow contract")
                 key = (statework_id, subject)
                 inspect_workflow = getattr(self.state_authority, "inspect_workflow", None)
                 if callable(inspect_workflow):
@@ -3159,7 +3151,7 @@ class RuntimeSession:
         self._require_host(capability)
         if not isinstance(observation_context, Mapping) or not observation_context:
             raise ValueError("repository truth requires trusted freshness context")
-        control = _statework_transition_engines(
+        control = _load_statework_control_plane(
             Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
         store = control.PacketStore(
             packet_registry_path=Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
@@ -3397,7 +3389,7 @@ class RuntimeSession:
         if observation_type in AUTHORITATIVE_EVIDENCE_KINDS:
             raise ValueError(
                 f"{observation_type} is registered transition authority; use its typed host adapter")
-        control = _statework_transition_engines(
+        control = _load_statework_control_plane(
             Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
         evidence_registry = control.load_evidence_kind_registry(
             Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
@@ -3426,7 +3418,7 @@ class RuntimeSession:
         if not isinstance(content, Mapping) or not content:
             raise ValueError("StateWork evidence requires non-empty host-captured content")
         root = Path(self.bundle.statework_root or resolve_runtime.COW_ROOT)
-        control = _statework_transition_engines(root)
+        control = _load_statework_control_plane(root)
         registry = control.load_evidence_kind_registry(root / "schemas" / "evidence-kinds.yaml")
         spec = (registry.get("kinds") or {}).get(evidence_type)
         if not spec or spec.get("mintable_by_host") is not True:
@@ -3746,7 +3738,12 @@ class RuntimeSession:
                                 trigger: Optional[str] = None,
                                 evidence_refs: Optional[List[str]] = None,
                                 input_state: Optional[str] = None) -> GateDecision:
-        """Structurally enforce active StateWork machine transitions."""
+        """Compatibility adapter for callers that still speak in states.
+
+        Workflow semantics belong to CSW. This adapter translates a legacy
+        destination-state request into an opaque step ID, then delegates the
+        operation to the engine-neutral workflow API.
+        """
         for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
             if enforcement.get("mode") not in {"structural", "state_transition"}:
                 continue
@@ -3762,37 +3759,24 @@ class RuntimeSession:
                     return GateDecision.REQUIRE_REINSPECTION
         statework = next((item for item in self.bundle.stateworks
                           if item.get("id") == statework_id), None)
-        if statework is None:
-            self._emit_runtime({"category": "state_transition", "event_type": "transition_attempted",
-                       "subject": subject_ref, "input_state": input_state,
-                       "output_state": output_state,
-                       "payload": {"summary": "unknown StateWork", "result_class": "blocked"}})
-            return GateDecision.BLOCK
-        bound_subject = statework.get("subject_ref") or self.bundle.policy.subject_ref
-        if bound_subject and str(bound_subject) != subject_ref:
-            return GateDecision.BLOCK
-        active_ids = getattr(self, "active_statework_ids", set())
-        if active_ids and statework_id not in active_ids:
+        if statework is None or statework_id not in self.active_statework_ids:
             self._emit_runtime({"category": "blocker", "event_type": "inactive_statework_transition",
                        "subject": subject_ref,
-                       "payload": {"summary": statework_id[:128], "result_class": "blocked"}})
+                       "payload": {"summary": str(statework_id)[:128],
+                                   "result_class": "blocked"}})
             return GateDecision.BLOCK
-        if not self._membership_current(statework_id, subject_ref):
-            return GateDecision.BLOCK
-        contract = statework.get("transitions_contract") or {}
-        if not contract:
-            raise ValueError(f"StateWork {statework_id!r} has no pinned transition contract")
-        state_key = (statework_id, subject_ref)
-        contract_hash = hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
         if self.state_authority is None or not all(callable(getattr(self.state_authority, name, None))
-                for name in ("inspect_workflow", "resolve_legacy_step", "apply_workflow_step")):
+                for name in ("inspect_workflow", "resolve_legacy_step")):
             self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_unavailable",
                        "subject": subject_ref,
                        "payload": {"summary": "generic WorkflowAuthority is unavailable",
                                    "result_class": "blocked"}})
             return GateDecision.BLOCK
+        contract_hash = str(statework.get("workflow_contract_hash") or "")
+        if not contract_hash:
+            raise ValueError(f"StateWork {statework_id!r} has no pinned workflow contract")
         try:
-            authoritative = self.state_authority.inspect_workflow(
+            snapshot = self.state_authority.inspect_workflow(
                 statework_id=statework_id, subject_ref=subject_ref,
                 contract_hash=contract_hash)
         except Exception as exc:
@@ -3800,113 +3784,27 @@ class RuntimeSession:
                        "subject": subject_ref,
                        "payload": {"summary": str(exc)[:512], "result_class": "blocked"}})
             return GateDecision.BLOCK
-        current = str(authoritative.current_state or contract["initial_state"])
-        authoritative_revision = int(authoritative.revision or 0)
-        if input_state is not None and input_state != current:
+        if input_state is not None and input_state != snapshot.current_state:
             self._emit_runtime({"category": "blocker", "event_type": "state_conflict",
                        "subject": subject_ref, "input_state": input_state,
                        "output_state": output_state,
                        "payload": {"summary": "tracked state differs from asserted origin",
                                    "result_class": "re-observation required"}})
             return GateDecision.REQUIRE_REINSPECTION
-        origin = input_state or current
         try:
-            verified_evidence = self.ledger.resolve(
-                list(evidence_refs or []), subject_ref=subject_ref)
             step_id = self.state_authority.resolve_legacy_step(
                 statework_id=statework_id, subject_ref=subject_ref,
                 contract_hash=contract_hash, to_state=output_state,
                 trigger=trigger)
         except ValueError as exc:
-            self._emit_runtime({"category": "blocker", "event_type": "unverified_evidence",
+            self._emit_runtime({"category": "blocker", "event_type": "legacy_workflow_step_unavailable",
                        "subject": subject_ref,
                        "payload": {"summary": str(exc)[:512], "result_class": "blocked"}})
             return GateDecision.BLOCK
-        try:
-            decision = self.state_authority.apply_workflow_step(
-                statework_id=statework_id, subject_ref=subject_ref,
-                contract_hash=contract_hash, step_id=step_id,
-                expected_revision=authoritative_revision,
-                evidence_records=verified_evidence)
-        except Exception as exc:
-            self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_conflict",
-                       "subject": subject_ref, "input_state": origin,
-                       "output_state": output_state,
-                       "payload": {"summary": str(exc)[:512],
-                                   "result_class": "re-inspection required"}})
-            return GateDecision.REQUIRE_REINSPECTION
-        transition_facts = decision.to_dict()
-        transition_facts.update({"edge_id": step_id, "trigger": trigger,
-                                 "current_state": decision.current_state,
-                                 "previous_state": decision.previous_state})
-        self._emit_runtime({"category": "state_transition", "event_type": "transition_attempted",
-                   "subject": subject_ref, "input_state": origin, "output_state": output_state,
-                   "payload": {"summary": decision.reason,
-                               "result_class": "allowed" if decision.allowed else "blocked"}})
-        if not decision.allowed:
-            return GateDecision.BLOCK
-        authoritative_revision = int(decision.revision or authoritative_revision + 1)
-        manifest = statework
-        prior_revision = sum(
-            1 for item in self.state_segments
-            if item.statework_id == statework_id and item.subject_ref == subject_ref)
-        transition_facts.update({
-            "trigger": trigger,
-            "revision": (authoritative_revision if self.state_authority is not None
-                         else prior_revision + 1),
-            "domain": str(manifest.get("domain") or "") or None,
-            "purpose": str(manifest.get("purpose") or "") or None,
-        })
-        self.statework_states[state_key] = output_state
-        self.metacognitive_state.record_csw_fact(
-            statework_id=statework_id, input_state=origin, output_state=output_state,
-            progress_class=str(transition_facts.get("progress_class") or "LATERAL"),
-            workflow_metadata=transition_facts, subject_ref=subject_ref)
-        self._journal("system_one_projection_changed",
-                      snapshot=self.metacognitive_state.snapshot())
-        entry_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        self.statework_entry_times[state_key] = entry_time
-        state_segment = StateSegment(
-            segment_id=f"segment-{uuid.uuid4()}", task_id=self.bundle.task_id,
-            subject_ref=subject_ref, input_state=origin, output_state=output_state,
-            evidence_refs=tuple(item["ref"] for item in verified_evidence),
-            recorded_at=entry_time, statework_id=statework_id)
-        self.state_segments.append(StateSegment(
-            segment_id=state_segment.segment_id, task_id=state_segment.task_id,
-            subject_ref=state_segment.subject_ref, input_state=state_segment.input_state,
-            output_state=state_segment.output_state,
-            evidence_refs=state_segment.evidence_refs,
-            recorded_at=state_segment.recorded_at, statework_id=state_segment.statework_id))
-        csw_progress_class = str(transition_facts.get("progress_class") or "LATERAL")
-        progress_class = "WORKFLOW_PROGRESS"
-        if self.convergence is not None:
-            progress_digest = hashlib.sha256(json.dumps({
-                "statework_id": statework_id, "subject_ref": subject_ref,
-                "input_state": origin, "output_state": output_state,
-                "edge_id": transition_facts.get("edge_id"),
-            }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-            self.convergence.record_progress(
-                cause_id="primary-objective", progress_digest=progress_digest,
-                progress_class="WORKFLOW_PROGRESS",
-                evidence_ref=(verified_evidence[-1]["ref"] if verified_evidence else None))
-        self._journal("state_transition_allowed", statework_id=statework_id,
-                      subject_ref=subject_ref, input_state=origin,
-                      output_state=output_state, evidence_refs=[item["ref"] for item in verified_evidence],
-                      recorded_at=entry_time, segment_id=state_segment.segment_id,
-                      transition=transition_facts,
-                      progress_class=progress_class,
-                      csw_progress_class=csw_progress_class)
-        self._record_convergence("state_transition_progress")
-        self._emit_runtime({
-            "category": "state_transition", "event_type": "state_transition_progress",
-            "subject": subject_ref,
-            "input_state": origin, "output_state": output_state,
-            "evidence_refs": [item["ref"] for item in verified_evidence],
-            "payload": {"summary": "CSW transition progress is tracked separately from task-goal progress",
-                        "result_class": progress_class.lower(),
-                        "progress_class": progress_class,
-                        "csw_progress_class": csw_progress_class}})
-        return GateDecision.ALLOW
+        return self.record_workflow_step(
+            statework_id, subject_ref, step_id,
+            evidence_refs=evidence_refs,
+            expected_revision=int(snapshot.revision))
 
     def record_workflow_step(self, statework_id: str, subject_ref: str,
                              step_id: str, *,
@@ -3933,9 +3831,8 @@ class RuntimeSession:
                        "payload": {"summary": "generic WorkflowAuthority is unavailable",
                                    "result_class": "blocked"}})
             return GateDecision.BLOCK
-        contract = statework.get("workflow_contract") or {}
         contract_hash = str(statework.get("workflow_contract_hash") or "")
-        if not contract or not contract_hash:
+        if not contract_hash:
             raise ValueError(f"StateWork {statework_id!r} has no pinned workflow contract")
         try:
             snapshot = authority.inspect_workflow(
@@ -4037,9 +3934,10 @@ class RuntimeSession:
         self._require_host(capability)
         if packet.get("task_id") != self.bundle.task_id:
             raise ValueError("handoff packet belongs to another task")
-        expected_subject = self.bundle.policy.subject_ref
+        expected_subject = (self.current_segment.subject_ref
+                            or self.bundle.policy.subject_ref)
         if not expected_subject or packet.get("subject_ref") != expected_subject:
-            raise ValueError("handoff packet subject is not the authoritative task subject")
+            raise ValueError("handoff packet subject is not the active StateWork subject")
         active_producer = self.current_segment.statework_id
         if not self._authoritative_state_ready():
             raise PermissionError("shared StateWork authority is unavailable for handoff")
@@ -4054,16 +3952,27 @@ class RuntimeSession:
         if not evidence_refs:
             raise ValueError("host handoffs require observed evidence references")
         self.ledger.resolve(list(evidence_refs), subject_ref=packet.get("subject_ref"))
-        transition_contract = next(
-            (item.get("transitions_contract") for item in self.bundle.stateworks
-             if item.get("id") == active_producer), {}) or {}
-        current_state = self.statework_states.get(
-            (active_producer, packet.get("subject_ref")))
-        if transition_contract and current_state not in set(
-                transition_contract.get("completion_states") or ()):
-            raise PermissionError("handoff requires the producer StateWork to reach a terminal state")
+        producer_workflow = next(
+            (item for item in self.bundle.stateworks
+             if item.get("id") == active_producer), None)
+        if producer_workflow is None:
+            raise PermissionError("handoff producer has no active workflow contract")
+        contract_hash = str(producer_workflow.get("workflow_contract_hash") or "")
+        workflow_complete = False
+        if self.state_authority is not None and contract_hash:
+            snapshot = self.state_authority.inspect_workflow(
+                statework_id=str(active_producer), subject_ref=expected_subject,
+                contract_hash=contract_hash)
+            workflow_complete = bool(snapshot.completed)
+        else:
+            workflow_fact = next((item for item in self.metacognitive_state.workflows
+                                  if item.statework_id == active_producer
+                                  and item.subject_ref == expected_subject), None)
+            workflow_complete = bool(workflow_fact and workflow_fact.completed)
+        if not workflow_complete:
+            raise PermissionError("handoff requires the producer workflow to be complete")
         if self._packet_store is None:
-            control = _statework_transition_engines(
+            control = _load_statework_control_plane(
                 Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
             packet_root = resolve_runtime.runtime_state_dir() / "packets"
             safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.bundle.task_id)[:128] or "task"
@@ -4108,7 +4017,7 @@ class RuntimeSession:
                         expected_subject_ref: str,
                         observation_context: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         if self._packet_store is None:
-            control = _statework_transition_engines(
+            control = _load_statework_control_plane(
                 Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
             packet_root = resolve_runtime.runtime_state_dir() / "packets"
             safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.bundle.task_id)[:128] or "task"
@@ -4840,45 +4749,23 @@ class RuntimeSession:
         except ValueError as exc:
             raise PermissionError(f"completion permit criterion evidence is invalid: {exc}") from exc
         for statework in self.bundle.stateworks:
-            statework_id = statework.get("id")
-            contract = statework.get("transitions_contract") or {}
-            completion_states = set(contract.get("completion_states") or ())
-            flow_completion = ((statework.get("flow_metadata") or {}).get(
-                "completion") or {}).get("claim_classes") or {}
-            goal_criteria = [
-                item for item in (goal_contract.get("acceptance_criteria") or ())
-                if item.get("required", True)]
-            applicable = [flow_completion.get(
-                "static_visual" if str(item.get("kind") or "") == "visual_static"
-                else str(item.get("kind") or ""))
-                          for item in goal_criteria]
-            applicable = [item for item in applicable if isinstance(item, Mapping)]
-            if applicable:
-                required_states = [str(item.get("minimum_state") or "")
-                                   for item in applicable if item.get("minimum_state")]
-                normal_rank = {str(state): index for index, state in enumerate(
-                    contract.get("normal_path") or ())}
-                minimum_rank = max((normal_rank.get(state, 0) for state in required_states),
-                                   default=0)
-                required_state = max(required_states,
-                                     key=lambda state: normal_rank.get(state, 0),
-                                     default="")
-                current_state = self.statework_states.get(
-                    (statework_id, permit.subject_ref))
-                if current_state is None or normal_rank.get(current_state, -1) < minimum_rank:
-                    raise PermissionError(
-                        f"cannot finalize before StateWork {statework_id!r} reaches {required_state!r}")
-                continue
-            if not completion_states:
-                continue
-            state = self.statework_states.get((statework_id, permit.subject_ref))
-            if self.runtime_mode == "combined_enforcing":
-                if not self._authoritative_state_ready():
-                    raise PermissionError("shared StateWork authority is unavailable for completion")
-                state = self.statework_states.get((statework_id, permit.subject_ref))
-            if state not in completion_states:
+            statework_id = str(statework.get("id") or "")
+            subject_ref = str(statework.get("subject_ref") or permit.subject_ref)
+            contract_hash = str(statework.get("workflow_contract_hash") or "")
+            complete = False
+            if self.state_authority is not None and contract_hash:
+                snapshot = self.state_authority.inspect_workflow(
+                    statework_id=statework_id, subject_ref=subject_ref,
+                    contract_hash=contract_hash)
+                complete = bool(snapshot.completed)
+            else:
+                workflow_fact = next((item for item in self.metacognitive_state.workflows
+                                      if item.statework_id == statework_id
+                                      and item.subject_ref == subject_ref), None)
+                complete = bool(workflow_fact and workflow_fact.completed)
+            if not complete:
                 raise PermissionError(
-                    f"cannot finalize before StateWork {statework_id!r} reaches a terminal state")
+                    f"cannot finalize before StateWork {statework_id!r} is complete")
         self._journal("task_finished", subject_ref=permit.subject_ref,
                       claim_digest=permit.claim_digest)
         return self._render_output(output, complete=True, **kwargs)
@@ -5590,7 +5477,7 @@ def resume_task(bundle: resolve_runtime.RuntimeBundle, session_nonce: str, **kwa
     return start(bundle, session_nonce=session_nonce, resume=True, **kwargs)
 
 
-def _statework_transition_engines(cow_root: Optional[Path] = None):
+def _load_statework_control_plane(cow_root: Optional[Path] = None):
     """Load validated machine transition contracts for active StateWorks."""
     global _STATEWORK_TRANSITIONS
     root = Path(cow_root or resolve_runtime.COW_ROOT).resolve()
