@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Host runtime adapter for CognitiveFrameWorks.
+"""Task-local enforcement runtime for CognitiveFrameWorks.
 
-This is the convergence point the review requires: the CLI resolver is a
-debugging front end; the actual agent/harness calls the Python API.
+The CLI resolver is a debugging front end; the actual agent/harness calls the
+Python API. CFW owns its component lifecycle, action authorization, and
+evidence-bound enforcement. When DigitalPsychology is enabled, its separate
+runtime host owns cross-system behavioral orchestration and reaches CFW through
+the explicit adapter in ``scripts/digital_psychology_adapter.py``.
 
     TaskRequest -> resolve() -> RuntimeBundle -> runtime.start(bundle)
 
@@ -1228,7 +1231,7 @@ class CSWStateAuthority(StateAuthority):
 
 @dataclass
 class RuntimeSession:
-    """A started task runtime: injected instructions + hooks."""
+    """A started CFW enforcement session: injected components + action hooks."""
     bundle: resolve_runtime.RuntimeBundle
     injected: Dict[str, str] = field(default_factory=dict)
     telemetry: List[TelemetrySink] = field(default_factory=list)
@@ -1414,7 +1417,9 @@ class RuntimeSession:
         return "\n".join(lines)
 
     def before_model_call(self, *, tool_capable: bool = False,
-                          action_hint: Optional[Mapping[str, Any]] = None) -> str:
+                          action_hint: Optional[Mapping[str, Any]] = None,
+                          behavior_context: str = "",
+                          active_statework_ids: Optional[Sequence[str]] = None) -> str:
         if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
@@ -1426,9 +1431,12 @@ class RuntimeSession:
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
             self._emit_lifecycle_activations(prior)
-        return context_for(self)
+        return context_for(self, behavior_context=behavior_context,
+                           active_statework_ids=active_statework_ids)
 
-    def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None) -> str:
+    def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None,
+                             *, behavior_context: str = "",
+                             active_statework_ids: Optional[Sequence[str]] = None) -> str:
         if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
@@ -1436,7 +1444,8 @@ class RuntimeSession:
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
             self._emit_lifecycle_activations(prior)
-        return context_for(self)
+        return context_for(self, behavior_context=behavior_context,
+                           active_statework_ids=active_statework_ids)
 
     def artifact_processed(self) -> None:
         if self.lifecycle is not None:
@@ -5541,11 +5550,23 @@ def _sispis_calibration():
     return _SISPIS_CALIBRATION
 
 
-def context_for(session: RuntimeSession) -> str:
+def context_for(session: RuntimeSession, *, behavior_context: str = "",
+                active_statework_ids: Optional[Sequence[str]] = None) -> str:
     """The model-visible instruction context: kernel order + injected
     capsules + guard rules. This is what measuring 'the final prompt
     actually injected' means — not the bundle JSON file."""
     parts: List[str] = []
+    if active_statework_ids is not None:
+        if (not isinstance(active_statework_ids, (tuple, list, set, frozenset))
+                or len(active_statework_ids) > 32
+                or any(not isinstance(item, str) or not item or len(item) > 128
+                       for item in active_statework_ids)
+                or len(active_statework_ids) != len(set(active_statework_ids))):
+            raise ValueError("external active StateWork IDs are malformed")
+        available_stateworks = {str(item.get("id") or "")
+                                for item in session.bundle.stateworks}
+        if not set(active_statework_ids).issubset(available_stateworks):
+            raise ValueError("external active StateWork IDs escape the pinned bundle")
     goal = session.bundle.pinned.get("goal_contract") or {}
     if goal:
         criteria = list(goal.get("acceptance_criteria") or ())
@@ -5604,11 +5625,14 @@ def context_for(session: RuntimeSession) -> str:
                 continue
             seen_capsules.add(identity)
             parts.append(f"\n===== {stage_id.upper()} =====\n{capsule}")
-    active_ids = session.active_statework_ids
+    filter_stateworks = active_statework_ids is not None or bool(
+        session.active_statework_ids)
+    active_ids = (session.active_statework_ids if active_statework_ids is None
+                  else set(active_statework_ids))
     for key, capsule in session.injected.items():
         if not key.startswith("statework"):
             continue
-        if active_ids and not any(
+        if filter_stateworks and not any(
                 key.startswith(f"statework:{sid}")
                 or key.startswith(f"statework-flow:{sid}:")
                 or key.startswith(f"statework-specialist:{sid}:")
@@ -5639,6 +5663,10 @@ def context_for(session: RuntimeSession) -> str:
     action_hint = session._action_strategy_hint()
     if action_hint:
         parts.append(action_hint)
+    if behavior_context:
+        if not isinstance(behavior_context, str) or len(behavior_context) > 32_768:
+            raise ValueError("external behavioral context must be bounded text")
+        parts.append(behavior_context)
     return "\n".join(parts)
 
 

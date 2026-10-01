@@ -1,32 +1,32 @@
 # CognitiveFrameWorks
 
-> **Behavioral policy and runtime governance for AI agents.**
-> Define how an agent should reason, act, verify, recover, and communicate — without turning every task into a wall of instructions.
+> **Cognitive components and enforcement for AI agents.**
+> Compose reusable reasoning, action, evidence, recovery, and communication mechanisms for each task.
 
-CognitiveFrameWorks (CFW) is the **behavioral control layer** of a larger closed-loop architecture for building more reliable AI agents.
+CognitiveFrameWorks (CFW) is the **cognitive component and enforcement layer** of a larger closed-loop architecture for building more reliable AI agents. DigitalPsychology owns cross-system behavioral adaptation when enabled; CFW keeps its component contracts and action authority.
 
 It began with a simple observation: agent failures are often recurrent.
 
 Models would repeatedly make the same classes of mistakes — acting before inspecting, overclaiming what evidence proved, widening scope, persisting with failed approaches, using tools unsafely, losing state across long sessions, or communicating conclusions with more confidence than the evidence justified.
 
-Rather than correcting those behaviors one conversation at a time, CognitiveFrameWorks turns them into explicit, reusable behavioral policy.
+Rather than correcting those behaviors one conversation at a time, CognitiveFrameWorks turns them into explicit, reusable cognitive mechanisms and enforceable constraints.
 
-Over time, that grew from a collection of behavioral protocols into a host-integrated runtime capable of composing only the policies a task actually needs, enforcing structural constraints around actions, tracking evidence and authority, coordinating with domain StateWorks, and emitting behavioral telemetry for later analysis.
+Over time, that grew from a collection of behavioral protocols into a host-integrated runtime capable of composing the components a task needs, enforcing structural constraints around actions, tracking evidence and authority, consuming CSW-authorized workflows, and emitting behavioral signals for later analysis.
 
 **CFW answers one primary question:**
 
-> **How should this agent behave while doing the work?**
+> **Which cognitive components and enforcement rules apply while this agent works?**
 
 ## Current implementation
 
-CognitiveFrameWorks is implemented as a host-owned runtime and policy compiler:
+CognitiveFrameWorks is implemented as task-local enforcement and a component policy compiler:
 
 - **Task policy resolution** freezes an immutable policy snapshot for each task.
 - **Capability composition** supports CFW-only, CFW + CSW, and CFW + DP deployments. A missing StateWork checkout does not prevent an ordinary CFW-only task from resolving.
 - **Safe adaptive advice** is applied only after the host computes eligible choices. Mandatory stages such as `WARD` cannot be suppressed, and malformed or ineligible advice is rejected as a whole.
 - **Action authority** remains host-owned. `ActionStrategy` provides bounded preference hints, but every action still passes the structural action gate.
 - **Evidence and telemetry** are separated: the runtime keeps local NDJSON telemetry, while the optional exporter provides bounded, cursor-based, event-ID-idempotent delivery to an external service.
-- **StateWork integration** validates explicit and learned flows against the same operation, trigger, shape, and current-state selectors.
+- **StateWork integration** accepts only workflows eligible under CSW's current authoritative selection and delegates legal state transitions and evidence checks to CSW.
 
 The public-beta gate is the authoritative automated release gate. It covers structural acceptance, cross-system integration, packaging, installation, upgrade, hostile-install, CSW, and DP behavior. Real-model reasoning claims still require running `scripts/acceptance-real-agent.py` with an explicitly supplied external agent command; deterministic tests do not substitute for that qualification.
 
@@ -55,8 +55,8 @@ The example resolves an `implement` task, shows the host action gate decision, a
 ## Optional integrations
 
 - **CFW alone:** required for the example above. No CSW or DP installation is loaded.
-- **CFW + CSW:** point `--statework-root` at a CognitiveStateWorks checkout. CFW composes only eligible StateWorks and enforces their transition contracts.
-- **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. DP supplies bounded preferences only; CFW remains the authority for eligibility, permissions, and mandatory stages.
+- **CFW + CSW:** point `--statework-root` at a CognitiveStateWorks checkout. CSW owns workflow selection, state, evidence, and legal transitions; CFW supplies compatible component context and action gates.
+- **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, `RuntimeTaskHandle.digital_psychology_adapter()` exposes bounded CFW signals, reversible directives, and context projection to DP's runtime host. CFW still enforces permissions and mandatory stages.
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
@@ -66,9 +66,9 @@ CognitiveFrameWorks is one of three complementary systems:
 
 | System | Primary question | Role |
 | --- | --- | --- |
-| **CognitiveFrameWorks** | **How should the agent behave?** | Reasoning policy, execution discipline, authority, evidence, recovery, communication |
-| **CognitiveStateWorks** | **What behavior and transitions are appropriate now?** | Domain state, workflow legality, transition requirements, handoffs, recovery |
-| **DigitalPsychology** | **Why is the agent behaving this way under these conditions?** | Behavioral observation, trajectory analysis, experimentation, longitudinal learning |
+| **CognitiveFrameWorks** | **Which cognitive mechanisms and guards are available?** | Reusable reasoning components, execution discipline, authority, evidence, recovery, communication |
+| **CognitiveStateWorks** | **Which workflow states and transitions are legal now?** | Domain state, workflow legality, transition requirements, handoffs, recovery |
+| **DigitalPsychology** | **How should behavior adapt, and did the intervention improve progress?** | Behavioral observation, intervention control, outcome attribution, and longitudinal learning |
 
 Together they form a **closed-loop cognitive-behavioral control architecture**:
 
@@ -87,7 +87,7 @@ Together they form a **closed-loop cognitive-behavioral control architecture**:
                        │                                     │
                        ▼                                     ▼
              CognitiveFrameWorks                    CognitiveStateWorks
-             behavioral policy                      operational state
+             cognitive components                   authoritative workflow state
              reasoning & action                     legal transitions
              evidence & authority                   evidence requirements
                        │                                     │
@@ -107,7 +107,7 @@ A behavioral problem should not automatically become another paragraph in the mo
 
 ## What CognitiveFrameWorks governs
 
-CFW owns the **prescriptive behavioral layer**.
+CFW owns reusable cognitive components and their enforcement contracts. DP owns the cross-component behavioral state and adaptation policy.
 
 It governs things such as:
 
@@ -213,7 +213,7 @@ A key invariant is:
 
 > **Behavioral learning may refine legal choices. It must not make an illegal choice legal.**
 
-DigitalPsychology may eventually provide evidence that a particular flow, specialist, stage, or optional intervention is counterproductive in a particular context.
+DigitalPsychology can provide evidence that a particular flow, specialist, stage, or optional intervention is counterproductive in a particular context.
 
 CFW can use that evidence to prefer or suppress an eligible route.
 
@@ -307,9 +307,14 @@ The StateWork transition contract determines what evidence is required to reach 
 
 ## DigitalPsychology integration
 
-DigitalPsychology consumes CFW's behavioral telemetry and evaluates actual behavior across tasks and sessions.
+DigitalPsychology's runtime host consumes CFW's bounded signals, projects its
+revisioned behavioral state into CFW model and planning contexts, and measures
+the result against host and CSW evidence. CFW's `CFWBehaviorAdapter` is an
+explicit capability returned by `RuntimeTaskHandle.digital_psychology_adapter()`;
+it does not patch or replace the CFW session. Every action continues through
+CFW's own authority gate.
 
-Its validated output may eventually become one of two things:
+Validated long-run findings can later become one of two things:
 
 ### Structural behavioral guards
 

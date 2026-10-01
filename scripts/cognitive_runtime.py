@@ -1,11 +1,11 @@
 """Host-facing Cognitive Runtime interceptor API.
 
-This is the integration boundary for an agent host.  DigitalPsychology can
-observe the resulting telemetry and receipts, but it is not required to run
-the enforcement path.  The host process and its protected same-user runtime
-directory are the trusted computing base; same-process Python is not an
-untrusted security boundary.  Untrusted plugins must use an external
-IPC/RPC gateway as described in ``SECURITY.md``.
+CFW remains authoritative for task-local action gates and evidence-bound
+enforcement. DigitalPsychology can coordinate behavioral changes through the
+separate ``digital_psychology_adapter`` capability. The host process and its
+protected same-user runtime directory are the trusted computing base;
+same-process Python is not an untrusted security boundary. Untrusted plugins
+must use an external IPC/RPC gateway as described in ``SECURITY.md``.
 """
 from __future__ import annotations
 
@@ -53,12 +53,20 @@ class AgentSessionHandle:
         return self._session_token
 
     def before_model_call(self, *, tool_capable: bool = False,
-                          action_hint: Optional[Mapping[str, Any]] = None) -> str:
+                          action_hint: Optional[Mapping[str, Any]] = None,
+                          behavior_context: str = "",
+                          active_statework_ids: Optional[Iterable[str]] = None) -> str:
         return _resolve_host_session(self._session_token).before_model_call(
-            tool_capable=tool_capable, action_hint=action_hint)
+            tool_capable=tool_capable, action_hint=action_hint,
+            behavior_context=behavior_context,
+            active_statework_ids=active_statework_ids)
 
-    def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None) -> str:
-        return _resolve_host_session(self._session_token).before_tool_planning(action_hint)
+    def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None,
+                             *, behavior_context: str = "",
+                             active_statework_ids: Optional[Iterable[str]] = None) -> str:
+        return _resolve_host_session(self._session_token).before_tool_planning(
+            action_hint, behavior_context=behavior_context,
+            active_statework_ids=active_statework_ids)
 
     def request_action(self, action: Mapping[str, Any]):
         return _resolve_host_session(self._session_token).before_action(dict(action))
@@ -77,6 +85,7 @@ class RuntimeTaskHandle:
 
     def __init__(self, session_token: str) -> None:
         self._session_token = session_token
+        self._digital_psychology_adapter = None
 
     @property
     def session_id(self) -> str:
@@ -100,11 +109,29 @@ class RuntimeTaskHandle:
         return MappingProxyType({key: dict(value) for key, value in session.route_decisions.items()})
 
     def before_model_call(self, *, tool_capable: bool = False,
-                          action_hint: Optional[Mapping[str, Any]] = None) -> str:
-        return self.agent.before_model_call(tool_capable=tool_capable, action_hint=action_hint)
+                          action_hint: Optional[Mapping[str, Any]] = None,
+                          behavior_context: str = "",
+                          active_statework_ids: Optional[Iterable[str]] = None) -> str:
+        return self.agent.before_model_call(
+            tool_capable=tool_capable, action_hint=action_hint,
+            behavior_context=behavior_context,
+            active_statework_ids=active_statework_ids)
 
-    def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None) -> str:
-        return self.agent.before_tool_planning(action_hint)
+    def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None,
+                             *, behavior_context: str = "",
+                             active_statework_ids: Optional[Iterable[str]] = None) -> str:
+        return self.agent.before_tool_planning(
+            action_hint, behavior_context=behavior_context,
+            active_statework_ids=active_statework_ids)
+
+    def digital_psychology_adapter(self):
+        """Return the explicit DP component port for this host-owned task."""
+        if self._digital_psychology_adapter is not None:
+            return self._digital_psychology_adapter
+        from digital_psychology_adapter import CFWBehaviorAdapter
+        self._digital_psychology_adapter = CFWBehaviorAdapter(
+            _resolve_host_session(self._session_token), self.agent)
+        return self._digital_psychology_adapter
 
     @property
     def agent(self) -> AgentSessionHandle:
