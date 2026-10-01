@@ -357,7 +357,7 @@ def main() -> int:
     schema_bundle = resolve.resolve("schema-pin", "quick")
     check("telemetry pins exact DP schema hash/version",
           telemetry.schema_hash == schema_bundle.policy.behavior_event_schema_hash and
-          telemetry.schema_version == "2.4.0")
+          telemetry.schema_version == "2.5.0")
     try:
         telemetry.emit({"category": "NOT_A_CATEGORY", "payload": {"secret": "leak"}})
         check("host telemetry schema bypass rejected", False, "invalid event persisted")
@@ -475,6 +475,69 @@ def main() -> int:
           len(segment_session.execution_segments) < 2 or
           ("GITTER" in second_context and "GETTER" not in second_context))
 
+    action_goal = resolve.TaskGoalContract(
+        objective="Change the target artifact and verify the requested behavior.",
+        deliverable_kind="code_behavior", work_mode="delivery",
+        acceptance_criteria=(resolve.AcceptanceCriterion(
+            "C_ACTION", "The requested artifact is changed.", "code_behavior"),))
+    action_registry = {"test-action": runtime.ActionDescriptor(
+        "test-action", goal_relation="advances_primary_goal",
+        action_class="edit", affected_criterion_ids=("C_ACTION",))}
+    action_bundle = resolve.resolve(resolve.TaskRequest(
+        task_id="candidate-history", application_id="cfw-test", subject_ref="repo:candidate",
+        shape="implement", goal_contract=action_goal), action_registry=action_registry)
+    action_session = runtime.start(action_bundle, telemetry_disabled=True)
+    history_before_proposal = action_session.metacognitive_state.snapshot()
+    prepared = action_session.prepare_action(runtime.AgentActionRequest(
+        binding_id="test-action", arguments={"target": "src/example.py"},
+        subject_ref="repo:candidate"))
+    check("allowed proposal does not enter metacognitive history",
+          prepared.decision == runtime.GateDecision.ALLOW
+          and action_session.metacognitive_state.snapshot() == history_before_proposal)
+    action_session._host_ingress().record_tool_result(
+        "test-action", "success", "repo:candidate",
+        action_request_id=prepared.action_request_id,
+        actual_result={"artifact_changed": False})
+    check("executed action enters history only after correlated host result",
+          action_session.metacognitive_state.committed_actions_since_goal_progress == 1
+          and action_session.metacognitive_state.recent_activity[-1].activity_type == "action")
+
+    qualification_state = runtime.MetacognitiveState()
+    qualification_state.ensure_criteria(action_goal.to_dict())
+    qualification_state.record_activity(
+        "action", host_declared_relation="required_verification",
+        action_class="test", artifact_changed=True)
+    shadow_signals = runtime.SemanticSignals()
+    advisory_signals = runtime.SemanticSignals(
+        progress_relation="goal_progress", possible_goal_drift=True,
+        source_decisions=("semantic-decision-1",))
+    decisions = []
+    for signals in (None, shadow_signals, advisory_signals):
+        decisions.append(runtime.MetacognitiveController().evaluate(
+            qualification_state, support_actions_since_progress=5,
+            support_action_limit=5, recovery_epochs_since_progress=0,
+            max_recovery_epochs=3, same_approach_retries=0,
+            max_same_approach_retries=2, semantic=signals))
+    check("A/B/C hold support saturation constant across provider modes",
+          all(item.mode == "REPLAN" for item in decisions)
+          and qualification_state.committed_actions_since_goal_progress == 1
+          and qualification_state.criteria[0].evidence_status == "none")
+    exhausted = [runtime.MetacognitiveController().evaluate(
+        qualification_state, support_actions_since_progress=0,
+        support_action_limit=5, recovery_epochs_since_progress=3,
+        max_recovery_epochs=3, same_approach_retries=0,
+        max_same_approach_retries=2, semantic=signals).mode
+        for signals in (None, shadow_signals, advisory_signals)]
+    check("A/B/C cannot use semantic progress to escape recovery exhaustion",
+          exhausted == ["BLOCKED", "BLOCKED", "BLOCKED"])
+    qualification_state.record_goal_progress(
+        runtime.CriterionEvidenceBinding(
+            "C_ACTION", "validator-evidence", "validator_result", "validator"),
+        claim="The requested artifact is changed.", kind="code_behavior")
+    check("only criterion-bound host evidence resets hard progress counters",
+          qualification_state.committed_actions_since_goal_progress == 0
+          and qualification_state.criteria[0].evidence_status == "available")
+
     b_transition = resolve.resolve(
         resolve.TaskRequest(task_id="transition-runtime", application_id="cfw-test", subject_ref="ui:tuid",
                             shape="implement", domain_tags=("terminal interface",)),
@@ -506,12 +569,48 @@ def main() -> int:
         ("VALIDATED", "validate", "validation_evidence"),
     ]
     for output_state, trigger, observation_type in state_steps:
-        evidence = transition_session._host_ingress().record_observation(
-            observation_type, subject_ref="ui:tuid")
+        host = transition_session._host_ingress()
+        if observation_type in {"implementation", "interaction_evidence", "validation_evidence"}:
+            evidence = host.record_statework_evidence(
+                observation_type, subject_ref="ui:tuid",
+                content={"trigger": trigger, "output_state": output_state,
+                         "observed": True})
+        else:
+            evidence = host.record_observation(observation_type, subject_ref="ui:tuid")
         check(f"StateWork transition reaches {output_state}",
               transition_session.record_state_transition(
                   "tuid", "ui:tuid", output_state, trigger=trigger,
                   evidence_refs=[evidence]) == runtime.GateDecision.ALLOW)
+    workflow_fact = next(item for item in transition_session.metacognitive_state.workflows
+                         if item.statework_id == "tuid")
+    check("CSW semantics reach provider-independent workflow state",
+          workflow_fact.edge_id == "tuid.exercisable.validate.validated"
+          and workflow_fact.work_class == "validation"
+          and workflow_fact.domain_effect == "validate_terminal_behavior"
+          and workflow_fact.domain == "terminal_interface_state"
+          and workflow_fact.purpose
+          and workflow_fact.revision == 6,
+          str(workflow_fact.to_dict()))
+    blocker_evidence = transition_session._host_ingress().record_observation(
+        "blocker_observed", subject_ref="ui:tuid")
+    transition_session._host_ingress().record_blocker(
+        "missing-terminal", "Target terminal is unavailable",
+        evidence_ref=blocker_evidence)
+    check("host blocker is retained in metacognitive state",
+          [item.blocker_id for item in transition_session.metacognitive_state.blockers]
+          == ["missing-terminal"])
+    check("host blocker selects diagnostic focus",
+          transition_session.metacognitive_controller.evaluate(
+              transition_session.metacognitive_state,
+              support_actions_since_progress=0, support_action_limit=5,
+              recovery_epochs_since_progress=0, max_recovery_epochs=3,
+              same_approach_retries=0, max_same_approach_retries=2).mode == "DIAGNOSE")
+    resolution_evidence = transition_session._host_ingress().record_observation(
+        "blocker_resolution_observed", subject_ref="ui:tuid")
+    transition_session._host_ingress().clear_blocker(
+        "missing-terminal", evidence_ref=resolution_evidence)
+    check("blocker clears only with current host evidence",
+          not transition_session.metacognitive_state.blockers)
     handoff_evidence = transition_session._host_ingress().record_observation(
         "tui_handoff_observed", subject_ref="ui:tuid")
     handoff = {

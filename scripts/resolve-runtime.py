@@ -1109,6 +1109,8 @@ class CapsulePin:
 class StateWorkPin:
     id: str
     version: str
+    domain: str
+    purpose: str
     manifest_hash: str
     runtime_hash: str
     selected_flow: Optional[Tuple[str, str]]
@@ -1120,6 +1122,8 @@ class StateWorkPin:
         return {
             "id": self.id,
             "version": self.version,
+            "domain": self.domain,
+            "purpose": self.purpose,
             "manifest_hash": self.manifest_hash,
             "runtime_hash": self.runtime_hash,
             "selected_flow": (
@@ -1341,6 +1345,8 @@ def _policy_from_bundle(bundle: "RuntimeBundle") -> EffectivePolicy:
     stateworks = tuple(
         StateWorkPin(
             id=item["id"], version=item["version"],
+            domain=str(item.get("domain") or ""),
+            purpose=str(item.get("purpose") or ""),
             manifest_hash=item["manifest_hash"], runtime_hash=item["runtime_hash"],
             selected_flow=(tuple(item["selected_flow"])
                            if item.get("selected_flow") else None),
@@ -1546,6 +1552,8 @@ def select_statework_runtime(
     sid = str(sw.get("id"))
     item = {
         "id": sid, "version": sw.get("version", "0.0.0"),
+        "domain": str(sw.get("domain") or ""),
+        "purpose": str(sw.get("purpose") or ""),
         "entrypoint": sw.get("entrypoint"),
         "manifest_hash": read_manifest_hash(sw),
     }
@@ -2251,6 +2259,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     }
     statework_pins = tuple(
         StateWorkPin(id=item["id"], version=item["version"],
+                     domain=str(item.get("domain") or ""),
+                     purpose=str(item.get("purpose") or ""),
                      manifest_hash=item["manifest_hash"], runtime_hash=item["runtime_hash"],
                      selected_flow=(tuple(item["selected_flow"])
                                     if item["selected_flow"] else None),

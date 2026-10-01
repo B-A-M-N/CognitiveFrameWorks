@@ -3,7 +3,7 @@
   "$id": "https://cognitivestateframeworks.dev/contracts/system-one-protocol.schema.json",
   "title": "CFW System-1 protocol",
   "type": "object",
-  "protocol_version": "2.0.0",
+  "protocol_version": "2.1.0",
   "x-question-registry": {
     "action_relation": {
       "family": "action_relation",
@@ -847,7 +847,7 @@
       ],
       "properties": {
         "protocol_version": {
-          "const": "2.0.0"
+          "const": "2.1.0"
         },
         "protocol_hash": {
           "type": "string",
@@ -952,7 +952,7 @@
       ],
       "properties": {
         "protocol_version": {
-          "const": "2.0.0"
+          "const": "2.1.0"
         },
         "protocol_hash": {
           "type": "string",
@@ -1038,7 +1038,8 @@
         "state_projection_schema_hash",
         "supported_question_families",
         "max_state_bytes",
-        "stateful_sessions"
+        "stateful_sessions",
+        "max_concurrent_requests"
       ],
       "properties": {
         "backend_id": {
@@ -1065,7 +1066,7 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "protocol_version": {
-          "const": "2.0.0"
+          "const": "2.1.0"
         },
         "protocol_hash": {
           "type": "string",
@@ -1095,6 +1096,11 @@
         },
         "stateful_sessions": {
           "type": "boolean"
+        },
+        "max_concurrent_requests": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
         }
       },
       "additionalProperties": false

@@ -23,6 +23,8 @@ import sys
 import tempfile
 import threading
 import uuid
+import yaml
+import yaml
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -58,8 +60,12 @@ from runtime_contract.handlers import enforcement_for_guard, handler_for_enforce
 from runtime_contract.operator_events import OperatorEvent
 from runtime_contract.stateworks import ExecutionSegment, SegmentStatus
 from runtime_contract.behavioral_fusion import (
-    BehavioralDecision, BehavioralFusionController, fuse_action_relation,
-    fuse_progress_relation, fuse_retry_relation, render_behavior_control_directive,
+    SemanticFusion, fuse_action_relation, fuse_progress_relation,
+    fuse_retry_relation, render_metacognitive_directive,
+)
+from runtime_contract.metacognition import (
+    CriterionEvidenceBinding, MetaDecision, MetacognitiveController,
+    MetacognitiveState, SemanticSignals,
 )
 from runtime_contract.system_one import (ActivityFact, AttemptSemanticDescriptor,
                                          BehavioralJudge, SystemOneCapability,
@@ -81,7 +87,7 @@ _STATEWORK_TRANSITIONS = None
 _STATEWORK_TRANSITION_MODULES: Dict[str, Any] = {}
 
 TelemetrySink = Callable[[Dict[str, Any]], None]
-SCHEMA_VERSION = "2.4.0"
+SCHEMA_VERSION = "2.5.0"
 CATEGORIES = {
     "observation", "assumption", "inference", "decision", "action",
     "tool_result", "validation", "correction", "contradiction", "retry",
@@ -108,6 +114,22 @@ AUTHORITATIVE_EVIDENCE_KINDS = {
 
 
 RUNTIME_MODES = {"standalone_advisory", "standalone_enforcing", "combined_enforcing"}
+
+
+def _canonical_system_one_status(reason: str, *, has_judgment: bool,
+                                 mode: str) -> str:
+    if reason in {"ok", "unavailable", "rejected", "stale", "shadow", "disabled"}:
+        return reason
+    if reason == "disabled":
+        return "disabled"
+    if reason in {"stale_request", "stale_response"}:
+        return "stale"
+    if reason in {"ineligible", "calibration_mismatch", "provider_contract_error"}:
+        return "rejected"
+    if reason in {"uncalibrated_shadow", "uncalibrated", "shadow_mode"} \
+            or (has_judgment and mode == "shadow"):
+        return "shadow"
+    return "ok" if has_judgment else "unavailable"
 
 
 @dataclass(frozen=True)
@@ -187,10 +209,11 @@ class ActionPreparation:
 
 @dataclass(frozen=True)
 class RouteReplanRecommendation:
-    """A calibrated preference among child bundles already resolved by the host."""
+    """A source-attributed recommendation among host-resolved child bundles."""
 
     route: str
     decision_id: str
+    source: str
     source_state_digest: str
     request_digest: str
     sequence: int
@@ -198,6 +221,7 @@ class RouteReplanRecommendation:
     state_revision: int
     target_statework_id: str
     legal_children: Mapping[str, resolve_runtime.RuntimeBundle] = field(repr=False)
+    semantic_decision_ref: Optional[str] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "legal_children",
@@ -212,8 +236,15 @@ class PolicyEpochRecord:
     reason: str
     route_type: str
     selected_route: str
-    system_one_decision_ref: str
+    decision_source: str
+    decision_ref: Optional[str]
+    semantic_decision_ref: Optional[str]
     state_revision: int
+
+    @property
+    def system_one_decision_ref(self) -> str:
+        """Compatibility accessor for callers reading older route records."""
+        return self.semantic_decision_ref or ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {"epoch_index": self.epoch_index,
@@ -221,8 +252,20 @@ class PolicyEpochRecord:
                 "child_policy_hash": self.child_policy_hash,
                 "reason": self.reason, "route_type": self.route_type,
                 "selected_route": self.selected_route,
-                "system_one_decision_ref": self.system_one_decision_ref,
+                "decision_source": self.decision_source,
+                "decision_ref": self.decision_ref,
+                "semantic_decision_ref": self.semantic_decision_ref,
                 "state_revision": self.state_revision}
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "PolicyEpochRecord":
+        data = dict(value)
+        if "system_one_decision_ref" in data:
+            legacy_ref = data.pop("system_one_decision_ref")
+            data.setdefault("decision_source", "semantic_advisory")
+            data.setdefault("decision_ref", legacy_ref)
+            data.setdefault("semantic_decision_ref", legacy_ref)
+        return cls(**data)
 
 
 @dataclass(frozen=True)
@@ -346,10 +389,6 @@ class LifecycleController:
         self.action_active.clear()
         self.activate_predicates("fuse", "action", {
             "mutability": "read", "action_planning": True})
-        # WARD's host enforcement is always applied after request
-        # classification; its compact rule is useful while selecting any
-        # action and expires with the same action boundary.
-        self.activate("ward", "action_planning")
         if descriptor is not None:
             self.activate_predicates("ward", "action", descriptor.__dict__)
 
@@ -699,6 +738,21 @@ class HostIngress:
         return self._session._record_observation(
             self._capability, observation_type, subject_ref, details=details)
 
+    def record_statework_evidence(self, evidence_type: str, *, subject_ref: str,
+                                  content: Mapping[str, Any]) -> str:
+        return self._session._record_statework_evidence(
+            self._capability, evidence_type, subject_ref=subject_ref, content=content)
+
+    def record_blocker(self, blocker_id: str, summary: str, *, evidence_ref: str,
+                       criterion_ids: Iterable[str] = ()) -> None:
+        self._session._record_blocker(
+            self._capability, blocker_id=blocker_id, summary=summary,
+            evidence_ref=evidence_ref, criterion_ids=criterion_ids)
+
+    def clear_blocker(self, blocker_id: str, *, evidence_ref: str) -> None:
+        self._session._clear_blocker(
+            self._capability, blocker_id=blocker_id, evidence_ref=evidence_ref)
+
     def record_tool_result(self, tool_type: str, result_class: str,
                            subject_ref: Optional[str] = None,
                            *, invocation_id: Optional[str] = None,
@@ -761,10 +815,13 @@ class HostIngress:
 
     def rank_legal_routes(
             self, legal_children: Mapping[str, resolve_runtime.RuntimeBundle], *,
-            state_revision: int, target_statework_id: str) -> Optional[RouteReplanRecommendation]:
+            state_revision: int, target_statework_id: str,
+            route_preference: Optional[str] = None,
+            preference_source: str = "metacognition") -> Optional[RouteReplanRecommendation]:
         return self._session._rank_legal_routes(
             self._capability, legal_children=legal_children,
-            state_revision=state_revision, target_statework_id=target_statework_id)
+            state_revision=state_revision, target_statework_id=target_statework_id,
+            route_preference=route_preference, preference_source=preference_source)
 
     def create_child_policy_epoch(
             self, recommendation: RouteReplanRecommendation, *,
@@ -1137,18 +1194,24 @@ class RuntimeSession:
     _semantic_retry_same: set[str] = field(default_factory=set, repr=False)
     shared_branch_ledger: Optional[SharedBranchLedger] = field(default=None, repr=False)
     system_one_judge: Optional[BehavioralJudge] = field(default=None, repr=False)
+    metacognitive_state: MetacognitiveState = field(
+        default_factory=MetacognitiveState, repr=False)
     system_one_projector: SystemOneStateProjector = field(
         default_factory=SystemOneStateProjector, repr=False)
+    metacognitive_controller: MetacognitiveController = field(
+        default_factory=MetacognitiveController, repr=False)
+    semantic_signals: SemanticSignals = field(default_factory=SemanticSignals, repr=False)
+    metacognitive_decision: MetaDecision = field(
+        default_factory=lambda: MetaDecision("DELIVER", "task initialized"), repr=False)
     system_one_sequence: int = 0
     system_one_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     system_one_outcomes: set[str] = field(default_factory=set, repr=False)
     system_one_action_relations: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
-    behavioral_controller: BehavioralFusionController = field(
-        default_factory=BehavioralFusionController, repr=False)
-    behavioral_decision: BehavioralDecision = field(default_factory=BehavioralDecision, repr=False)
     _pending_action_requests: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
+    _pending_retry_candidates: Dict[str, ActivityFact] = field(default_factory=dict, repr=False)
     policy_epoch_record: Optional[PolicyEpochRecord] = field(default=None, repr=False)
     _system_one_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
+    _system_one_provider_lock: Any = field(default_factory=threading.RLock, init=False, repr=False)
 
     def _host_ingress(self) -> HostIngress:
         """Return the host-only channel to the adapter implementation.
@@ -1176,10 +1239,12 @@ class RuntimeSession:
                 "route_outcomes", "journal_path", "journal_db_path", "_telemetry_exporter", "state_authority",
                 "runtime_mode", "attempt_descriptors", "attempt_failures",
                 "attempt_semantics", "_semantic_retry_same",
-                "shared_branch_ledger", "system_one_judge", "system_one_projector",
+                "shared_branch_ledger", "system_one_judge", "metacognitive_state",
+                "system_one_projector", "metacognitive_controller", "semantic_signals",
+                "metacognitive_decision",
                 "system_one_sequence", "system_one_decisions", "system_one_outcomes",
-                "system_one_action_relations", "behavioral_controller", "behavioral_decision",
-                "_pending_action_requests", "policy_epoch_record"}:
+                "system_one_action_relations",
+        "_pending_action_requests", "_pending_retry_candidates", "policy_epoch_record"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
         object.__setattr__(self, name, value)
 
@@ -1369,6 +1434,33 @@ class RuntimeSession:
     def _system_one_policy(self) -> SystemOnePolicy:
         return SystemOnePolicy(**dict(self.bundle.pinned.get("system_one_policy") or {}))
 
+    def _evaluate_metacognition(self, *,
+                                 semantic: Optional[SemanticSignals] = None) -> MetaDecision:
+        goal = self.bundle.pinned.get("goal_contract") or {}
+        verification = goal.get("verification_policy") or {}
+        state = self.convergence.state("primary-objective") if self.convergence else None
+        decision = self.metacognitive_controller.evaluate(
+            self.metacognitive_state,
+            support_actions_since_progress=(
+                state.support_actions_since_goal_progress if state else 0),
+            support_action_limit=int(verification.get(
+                "support_actions_before_goal_reanchor", 5) or 5),
+            recovery_epochs_since_progress=(
+                state.recovery_epochs_since_goal_progress if state else 0),
+            max_recovery_epochs=int(verification.get(
+                "max_recovery_epochs_without_goal_progress", 3) or 3),
+            same_approach_retries=(state.same_approach_retries if state else 0),
+            max_same_approach_retries=int(verification.get(
+                "max_same_approach_retries", 2) or 2),
+            unresolved_contradiction=any(
+                not bool(item.get("resolved")) for item in self.contradictions.values()),
+            semantic=semantic if semantic is not None else self.semantic_signals)
+        if decision != self.metacognitive_decision:
+            object.__setattr__(self, "metacognitive_decision", decision)
+            self._journal("metacognitive_decision_recorded", decision=decision.to_dict(),
+                          logical_revision=self.metacognitive_state.logical_revision)
+        return decision
+
     def _system_one_query(self, *, questions: tuple[str, ...], candidate: ActivityFact,
                           subject_ref: Optional[str] = None,
                           action_request_id: Optional[str] = None,
@@ -1380,6 +1472,11 @@ class RuntimeSession:
         """Query from a typed host snapshot after authority checks."""
         policy = self._system_one_policy()
         if policy.mode == "disabled":
+            return None
+        enabled_questions = set(policy.enabled_question_families)
+        questions = tuple(question for question in questions
+                          if question in enabled_questions)
+        if not questions:
             return None
         goal = self.bundle.pinned.get("goal_contract") or {}
         if not goal.get("objective") or self.system_one_judge is None:
@@ -1407,57 +1504,73 @@ class RuntimeSession:
             "same_approach_retries": int(
                 convergence_state.same_approach_retries if convergence_state else 0),
         }
+        active_flow = None
+        active_statework_id = self.current_segment.statework_id
+        if active_statework_id:
+            active_statework = next((item for item in self.bundle.stateworks
+                                     if item.get("id") == active_statework_id), None)
+            selected_flow = active_statework.get("selected_flow") if active_statework else None
+            if isinstance(selected_flow, (list, tuple)) and selected_flow:
+                active_flow = Path(str(selected_flow[0])).parent.name
         frame = self.system_one_projector.project(
+            meta_state=self.metacognitive_state,
             identity=identity, sequence=sequence,
             policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
             policy=policy, questions=questions, goal_contract=goal,
             convergence=convergence, candidate=candidate,
             phase=self.bundle.pinned.get("phase"),
             active_segment=self.current_segment.segment_id,
-            active_statework=(self.current_segment.statework_id or None),
+            active_statework=(active_statework_id or None), active_flow=active_flow,
             current_state=(self.statework_states.get((
-                self.current_segment.statework_id or "", self.current_segment.subject_ref or ""))),
+                active_statework_id or "", self.current_segment.subject_ref or ""))),
+            blockers=tuple(f"{item.blocker_id}: {item.summary}" if item.summary
+                           else item.blocker_id for item in self.metacognitive_state.blockers),
             failed_approaches=tuple(
                 self.attempt_semantics[attempt_ref]
                 for attempt_ref in self.attempt_descriptors
                 if attempt_ref in self.attempt_failures
                 and attempt_ref in self.attempt_semantics)[-4:],
             legal_routes=route_candidates)
-        status = "fallback"
+        status_reason = "fallback"
         calibrated_questions: set[str] = set()
         judgment: Optional[SystemOneJudgment] = None
         try:
-            resync = getattr(self.system_one_judge, "resync", None)
-            if callable(resync):
-                resync(frame)
-            raw = self.system_one_judge.judge(frame, mode=policy.mode)
-            if hasattr(raw, "judgment"):
-                status = str(getattr(raw, "status", "fallback"))
-                calibration_hint = bool(getattr(raw, "calibrated", False))
-                calibrated_questions.update(getattr(raw, "calibrated_question_ids", ()) or ())
-                raw = getattr(raw, "judgment", None)
-            else:
-                calibration_hint = False
-            if raw is not None:
-                judgment = (raw if isinstance(raw, SystemOneJudgment)
-                            else SystemOneJudgment.from_mapping(
-                                raw.to_dict() if hasattr(raw, "to_dict") else raw))
-                self._validate_system_one_judgment(frame, judgment)
-                if status in {"fallback", "provider_unavailable"}:
-                    status = "ok"
-                if calibration_hint and not calibrated_questions:
-                    calibrated_questions.update(frame.question_ids)
-                calibrated_questions = {
-                    question_id for question_id in calibrated_questions
-                    if question_id in frame.question_ids
-                    and (answer := judgment.answer(question_id)) is not None
-                    and answer.calibrated_probabilities is not None
-                    and answer.calibration_hash is not None
-                }
+            # This lock is per RuntimeSession identity: stateful providers see
+            # each full snapshot and its answer validation as one operation.
+            with self._system_one_provider_lock:
+                raw = self.system_one_judge.judge(frame, mode=policy.mode)
+                if hasattr(raw, "judgment"):
+                    status_reason = str(
+                        getattr(raw, "reason", None)
+                        or getattr(raw, "status", "fallback"))[:64]
+                    calibration_hint = bool(getattr(raw, "calibrated", False))
+                    calibrated_questions.update(
+                        getattr(raw, "calibrated_question_ids", ()) or ())
+                    raw = getattr(raw, "judgment", None)
+                else:
+                    calibration_hint = False
+                if raw is not None:
+                    judgment = (raw if isinstance(raw, SystemOneJudgment)
+                                else SystemOneJudgment.from_mapping(
+                                    raw.to_dict() if hasattr(raw, "to_dict") else raw))
+                    self._validate_system_one_judgment(frame, judgment)
+                    if calibration_hint and not calibrated_questions:
+                        calibrated_questions.update(frame.question_ids)
+                    calibrated_questions = {
+                        question_id for question_id in calibrated_questions
+                        if question_id in frame.question_ids
+                        and (answer := judgment.answer(question_id)) is not None
+                        and answer.calibrated_probabilities is not None
+                        and answer.calibration_hash is not None
+                    }
         except Exception:
-            judgment, calibrated_questions, status = None, set(), "fallback"
+            judgment, calibrated_questions = None, set()
+            status_reason = "provider_exception"
         if sequence != self.system_one_sequence:
-            judgment, calibrated_questions, status = None, set(), "stale_response"
+            judgment, calibrated_questions = None, set()
+            status_reason = "stale_response"
+        status = _canonical_system_one_status(
+            status_reason, has_judgment=judgment is not None, mode=policy.mode)
         calibrated = frozenset(calibrated_questions)
 
         relation = None
@@ -1473,26 +1586,16 @@ class RuntimeSession:
                     "sequence": sequence}
                 while len(self.system_one_action_relations) > 512:
                     self.system_one_action_relations.pop(next(iter(self.system_one_action_relations)))
-        support_count = int(convergence_state.support_actions_since_goal_progress
-                            if convergence_state else 0)
-        support_limit = int(((goal.get("verification_policy") or {}).get(
-            "support_actions_before_goal_reanchor", 5) or 5))
-        deterministic_reanchor = bool(
-            self.convergence and self.convergence.needs_goal_reanchor(
-                cause_id="primary-objective", support_limit=support_limit))
-        criteria = self.system_one_projector.criteria
-        unmet_ids = tuple(item.criterion_id for item in criteria
-                          if item.status != "satisfied")
-        next_behavior = self.behavioral_controller.update(
-            judgment=judgment, policy=policy, calibrated=calibrated,
-            unmet_criterion_ids=unmet_ids,
-            support_actions_since_progress=support_count,
-            deterministic_reanchor=deterministic_reanchor,
-            sequence=sequence, support_action_limit=support_limit)
-        if next_behavior != self.behavioral_decision:
-            object.__setattr__(self, "behavioral_decision", next_behavior)
-            snapshot = self.behavioral_controller.snapshot()
-            self._journal("behavior_control_changed", snapshot=snapshot)
+        signals = SemanticFusion.signals(
+            judgment, policy=policy, calibrated=calibrated)
+        prior_decision = self.metacognitive_decision
+        object.__setattr__(self, "semantic_signals", signals)
+        next_decision = self._evaluate_metacognition(semantic=signals)
+        control_changed = (next_decision.mode, next_decision.reason,
+                           next_decision.goal_reanchor_required) != (
+                               prior_decision.mode, prior_decision.reason,
+                               prior_decision.goal_reanchor_required)
+        semantic_influenced = bool(next_decision.semantic_attention_note)
 
         question_hash = frame.question_bundle_digest
         decision_id = frame.request_id
@@ -1512,11 +1615,17 @@ class RuntimeSession:
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "judgment": judgment.to_dict() if judgment else {},
             "answers": answers, "status": status,
+            "status_reason": status_reason,
             "calibrated": bool(calibrated),
             "calibrated_question_ids": sorted(calibrated),
             "influenced": influenced,
+            "semantic_signals": signals.to_dict(),
+            "metacognitive_decision": next_decision.to_dict(),
+            "system_one_semantic_influenced": semantic_influenced,
+            "metacognitive_control_changed": control_changed,
+            "control_change_source": ("deterministic_metacognition"
+                                      if control_changed else None),
             "fused_action_relation": relation,
-            "behavioral_state": next_behavior.to_dict(),
         }
         self.system_one_decisions[decision_id] = decision
         while len(self.system_one_decisions) > 512:
@@ -1546,7 +1655,13 @@ class RuntimeSession:
             "system_one_state_digest": frame.state_digest,
             "system_one_question_bundle_hash": question_hash,
             "system_one_status": status,
+            "system_one_status_reason": status_reason,
             "system_one_influenced": influenced,
+            "system_one_semantic_influenced": semantic_influenced,
+            "metacognitive_control_changed": control_changed,
+            "control_change_source": ("deterministic_metacognition"
+                                      if control_changed else None),
+            "source_decision_ids": list(signals.source_decisions),
             "system_one_answers": answers,
         }
         if action_request_id:
@@ -1572,7 +1687,7 @@ class RuntimeSession:
         return judgment
 
     def _validate_child_route_bundle(self, route: str, target_statework_id: str,
-                                     child: resolve_runtime.RuntimeBundle) -> None:
+                                      child: resolve_runtime.RuntimeBundle) -> None:
         """Require a resolver-produced child that changes only one legal flow."""
         pieces = route.split(":", 2)
         if len(pieces) != 3 or pieces[0] != "flow" or pieces[1] != target_statework_id:
@@ -1647,13 +1762,25 @@ class RuntimeSession:
         if not resolved_flow.is_file() or resolve_runtime.sha256(resolved_flow) != content_hash:
             raise resolve_runtime.SnapshotIntegrityError(
                 "child flow content no longer matches its resolved snapshot")
+
+    def _record_route_replan_blocker(self, *, target_statework_id: str,
+                                     reason: str,
+                                     legal_routes: Sequence[str] = ()) -> None:
+        self._journal("route_replan_blocked", target_statework_id=target_statework_id,
+                      reason=reason, legal_routes=sorted(legal_routes))
+        self._emit_runtime({
+            "category": "blocker", "event_type": "route_replan_blocked",
+            "subject": self.current_segment.subject_ref,
+            "payload": {"summary": reason[:256], "result_class": "blocked"}})
     def _rank_legal_routes(
             self, capability: _HostCapability, *,
             legal_children: Mapping[str, resolve_runtime.RuntimeBundle],
-            state_revision: int, target_statework_id: str
+            state_revision: int, target_statework_id: str,
+            route_preference: Optional[str] = None,
+            preference_source: str = "metacognition"
             ) -> Optional[RouteReplanRecommendation]:
         self._require_host(capability)
-        if self.behavioral_decision.focus_mode != "replan":
+        if self._evaluate_metacognition().mode != "REPLAN":
             return None
         if self.termination_disposition in TERMINAL_DISPOSITIONS:
             raise PermissionError("a terminated task cannot request a route replan")
@@ -1663,56 +1790,169 @@ class RuntimeSession:
             raise ValueError("current StateWork revision must be a non-negative integer")
         if not target_statework_id or len(target_statework_id) > 64:
             raise ValueError("route ranking requires a bounded StateWork ID")
-        if not isinstance(legal_children, Mapping) or not 2 <= len(legal_children) <= 16:
-            raise ValueError("route ranking requires two to sixteen host-resolved legal flows")
+        if not isinstance(legal_children, Mapping) or len(legal_children) > 16:
+            raise ValueError("route ranking accepts at most sixteen host-resolved legal flows")
+        if preference_source not in {"metacognition", "operator", "learned_profile"}:
+            raise ValueError("unsupported deterministic route preference source")
         children = dict(legal_children)
         for route, child in children.items():
             if not isinstance(route, str):
                 raise ValueError("legal flow route IDs must be strings")
             self._validate_child_route_bundle(route, target_statework_id, child)
+        if not children:
+            self._record_route_replan_blocker(
+                target_statework_id=target_statework_id,
+                reason="no host-resolved legal route is available")
+            return None
 
-        if self._system_one_policy().mode != "advisory" or self.system_one_judge is None:
-            return None
-        candidate = self.system_one_projector.record_activity(
-            "action", source="host_observed", action_class="route_replan",
-            host_declared_relation="ambiguous", target_kind="statework",
-            proposed_purpose="rank already-resolved legal StateWork flows",
-            proposed_purpose_source="host_observed")
-        self._journal("system_one_projection_changed",
-                      snapshot=self.system_one_projector.snapshot())
-        judgment = self._system_one_query(
-            questions=("route_preference",), candidate=candidate,
-            subject_ref=self.current_segment.subject_ref,
-            route_candidates=tuple(sorted(children)),
-            route_state_revision=state_revision,
-            route_statework_id=target_statework_id)
-        if judgment is None:
-            return None
-        decision = self.system_one_decisions.get(judgment.request_id) or {}
-        answer = judgment.answer("route_preference")
-        calibrated_ids = set(decision.get("calibrated_question_ids") or ())
-        confidence = answer.calibrated_confidence if answer else None
-        policy = self._system_one_policy()
-        if ("route_preference" not in calibrated_ids or answer is None
-                or answer.calibration_hash != policy.calibration_bundle_hash
-                or confidence is None or confidence < policy.minimum_confidence
-                or answer.selected not in children):
-            return None
+        selected = route_preference
+        source = preference_source
+        semantic_decision_ref: Optional[str] = None
+        confidence = 1.0
+        if selected is not None:
+            if selected not in children:
+                raise ValueError("preferred route must be one of the host-resolved legal flows")
+            if source == "learned_profile":
+                adjustments = self.bundle.guard_pack.get("routing_adjustments", ())
+                if not any(item.get("route_type") == "flow"
+                           and item.get("disposition") == "prefer"
+                           and item.get("route") in {selected, selected.split(":", 2)[-1]}
+                           for item in adjustments):
+                    raise PermissionError("learned route preference is not pinned in this policy")
+        elif len(children) == 1:
+            selected = next(iter(children))
+            source = "metacognition"
+        else:
+            domains = set(self.bundle.pinned.get("domain_tags") or ())
+            task_shape = self.bundle.pinned.get("task_shape")
+            operation = self.bundle.pinned.get("operation")
+            trigger = self.bundle.pinned.get("trigger")
+            current_state = self.statework_states.get(
+                (target_statework_id, self.current_segment.subject_ref or ""))
+            scores: Dict[str, tuple[int, int]] = {}
+            for route, child in children.items():
+                pin = next((item for item in child.stateworks
+                            if item.get("id") == target_statework_id), None)
+                selected_flow = pin.get("selected_flow") if pin else None
+                if not selected_flow:
+                    scores[route] = (0, 0)
+                    continue
+                flow_path = Path(child.statework_root) / str(selected_flow[0])
+                parts = flow_path.read_text(encoding="utf-8").split("---", 2)
+                metadata = yaml.safe_load(parts[1]) if len(parts) == 3 else {}
+                metadata = metadata if isinstance(metadata, Mapping) else {}
+                hits = 0
+                specificity = 0
+                for key, value in (("operations", operation), ("triggers", trigger),
+                                   ("task_shapes", task_shape)):
+                    declared = set(metadata.get(key) or ())
+                    if declared:
+                        specificity += 1
+                        hits += int(value in declared)
+                declared_domains = set(metadata.get("domain_tags") or ())
+                if declared_domains:
+                    specificity += 1
+                    hits += len(domains & declared_domains)
+                states = metadata.get("states") or {}
+                declared_states = set(states.get("from") or ()) if isinstance(states, Mapping) else set()
+                if declared_states:
+                    specificity += 1
+                    hits += int(current_state in declared_states)
+                if metadata.get("fallback") is True:
+                    hits -= 1
+                scores[route] = (hits, specificity)
+            top_score = max(scores.values())
+            top_routes = sorted(route for route, score in scores.items() if score == top_score)
+            if len(top_routes) == 1:
+                selected = top_routes[0]
+                source = "metacognition"
+            else:
+                policy = self._system_one_policy()
+                if policy.mode != "advisory" or self.system_one_judge is None:
+                    self._record_route_replan_blocker(
+                        target_statework_id=target_statework_id,
+                        reason="legal routes are tied and no calibrated semantic resolver is available",
+                        legal_routes=top_routes)
+                    return None
+                candidate = self.metacognitive_state.make_candidate(
+                    "validation", source="host_observed", action_class="route_ranking",
+                    host_declared_relation="ambiguous", target_kind="statework",
+                    proposed_purpose="resolve equally specific legal StateWork flows",
+                    proposed_purpose_source="host_observed")
+                judgment = self._system_one_query(
+                    questions=("route_preference",), candidate=candidate,
+                    subject_ref=self.current_segment.subject_ref,
+                    route_candidates=tuple(sorted(children)),
+                    route_state_revision=state_revision,
+                    route_statework_id=target_statework_id)
+                if judgment is None:
+                    self._record_route_replan_blocker(
+                        target_statework_id=target_statework_id,
+                        reason="semantic route resolution did not produce an answer",
+                        legal_routes=top_routes)
+                    return None
+                decision = self.system_one_decisions.get(judgment.request_id) or {}
+                answer = judgment.answer("route_preference")
+                calibrated_ids = set(decision.get("calibrated_question_ids") or ())
+                confidence = answer.calibrated_confidence if answer else None
+                if ("route_preference" not in calibrated_ids or answer is None
+                        or confidence is None
+                        or confidence < policy.confidence_threshold("route_preference")
+                        or answer.selected not in top_routes):
+                    self._record_route_replan_blocker(
+                        target_statework_id=target_statework_id,
+                        reason="semantic route answer is not calibrated for the tied legal candidates",
+                        legal_routes=top_routes)
+                    return None
+                selected = answer.selected
+                source = "semantic_advisory"
+                semantic_decision_ref = judgment.request_id
+        assert selected is not None
+        reason = {
+            "metacognition": "deterministic_route_specificity",
+            "operator": "operator_route_preference",
+            "learned_profile": "learned_profile_route_preference",
+            "semantic_advisory": "semantic_route_recommendation",
+        }[source]
+        if semantic_decision_ref:
+            decision_id = semantic_decision_ref
+            semantic_decision = self.system_one_decisions[decision_id]
+            state_digest = semantic_decision["state_digest"]
+            request_digest = semantic_decision["request_digest"]
+            sequence = int(semantic_decision["sequence"])
+        else:
+            decision_id = self._record_route_decision(
+                capability, route=selected, route_type="flow",
+                selection_reason=f"policy_epoch:{reason}",
+                event_type="route_replan_recommended")
+            state_digest = hashlib.sha256(json.dumps({
+                "metacognitive": self.metacognitive_state.snapshot(),
+                "state_revision": state_revision,
+                "legal_routes": sorted(children),
+            }, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+            request_digest = hashlib.sha256(json.dumps({
+                "decision_id": decision_id, "route": selected, "source": source,
+                "state_digest": state_digest,
+            }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            sequence = self.system_one_sequence
         recommendation = RouteReplanRecommendation(
-            route=answer.selected, decision_id=judgment.request_id,
-            source_state_digest=judgment.state_digest,
-            request_digest=judgment.request_digest, sequence=judgment.sequence,
-            confidence=confidence, state_revision=state_revision,
-            target_statework_id=target_statework_id, legal_children=children)
+            route=selected, decision_id=decision_id, source=source,
+            source_state_digest=state_digest,
+            request_digest=request_digest, sequence=sequence,
+            confidence=float(confidence), state_revision=state_revision,
+            target_statework_id=target_statework_id, legal_children=children,
+            semantic_decision_ref=semantic_decision_ref)
         self._journal("route_replan_recommended", recommendation={
             "route": recommendation.route,
             "decision_id": recommendation.decision_id,
+            "decision_source": recommendation.source,
+            "semantic_decision_ref": recommendation.semantic_decision_ref,
             "source_state_digest": recommendation.source_state_digest,
             "request_digest": recommendation.request_digest,
             "sequence": recommendation.sequence,
             "confidence": recommendation.confidence,
-            "state_revision": recommendation.state_revision,
-            "target_statework_id": recommendation.target_statework_id,
+            "state_revision": state_revision,
+            "target_statework_id": target_statework_id,
             "legal_routes": sorted(children),
         })
         return recommendation
@@ -1734,22 +1974,38 @@ class RuntimeSession:
             raise PermissionError("StateWork revision changed after route ranking")
         if selected_route not in recommendation.legal_children:
             raise PermissionError("host selected a route outside the resolved legal candidates")
-        decision = self.system_one_decisions.get(recommendation.decision_id)
-        if (not decision or decision.get("policy_hash") != self.bundle.pinned.get("policy_hash")
-                or decision.get("request_digest") != recommendation.request_digest
-                or decision.get("state_digest") != recommendation.source_state_digest
-                or decision.get("sequence") != recommendation.sequence
-                or decision.get("route_state_revision") != current_state_revision
-                or decision.get("route_statework_id") != recommendation.target_statework_id
-                or tuple(decision.get("legal_routes") or ())
-                != tuple(sorted(recommendation.legal_children))):
-            raise PermissionError("route recommendation no longer matches its host decision")
-        answer = decision.get("answers", {})
-        answer_row = answer.get("route_preference") if isinstance(answer, Mapping) else None
-        if (not isinstance(answer_row, Mapping)
-                or answer_row.get("selected") != recommendation.route
-                or recommendation.route not in recommendation.legal_children):
-            raise PermissionError("route recommendation has no matching provider answer")
+        if recommendation.source == "semantic_advisory":
+            decision = self.system_one_decisions.get(recommendation.decision_id)
+            if (not decision or decision.get("policy_hash") != self.bundle.pinned.get("policy_hash")
+                    or decision.get("request_digest") != recommendation.request_digest
+                    or decision.get("state_digest") != recommendation.source_state_digest
+                    or decision.get("sequence") != recommendation.sequence
+                    or decision.get("route_state_revision") != current_state_revision
+                    or decision.get("route_statework_id") != recommendation.target_statework_id
+                    or tuple(decision.get("legal_routes") or ())
+                    != tuple(sorted(recommendation.legal_children))):
+                raise PermissionError("route recommendation no longer matches its semantic decision")
+            answers = decision.get("answers", {})
+            answer = answers.get("route_preference") if isinstance(answers, Mapping) else None
+            if (not isinstance(answer, Mapping)
+                    or answer.get("selected") != recommendation.route):
+                raise PermissionError("route recommendation has no matching semantic answer")
+        else:
+            reasons = {
+                "metacognition": "deterministic_route_specificity",
+                "operator": "operator_route_preference",
+                "learned_profile": "learned_profile_route_preference",
+            }
+            decision = self.route_decisions.get(recommendation.decision_id)
+            if (recommendation.source not in reasons or not decision
+                    or decision.get("policy_hash") != self.bundle.pinned.get("policy_hash")
+                    or decision.get("route_type") != "flow"
+                    or decision.get("route") != recommendation.route
+                    or decision.get("selection_reason")
+                    != f"policy_epoch:{reasons[recommendation.source]}"):
+                raise PermissionError("route recommendation no longer matches its host decision")
+        if recommendation.route not in recommendation.legal_children:
+            raise PermissionError("route recommendation is outside the legal candidates")
         child_bundle = recommendation.legal_children[selected_route]
         self._validate_child_route_bundle(
             selected_route, recommendation.target_statework_id, child_bundle)
@@ -1763,7 +2019,9 @@ class RuntimeSession:
             epoch_index=epoch_index, parent_policy_hash=parent_hash,
             child_policy_hash=child_hash, reason="dynamic_replan",
             route_type="flow", selected_route=selected_route,
-            system_one_decision_ref=recommendation.decision_id,
+            decision_source=recommendation.source,
+            decision_ref=recommendation.decision_id,
+            semantic_decision_ref=recommendation.semantic_decision_ref,
             state_revision=current_state_revision)
         route_name = selected_route.split(":", 2)[2]
         route_decision_id = self._record_route_decision(
@@ -2026,6 +2284,7 @@ class RuntimeSession:
         descriptor = self._descriptor(request)
         decision = self._decision(request)
         strategy = self._action_strategy()
+        candidate: Optional[ActivityFact] = None
         for hook in self.tool_hooks:
             hook_decision = hook({"tool_binding_id": request.binding_id,
                                   "arguments": dict(request.arguments),
@@ -2040,7 +2299,7 @@ class RuntimeSession:
         if decision == GateDecision.ALLOW:
             target_ref = next((request.arguments.get(key) for key in ("target", "path", "resource")
                                if isinstance(request.arguments.get(key), str)), None)
-            candidate = self.system_one_projector.record_activity(
+            candidate = self.metacognitive_state.make_candidate(
                 "action", source="host_observed",
                 action_class=descriptor.action_class or descriptor.tool_type,
                 host_declared_relation=descriptor.goal_relation,
@@ -2050,8 +2309,6 @@ class RuntimeSession:
                 proposed_purpose=descriptor.goal_intent,
                 proposed_purpose_source="host_observed",
                 affected_criterion_ids=descriptor.affected_criterion_ids)
-            self._journal("system_one_projection_changed",
-                          snapshot=self.system_one_projector.snapshot())
             goal = self.bundle.pinned.get("goal_contract") or {}
             if goal and descriptor.goal_relation == "ambiguous":
                 self._system_one_query(
@@ -2061,7 +2318,21 @@ class RuntimeSession:
             relation_record = self.system_one_action_relations.get(action_request_id)
             relation = (str(relation_record["relation"]) if relation_record
                         else descriptor.goal_relation)
+            candidate = replace(candidate, host_declared_relation=relation)
             verification = (goal.get("verification_policy") or {})
+            if relation == "required_verification":
+                violation = self.metacognitive_state.verification_limit_exceeded(
+                    candidate, relation=relation,
+                    max_actions=int(verification.get(
+                        "max_verification_actions_without_artifact_change", 2) or 2),
+                    max_repeats=int(verification.get(
+                        "max_repeated_equivalent_verifications", 1) or 1))
+                if violation:
+                    decision = GateDecision.BLOCK
+                    self._emit_runtime({
+                        "category": "blocker", "event_type": "verification_action_limited",
+                        "subject": request.subject_ref,
+                        "payload": {"summary": violation, "result_class": "blocked"}})
             if (goal.get("work_mode") == "delivery" and self.convergence is not None
                     and relation not in {"advances_primary_goal", "removes_concrete_blocker"}
                     and self.convergence.needs_goal_reanchor(
@@ -2077,7 +2348,12 @@ class RuntimeSession:
                 "sequence": self.system_one_sequence,
                 "relation": (self.system_one_action_relations.get(action_request_id) or {}).get(
                     "relation", descriptor.goal_relation),
+                "candidate": candidate,
             }
+            attempt_ref = str(request.arguments.get("attempt_ref") or "")
+            if attempt_ref and attempt_ref in self._pending_retry_candidates:
+                self._pending_action_requests[action_request_id]["retry_candidate"] = (
+                    self._pending_retry_candidates.pop(attempt_ref))
             self._journal("action_request_prepared", action_request_id=action_request_id,
                           subject_ref=request.subject_ref, descriptor=descriptor.__dict__,
                           relation=self._pending_action_requests[action_request_id]["relation"])
@@ -2115,7 +2391,7 @@ class RuntimeSession:
         if attempt is None:
             return GateDecision.REQUIRE_REINSPECTION
         semantic = self.attempt_semantics.get(attempt_ref)
-        candidate = self.system_one_projector.record_activity(
+        candidate = self.metacognitive_state.make_candidate(
             "retry", source="host_observed",
             action_class=(semantic.planned_action_class if semantic else "retry"),
             host_declared_relation="ambiguous",
@@ -2123,8 +2399,6 @@ class RuntimeSession:
             proposed_purpose=(semantic.hypothesis_summary if semantic else None),
             proposed_purpose_source=(semantic.source if semantic else "derived"),
             affected_criterion_ids=(semantic.affected_criterion_ids if semantic else ()))
-        self._journal("system_one_projection_changed",
-                      snapshot=self.system_one_projector.snapshot())
         self._semantic_retry_same.discard(attempt_ref)
         if semantic is not None and self._system_one_policy().mode != "disabled":
             state = self.convergence.state(attempt.cause_id) if self.convergence else None
@@ -2172,6 +2446,10 @@ class RuntimeSession:
                         return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
                     if result == "require_goal_reanchor":
                         return GateDecision.REQUIRE_GOAL_REANCHOR
+            retry_relation = ("equivalent_retry" if attempt_ref in self._semantic_retry_same
+                              else "different_fingerprint")
+            self._pending_retry_candidates[attempt_ref] = replace(
+                candidate, result_class=retry_relation)
             return GateDecision.ALLOW
         finally:
             self._semantic_retry_same.discard(attempt_ref)
@@ -2789,6 +3067,14 @@ class RuntimeSession:
         if observation_type in AUTHORITATIVE_EVIDENCE_KINDS:
             raise ValueError(
                 f"{observation_type} is registered transition authority; use its typed host adapter")
+        control = _statework_transition_engines(
+            Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
+        evidence_registry = control.load_evidence_kind_registry(
+            Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
+            "schemas" / "evidence-kinds.yaml")
+        if observation_type in set((evidence_registry.get("kinds") or {})):
+            raise ValueError(
+                f"{observation_type} is a registered evidence kind; use the StateWork evidence adapter")
         return self._record_attestation(
             evidence_type=observation_type[:64],
             subject_ref=subject_ref,
@@ -2799,6 +3085,95 @@ class RuntimeSession:
                                "result_class": "observed"}},
             invocation_id=None,
             content={"observation_type": observation_type, "details": dict(details or {})})
+
+    def _record_statework_evidence(self, capability: _HostCapability,
+                                   evidence_type: str, *, subject_ref: str,
+                                   content: Mapping[str, Any]) -> str:
+        """Attest an explicitly registered host observation for a StateWork edge."""
+        self._require_host(capability)
+        if not isinstance(subject_ref, str) or not subject_ref.strip():
+            raise ValueError("StateWork evidence requires a subject reference")
+        if not isinstance(content, Mapping) or not content:
+            raise ValueError("StateWork evidence requires non-empty host-captured content")
+        root = Path(self.bundle.statework_root or resolve_runtime.COW_ROOT)
+        control = _statework_transition_engines(root)
+        registry = control.load_evidence_kind_registry(root / "schemas" / "evidence-kinds.yaml")
+        spec = (registry.get("kinds") or {}).get(evidence_type)
+        if not spec or spec.get("mintable_by_host") is not True:
+            raise PermissionError(
+                f"StateWork evidence kind {evidence_type!r} requires a specialized validator")
+        issuers = list(spec.get("allowed_issuers") or [])
+        if len(issuers) != 1:
+            raise ValueError("host-minted StateWork evidence requires one registered issuer")
+        return self._record_attestation(
+            evidence_type=evidence_type, subject_ref=subject_ref,
+            issuer=issuers[0],
+            event={"category": "validation", "event_type": f"statework_{evidence_type}_attested",
+                   "subject": subject_ref,
+                   "payload": {"summary": f"registered StateWork evidence: {evidence_type}",
+                               "result_class": "validated"}},
+            invocation_id=None, content=dict(content), schema_id=spec["schema"],
+            validator_id=spec["validator"])
+
+    def _host_blocker_evidence(self, evidence_ref: str) -> EvidenceAttestation:
+        if not isinstance(evidence_ref, str) or not evidence_ref.strip():
+            raise ValueError("blocker changes require an evidence reference")
+        record = self.ledger.get(evidence_ref)
+        if record is None or record.invalidated:
+            raise ValueError("blocker changes require current host-attested evidence")
+        expected_subject = self.bundle.policy.subject_ref
+        if expected_subject and record.subject_ref != expected_subject:
+            raise ValueError("blocker evidence subject does not match the active task")
+        if not str(record.issuer or "").startswith(("host:", "validator:", "csw:")):
+            raise ValueError("blocker evidence requires a host, validator, or CSW authority")
+        return record
+
+    def _record_blocker(self, capability: _HostCapability, *, blocker_id: str,
+                        summary: str, evidence_ref: str,
+                        criterion_ids: Iterable[str] = ()) -> None:
+        self._require_host(capability)
+        if not isinstance(blocker_id, str) or not blocker_id.strip() or len(blocker_id) > 128:
+            raise ValueError("blocker ID must be bounded non-empty text")
+        if not isinstance(summary, str) or not summary.strip() or len(summary) > 256:
+            raise ValueError("blocker summary must be bounded non-empty text")
+        record = self._host_blocker_evidence(evidence_ref)
+        criteria = tuple(dict.fromkeys(str(item) for item in criterion_ids))[:8]
+        declared = {str(item.get("criterion_id")) for item in
+                    (self.bundle.pinned.get("goal_contract") or {}).get(
+                        "acceptance_criteria", ())}
+        if declared and any(item not in declared for item in criteria):
+            raise ValueError("blocker references an unknown acceptance criterion")
+        self.metacognitive_state.record_blocker(
+            blocker_id, summary, criteria, evidence_ref=evidence_ref)
+        self._journal("metacognitive_blocker_recorded",
+                      blocker_id=blocker_id[:128], evidence_ref=evidence_ref,
+                      snapshot=self.metacognitive_state.snapshot())
+        self._emit_runtime({
+            "category": "blocker", "event_type": "host_blocker_recorded",
+            "subject": record.subject_ref, "evidence_refs": [evidence_ref],
+            "payload": {"summary": summary[:256], "result_class": "active",
+                        "blocker_id": blocker_id[:128],
+                        "criterion_ids": list(criteria)}})
+
+    def _clear_blocker(self, capability: _HostCapability, *, blocker_id: str,
+                       evidence_ref: str) -> None:
+        self._require_host(capability)
+        if not isinstance(blocker_id, str) or not blocker_id.strip() or len(blocker_id) > 128:
+            raise ValueError("blocker ID must be bounded non-empty text")
+        record = self._host_blocker_evidence(evidence_ref)
+        existing = next((item for item in self.metacognitive_state.blockers
+                         if item.blocker_id == blocker_id), None)
+        if existing is None:
+            raise ValueError("cannot clear an unknown metacognitive blocker")
+        self.metacognitive_state.clear_blocker(blocker_id)
+        self._journal("metacognitive_blocker_cleared", blocker_id=blocker_id[:128],
+                      evidence_ref=evidence_ref,
+                      snapshot=self.metacognitive_state.snapshot())
+        self._emit_runtime({
+            "category": "blocker", "event_type": "host_blocker_cleared",
+            "subject": record.subject_ref, "evidence_refs": [evidence_ref],
+            "payload": {"summary": f"resolved: {existing.summary}"[:256],
+                        "result_class": "resolved", "blocker_id": blocker_id[:128]}})
 
     def _record_tool_result(self, capability: _HostCapability, tool_type: str,
                             result_class: str, subject_ref: Optional[str] = None,
@@ -2868,17 +3243,32 @@ class RuntimeSession:
         changed = result_data.get("artifact_changed")
         if not isinstance(changed, bool):
             changed = None
-        candidate = self.system_one_projector.record_activity(
-            "tool_result", source="host_observed",
-            action_class=(descriptor.action_class if descriptor else tool_type[:64]),
-            host_declared_relation=(descriptor.goal_relation if descriptor else "ambiguous"),
-            target_kind=(descriptor.target_kind if descriptor else None),
-            target_scope=(descriptor.target_scope if descriptor else None),
-            result_class=result_class[:64], artifact_changed=changed,
-            affected_criterion_ids=(descriptor.affected_criterion_ids if descriptor else ()),
-            evidence_kinds=tuple(dict.fromkeys(("tool_result",) + supporting_kinds)))
+        evidence_kinds = tuple(dict.fromkeys(("tool_result",) + supporting_kinds))
+        if pending is not None and isinstance(pending.get("candidate"), ActivityFact):
+            candidate = replace(
+                pending["candidate"], result_class=result_class[:64],
+                artifact_changed=changed, evidence_kinds=evidence_kinds)
+            candidate = self.metacognitive_state.commit_candidate(
+                candidate,
+                verification_relation=("required_verification"
+                                       if pending.get("relation") == "required_verification"
+                                       else None))
+            retry_candidate = pending.get("retry_candidate")
+            if isinstance(retry_candidate, ActivityFact):
+                self.metacognitive_state.commit_candidate(retry_candidate)
+        else:
+            candidate = self.metacognitive_state.record_activity(
+                "tool_result", source="host_observed",
+                action_class=(descriptor.action_class if descriptor else tool_type[:64]),
+                host_declared_relation=(pending.get("relation", "ambiguous")
+                                        if pending else "ambiguous"),
+                target_kind=(descriptor.target_kind if descriptor else None),
+                target_scope=(descriptor.target_scope if descriptor else None),
+                result_class=result_class[:64], artifact_changed=changed,
+                affected_criterion_ids=(descriptor.affected_criterion_ids if descriptor else ()),
+                evidence_kinds=evidence_kinds)
         self._journal("system_one_projection_changed",
-                      snapshot=self.system_one_projector.snapshot())
+                      snapshot=self.metacognitive_state.snapshot())
         if (self.convergence is not None
                 and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"):
             host_relation = str((pending or {}).get("relation") or "ambiguous")
@@ -2908,51 +3298,25 @@ class RuntimeSession:
             criterion_id = next((item for item in (descriptor.affected_criterion_ids
                                                     if descriptor else ())
                                  if any(row.criterion_id == item and row.status != "satisfied"
-                                        for row in self.system_one_projector.criteria)), None)
-            criterion = next((row for row in self.system_one_projector.criteria
+                                        for row in self.metacognitive_state.criteria)), None)
+            criterion = next((row for row in self.metacognitive_state.criteria
                               if row.criterion_id == criterion_id), None)
-            evidence_kinds = tuple(dict.fromkeys(("tool_result",) + supporting_kinds))
-            action_relation = str((pending or {}).get("relation") or "")
             host_progress_class = str(result_data.get("progress_class") or "")
-            if not host_progress_class and action_relation == "required_verification":
-                host_progress_class = "VERIFICATION_PROGRESS"
-            criterion_artifact_changed = bool(
-                changed is True or (criterion_id and
-                                    self.system_one_projector.has_recent_artifact_change_for(
-                                        criterion_id, before_sequence=candidate.sequence)))
             fused_progress = fuse_progress_relation(
                 host_progress_class=host_progress_class,
-                evidence_kinds=evidence_kinds, artifact_changed=criterion_artifact_changed,
                 criterion_id=criterion_id,
-                criterion_status=(criterion.status if criterion else None),
                 judgment=judgment, policy=self._system_one_policy(),
                 calibrated=tuple((decision or {}).get("calibrated_question_ids") or ()))
-            if fused_progress.host_corroborated and fused_progress.progress_class in {
-                    "GOAL_PROGRESS", "BLOCKER_REMOVED"} and criterion_id:
-                progress_digest = hashlib.sha256(json.dumps({
-                    "evidence_id": evidence_id, "criterion_id": criterion_id,
-                    "artifact_changed": changed, "progress_class": fused_progress.progress_class,
-                }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-                self.convergence.record_progress(
-                    cause_id="primary-objective", progress_digest=progress_digest,
-                    progress_class=fused_progress.progress_class, evidence_ref=evidence_id)
-                self.system_one_projector.record_goal_progress(
-                    criterion_id=criterion_id, claim=criterion.claim,
-                    kind=criterion.kind, evidence_ref=evidence_id,
-                    evidence_kind=(supporting_kinds[0] if supporting_kinds else "tool_result"))
-                self._record_convergence("system_one_corroborated_progress")
-                self._journal("system_one_projection_changed",
-                              snapshot=self.system_one_projector.snapshot())
             self._emit_runtime({
                 "category": "tool_result", "event_type": "progress_relation_fused",
                 "subject": subject_ref,
                 "evidence_refs": [evidence_id, *supporting_refs],
-                "payload": {"summary": "System-1 progress classification fused with host facts",
-                            "result_class": fused_progress.progress_class.lower(),
-                            "progress_class": fused_progress.progress_class,
-                            "criterion_id": fused_progress.criterion_id or "",
-                            "host_corroborated": fused_progress.host_corroborated,
-                            "model_influenced": fused_progress.model_influenced}})
+                "payload": {"summary": "System-1 supplied a non-authoritative progress meaning hint",
+                            "result_class": fused_progress.relation,
+                            "progress_relation": fused_progress.relation,
+                            "criterion_id": criterion_id or "",
+                            "model_influenced": fused_progress.model_influenced,
+                            "source_decision_id": fused_progress.decision_id or ""}})
         if action_request_id:
             self._pending_action_requests.pop(action_request_id, None)
         self._complete_action(capability)
@@ -3075,7 +3439,7 @@ class RuntimeSession:
             raise ValueError(f"StateWork {statework_id!r} has no pinned transition contract")
         evidence_registry = control.load_evidence_kind_registry()
         engine = control.TransitionEngine(
-            contract, evidence_registry=evidence_registry, require_registered=False)
+            contract, evidence_registry=evidence_registry, require_registered=True)
         state_key = (statework_id, subject_ref)
         contract_hash = hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
         if self.state_authority is not None:
@@ -3140,13 +3504,24 @@ class RuntimeSession:
                 return GateDecision.REQUIRE_REINSPECTION
             authoritative_revision = int(committed.get("revision", authoritative_revision + 1) or authoritative_revision + 1)
             transition_facts = dict(committed.get("transition") or transition_facts)
+        manifest = statework
+        prior_revision = sum(
+            1 for item in self.state_segments
+            if item.statework_id == statework_id and item.subject_ref == subject_ref)
+        transition_facts.update({
+            "trigger": trigger,
+            "revision": (authoritative_revision if self.state_authority is not None
+                         else prior_revision + 1),
+            "domain": str(manifest.get("domain") or "") or None,
+            "purpose": str(manifest.get("purpose") or "") or None,
+        })
         self.statework_states[state_key] = output_state
-        self.system_one_projector.record_csw_fact(
+        self.metacognitive_state.record_csw_fact(
             statework_id=statework_id, input_state=origin, output_state=output_state,
             progress_class=str(transition_facts.get("progress_class") or "LATERAL"),
             workflow_metadata=transition_facts)
         self._journal("system_one_projection_changed",
-                      snapshot=self.system_one_projector.snapshot())
+                      snapshot=self.metacognitive_state.snapshot())
         entry_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         self.statework_entry_times[state_key] = entry_time
         state_segment = StateSegment(
@@ -3441,9 +3816,9 @@ class RuntimeSession:
                 action_plan_digest=semantic.action_plan_digest,
                 affected_criterion_ids=semantic.affected_criterion_ids,
                 source=semantic.source)
-            self.system_one_projector.record_failed_approach(failed)
+            self.metacognitive_state.record_failed_approach(failed)
             self._journal("system_one_projection_changed",
-                          snapshot=self.system_one_projector.snapshot())
+                          snapshot=self.metacognitive_state.snapshot())
         self.attempt_failures.add(attempt_ref)
         self._journal("attempt_failure_recorded", attempt_ref=attempt_ref,
                       cause_id=descriptor.cause_id, evidence_ref=evidence_ref,
@@ -3488,6 +3863,19 @@ class RuntimeSession:
         expected_subject = self.bundle.policy.subject_ref
         if expected_subject and record.subject_ref != expected_subject:
             raise ValueError("goal progress evidence subject does not match the active task")
+        supported_kinds = {
+            "validator_result", "repository_evidence", "repository_truth",
+            "state_transition", "completion_boundary", "rendered_observation",
+        }
+        if record.kind not in supported_kinds:
+            raise ValueError("goal progress requires criterion-bound host evidence of an accepted kind")
+        authority = (
+            "validator" if str(record.issuer or "").startswith("validator:") else
+            "operator" if str(record.issuer or "").startswith("operator:") else
+            "csw_authoritative" if str(record.issuer or "").startswith("csw:") else
+            "host_observed" if str(record.issuer or "").startswith("host:") else None)
+        if authority is None:
+            raise ValueError("goal progress evidence issuer is not a recognized host authority")
         criteria = {
             str(item.get("criterion_id")) for item in
             (self.bundle.pinned.get("goal_contract") or {}).get("acceptance_criteria", ())
@@ -3496,6 +3884,18 @@ class RuntimeSession:
             raise ValueError("goal progress must match a pinned acceptance criterion")
         if criterion_id is not None and criterion_id not in criteria:
             raise ValueError("goal progress references an unknown acceptance criterion")
+        if criterion_id is None:
+            raise ValueError("goal progress requires a criterion evidence binding")
+        criterion = next((item for item in
+                          (self.bundle.pinned.get("goal_contract") or {}).get(
+                              "acceptance_criteria", ())
+                          if str(item.get("criterion_id")) == criterion_id), None)
+        if criterion is None:
+            raise ValueError("goal progress criterion is not present in the pinned task contract")
+        binding = CriterionEvidenceBinding(
+            criterion_id=criterion_id, evidence_ref=evidence_ref,
+            evidence_kind=record.kind, authority=authority,
+            artifact_revision=record.content_digest)
         digest = hashlib.sha256(json.dumps({
             "evidence_ref": evidence_ref, "criterion_id": criterion_id,
             "content_digest": record.content_digest,
@@ -3508,19 +3908,11 @@ class RuntimeSession:
                 cause_id=progress_cause, progress_digest=digest,
                 progress_class=progress_class, evidence_ref=evidence_ref)
         self._record_convergence("goal_progress")
-        if criterion_id is not None:
-            criterion = next((item for item in
-                              (self.bundle.pinned.get("goal_contract") or {}).get(
-                                  "acceptance_criteria", ())
-                              if str(item.get("criterion_id")) == criterion_id), None)
-            if criterion is not None:
-                self.system_one_projector.record_goal_progress(
-                    criterion_id=criterion_id,
-                    claim=str(criterion.get("claim") or ""),
-                    kind=str(criterion.get("kind") or "acceptance"),
-                    evidence_ref=evidence_ref, evidence_kind=record.kind)
-                self._journal("system_one_projection_changed",
-                              snapshot=self.system_one_projector.snapshot())
+        self.metacognitive_state.record_goal_progress(
+            binding, claim=str(criterion.get("claim") or ""),
+            kind=str(criterion.get("kind") or "acceptance"))
+        self._journal("system_one_projection_changed",
+                      snapshot=self.metacognitive_state.snapshot())
         self._emit_runtime({
             "category": "decision", "event_type": "goal_progress_recorded",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -4028,7 +4420,11 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                 or policy_epoch_record.child_policy_hash != bundle.pinned.get("policy_hash")
                 or policy_epoch_record.route_type != "flow"
                 or policy_epoch_record.reason != "dynamic_replan"
-                or not policy_epoch_record.system_one_decision_ref
+                or policy_epoch_record.decision_source not in {
+                    "metacognition", "operator", "learned_profile", "semantic_advisory"}
+                or not policy_epoch_record.decision_ref
+                or (policy_epoch_record.decision_source == "semantic_advisory"
+                    and not policy_epoch_record.semantic_decision_ref)
                 or policy_epoch_record.state_revision < 0):
             raise resolve_runtime.SnapshotIntegrityError(
                 "child policy epoch record does not match the immutable runtime bundle")
@@ -4060,8 +4456,9 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                 raise ValueError(f"System-1 capability {field_name} differs from pinned policy")
         if capability.max_state_bytes < 32768:
             raise ValueError("System-1 provider cannot accept the maximum protocol frame")
-        if not set(QUESTION_REGISTRY).issubset(capability.supported_question_families):
-            raise ValueError("System-1 provider does not support the pinned question registry")
+        if not set(system_one_policy.enabled_question_families).issubset(
+                capability.supported_question_families):
+            raise ValueError("System-1 provider does not support every enabled question family")
         if capability.stateful_sessions and (
                 not callable(getattr(behavioral_judge, "reset_identity", None))
                 or not callable(getattr(behavioral_judge, "resync", None))):
@@ -4157,6 +4554,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
        policy_revocation_revision=int(bundle.pinned.get("policy_revocation_revision", 0) or 0),
        revocation_mode=str(bundle.pinned.get("revocation_mode") or "deferred"),
        policy_epoch_record=policy_epoch_record)
+    session.metacognitive_state.ensure_criteria(bundle.pinned.get("goal_contract") or {})
     session._ledger_token = object()
     session.ledger = EvidenceLedger(bundle.task_id, writer_token=session._ledger_token)
     session.execution_identity = ExecutionIdentity(
@@ -4385,7 +4783,7 @@ def _restore_session(session: RuntimeSession) -> None:
             session.current_segment_index = int(record.get("segment_index", 0))
             session.authority_revision = int(record.get("authority_revision", 0) or 0)
             epoch_data = record.get("policy_epoch_record")
-            restored_epoch = (PolicyEpochRecord(**epoch_data)
+            restored_epoch = (PolicyEpochRecord.from_mapping(epoch_data)
                               if isinstance(epoch_data, Mapping) else None)
             if restored_epoch is not None:
                 if restored_epoch.child_policy_hash != session.bundle.pinned.get("policy_hash"):
@@ -4422,7 +4820,7 @@ def _restore_session(session: RuntimeSession) -> None:
             session.system_one_sequence = max(
                 session.system_one_sequence, int(record.get("sequence", 0) or 0))
         elif event_type == "system_one_projection_changed":
-            session.system_one_projector.restore(record.get("snapshot") or {})
+            session.metacognitive_state.restore(record.get("snapshot") or {})
         elif event_type == "system_one_decision_recorded":
             decision = dict(record.get("decision") or {})
             decision_id = str(decision.get("decision_id") or "")
@@ -4502,7 +4900,7 @@ def _restore_session(session: RuntimeSession) -> None:
                 progress_class = "VERIFICATION_PROGRESS"
             else:
                 progress_class = "DIAGNOSTIC_PROGRESS"
-            session.system_one_projector.record_csw_fact(
+            session.metacognitive_state.record_csw_fact(
                 statework_id=key[0],
                 input_state=str(record["input_state"]),
                 output_state=str(record["output_state"]),
@@ -4572,6 +4970,8 @@ def _restore_session(session: RuntimeSession) -> None:
                     **semantic_data)
         elif event_type == "attempt_failure_recorded":
             session.attempt_failures.add(str(record.get("attempt_ref") or ""))
+    session.metacognitive_state.ensure_criteria(
+        session.bundle.pinned.get("goal_contract") or {})
     current = session.current_segment
     session.active_statework_ids = ({current.statework_id}
                                     if current.statework_id else set())
@@ -4582,10 +4982,11 @@ def _restore_session(session: RuntimeSession) -> None:
     # A resumed model-visible behavior decision may have been based on stale
     # state. Keep the host reconstruction, clear transient influence, then
     # send a complete frame on the next eligible query.
-    object.__setattr__(session, "behavioral_controller", BehavioralFusionController())
-    object.__setattr__(session, "behavioral_decision", BehavioralDecision())
+    object.__setattr__(session, "semantic_signals", SemanticSignals())
+    object.__setattr__(session, "metacognitive_decision", MetaDecision("DELIVER", "session restored"))
     session.system_one_action_relations.clear()
     session._pending_action_requests.clear()
+    session._pending_retry_candidates.clear()
     if session.system_one_judge is not None:
         identity = SystemOneIdentity(
             namespace_id=session.execution_identity.namespace_id,
@@ -4600,8 +5001,9 @@ def _restore_session(session: RuntimeSession) -> None:
         reset = getattr(session.system_one_judge, "reset_identity", None)
         if callable(reset):
             reset(identity)
+    session._evaluate_metacognition(semantic=SemanticSignals())
     session._journal("system_one_resume_state_invalidated",
-                     projector_restored=True, behavior_epoch_reset=True,
+                     projector_restored=True, metacognitive_control_recomputed=True,
                      provider_resync_required=True)
 
 
@@ -4681,8 +5083,7 @@ def context_for(session: RuntimeSession) -> str:
             "Next action must advance a required criterion or establish a concrete blocker.")
     criterion_claims = {str(item.get("criterion_id")): str(item.get("claim") or "")
                         for item in goal.get("acceptance_criteria", ())}
-    directive = render_behavior_control_directive(
-        session.behavioral_decision, criterion_claims)
+    directive = render_metacognitive_directive(session._evaluate_metacognition())
     if directive:
         parts.append(directive +
                      "\nHost permissions, evidence requirements, retry limits, and completion checks remain authoritative.")

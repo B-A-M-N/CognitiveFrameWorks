@@ -633,6 +633,7 @@ class SystemOneCapability:
     supported_question_families: Tuple[str, ...]
     max_state_bytes: int
     stateful_sessions: bool
+    max_concurrent_requests: int = 4
 
     def __post_init__(self) -> None:
         for name in ("backend_id", "model_id", "model_revision"):
@@ -644,6 +645,8 @@ class SystemOneCapability:
             raise ValueError("provider protocol version mismatch")
         if not 1 <= self.max_state_bytes <= 32768:
             raise ValueError("provider max_state_bytes is out of bounds")
+        if not 1 <= self.max_concurrent_requests <= 64:
+            raise ValueError("provider max_concurrent_requests is out of bounds")
         if not set(self.supported_question_families).issubset(QUESTION_FIELDS):
             raise ValueError("provider advertises an unknown question family")
 
@@ -656,7 +659,8 @@ class SystemOneCapability:
                 "state_projection_schema_hash": self.state_projection_schema_hash,
                 "supported_question_families": list(self.supported_question_families),
                 "max_state_bytes": self.max_state_bytes,
-                "stateful_sessions": self.stateful_sessions}
+                "stateful_sessions": self.stateful_sessions,
+                "max_concurrent_requests": self.max_concurrent_requests}
 
 
 class BehavioralJudge(Protocol):

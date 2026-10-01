@@ -9,6 +9,7 @@ from typing import Any, Mapping, Optional, Tuple
 
 from .protocol_artifact import (PROTOCOL_HASH as SYSTEM_ONE_PROTOCOL_HASH,
                                 PROTOCOL_VERSION as SYSTEM_ONE_PROTOCOL_VERSION,
+                                QUESTION_REGISTRY,
                                 QUESTION_REGISTRY_HASH,
                                 STATE_PROJECTION_SCHEMA_HASH)
 
@@ -36,6 +37,8 @@ class SystemOnePolicy:
     max_latency_ms: int = MAX_SYSTEM_ONE_LATENCY_MS
     cache_size: int = 128
     minimum_confidence: float = 0.9
+    minimum_confidence_by_question: Mapping[str, float] = field(default_factory=dict)
+    enabled_question_families: Tuple[str, ...] = tuple(QUESTION_REGISTRY)
 
     def __post_init__(self) -> None:
         if self.mode not in {"disabled", "shadow", "advisory"}:
@@ -66,6 +69,19 @@ class SystemOnePolicy:
             raise ValueError("System-1 cache_size must be between 0 and 4096")
         if not isinstance(self.minimum_confidence, (int, float)) or not 0 <= self.minimum_confidence <= 1:
             raise ValueError("System-1 minimum_confidence must be between 0 and 1")
+        thresholds = dict(self.minimum_confidence_by_question)
+        if any(question not in QUESTION_REGISTRY
+               or not isinstance(value, (int, float)) or not 0 <= value <= 1
+               for question, value in thresholds.items()):
+            raise ValueError("per-question confidence thresholds are invalid")
+        families = tuple(self.enabled_question_families)
+        if (len(set(families)) != len(families)
+                or any(question not in QUESTION_REGISTRY for question in families)):
+            raise ValueError("enabled question families must be unique registered questions")
+        object.__setattr__(self, "minimum_confidence_by_question",
+                           MappingProxyType({str(key): float(value)
+                                             for key, value in thresholds.items()}))
+        object.__setattr__(self, "enabled_question_families", families)
         if self.mode == "advisory" and (
                 not self.calibration_bundle_hash or not self.model_content_hash
                 or not self.provider_protocol_hash or not self.model_revision
@@ -83,7 +99,13 @@ class SystemOnePolicy:
                 "state_projection_schema_hash": self.state_projection_schema_hash,
                 "calibration_bundle_hash": self.calibration_bundle_hash,
                 "max_latency_ms": self.max_latency_ms, "cache_size": self.cache_size,
-                "minimum_confidence": float(self.minimum_confidence)}
+                "minimum_confidence": float(self.minimum_confidence),
+                "minimum_confidence_by_question": dict(self.minimum_confidence_by_question),
+                "enabled_question_families": list(self.enabled_question_families)}
+
+    def confidence_threshold(self, question_id: str) -> float:
+        return float(self.minimum_confidence_by_question.get(
+            question_id, self.minimum_confidence))
 
 
 @dataclass(frozen=True)
@@ -115,11 +137,15 @@ class VerificationPolicy:
     support_actions_before_goal_reanchor: int = 5
     max_recovery_epochs_without_goal_progress: int = 3
     max_same_approach_retries: int = 2
+    max_verification_actions_without_artifact_change: int = 2
+    max_repeated_equivalent_verifications: int = 1
 
     def __post_init__(self) -> None:
         for name in ("support_actions_before_goal_reanchor",
                      "max_recovery_epochs_without_goal_progress",
-                     "max_same_approach_retries"):
+                     "max_same_approach_retries",
+                     "max_verification_actions_without_artifact_change",
+                     "max_repeated_equivalent_verifications"):
             value = getattr(self, name)
             if not isinstance(value, int) or value < 1 or value > 100:
                 raise ValueError(f"{name} must be an integer between 1 and 100")
@@ -127,7 +153,11 @@ class VerificationPolicy:
     def to_dict(self) -> dict[str, int]:
         return {"support_actions_before_goal_reanchor": self.support_actions_before_goal_reanchor,
                 "max_recovery_epochs_without_goal_progress": self.max_recovery_epochs_without_goal_progress,
-                "max_same_approach_retries": self.max_same_approach_retries}
+                "max_same_approach_retries": self.max_same_approach_retries,
+                "max_verification_actions_without_artifact_change": (
+                    self.max_verification_actions_without_artifact_change),
+                "max_repeated_equivalent_verifications": (
+                    self.max_repeated_equivalent_verifications)}
 
 
 @dataclass(frozen=True)

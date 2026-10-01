@@ -24,7 +24,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "2.4.0"
+      "const": "2.5.0"
     },
     "event_id": {
       "type": "string",
@@ -299,6 +299,15 @@
           "type": "string",
           "maxLength": 512
         },
+        "blocker_id": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "criterion_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "maxLength": 128 }
+        },
         "route": {
           "type": "string",
           "maxLength": 256
@@ -538,7 +547,12 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "system_one_work_mode": {
-          "enum": ["delivery", "diagnose", "review", "research"]
+          "enum": [
+            "delivery",
+            "diagnose",
+            "review",
+            "research"
+          ]
         },
         "system_one_deliverable_kind": {
           "type": "string",
@@ -571,12 +585,10 @@
         "system_one_status": {
           "enum": [
             "ok",
-            "fallback",
-            "ineligible",
-            "stale_request",
-            "stale_response",
-            "circuit_open",
-            "uncalibrated_shadow",
+            "unavailable",
+            "rejected",
+            "stale",
+            "shadow",
             "disabled"
           ]
         },
@@ -640,37 +652,69 @@
                 "calibration_hash"
               ],
               "properties": {
-                "question_id": {"type": "string", "maxLength": 64},
-                "selected": {"type": "string", "maxLength": 128},
+                "question_id": {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                "selected": {
+                  "type": "string",
+                  "maxLength": 128
+                },
                 "raw_probabilities": {
                   "type": "array",
                   "minItems": 1,
                   "maxItems": 24,
                   "items": {
                     "type": "object",
-                    "required": ["label", "probability"],
+                    "required": [
+                      "label",
+                      "probability"
+                    ],
                     "properties": {
-                      "label": {"type": "string", "maxLength": 128},
-                      "probability": {"type": "number", "minimum": 0, "maximum": 1}
+                      "label": {
+                        "type": "string",
+                        "maxLength": 128
+                      },
+                      "probability": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
                     },
                     "additionalProperties": false
                   }
                 },
                 "calibrated_probabilities": {
-                  "type": ["array", "null"],
+                  "type": [
+                    "array",
+                    "null"
+                  ],
                   "maxItems": 24,
                   "items": {
                     "type": "object",
-                    "required": ["label", "probability"],
+                    "required": [
+                      "label",
+                      "probability"
+                    ],
                     "properties": {
-                      "label": {"type": "string", "maxLength": 128},
-                      "probability": {"type": "number", "minimum": 0, "maximum": 1}
+                      "label": {
+                        "type": "string",
+                        "maxLength": 128
+                      },
+                      "probability": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
                     },
                     "additionalProperties": false
                   }
                 },
                 "calibration_hash": {
-                  "type": ["string", "null"],
+                  "type": [
+                    "string",
+                    "null"
+                  ],
                   "pattern": "^[0-9a-f]{64}$"
                 }
               },
@@ -753,6 +797,50 @@
         },
         "system_one_independent_outcome": {
           "type": "boolean"
+        },
+        "system_one_status_reason": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "system_one_semantic_influenced": {
+          "type": "boolean"
+        },
+        "metacognitive_control_changed": {
+          "type": "boolean"
+        },
+        "control_change_source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "deterministic_metacognition",
+            null
+          ]
+        },
+        "source_decision_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "progress_relation": {
+          "enum": [
+            "goal_progress",
+            "blocker_removed",
+            "diagnostic_progress",
+            "verification_progress",
+            "recovery_progress",
+            "no_progress"
+          ]
+        },
+        "source_decision_id": {
+          "type": "string",
+          "maxLength": 256
         }
       },
       "additionalProperties": false
