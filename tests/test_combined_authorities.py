@@ -76,6 +76,22 @@ def test_action_preference_orders_but_does_not_authorize():
     assert session.before_action({"tool_binding_id": "read", "arguments": {}}) == runtime.GateDecision.ALLOW
     assert session.before_action({"tool_binding_id": "shell", "arguments": {}}) != runtime.GateDecision.ALLOW
 
+    combined = runtime.start(bundle, telemetry_disabled=True)
+    combined.enable_external_behavior_authority()
+    combined.apply_external_behavior_state({
+        "revision": 1, "cognitive_mode": "DELIVER",
+        "framework_modes": {"owl": "normal", "anchor": "passive",
+                             "fuse": "normal", "ward": "mandatory",
+                             "flow": "off", "sispis": "normal", "dox": "off"},
+        "active_stateworks": [], "focus_criteria": [],
+        "attention_lease": None, "attention_last_seen": {},
+        "verification_intensity": "normal", "exploration_budget": "normal",
+        "retry_policy": "normal", "recovery_level": 0,
+        "context_strategy": "standard", "response_strategy": "direct",
+        "active_interventions": [], "intervention_history": [],
+    })
+    assert combined._action_strategy()["priorities"] == {}
+
 
 def test_combined_enforcing_requires_shared_authority():
     resolve, runtime = _runtime_modules()

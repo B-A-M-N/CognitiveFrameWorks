@@ -1807,12 +1807,13 @@ class RuntimeSession:
                     continue
                 objective_routes.append(route)
             preferences.extend(sorted(objective_routes))
-        for adjustment in self.bundle.guard_pack.get("routing_adjustments", ()):
-            if (adjustment.get("route_type") == "tool_policy"
-                    and adjustment.get("disposition") == "prefer"):
-                route = str(adjustment.get("route") or "")
-                if route in self.action_registry and route not in preferences:
-                    preferences.append(route)
+        if not self.external_behavior_authority:
+            for adjustment in self.bundle.guard_pack.get("routing_adjustments", ()):
+                if (adjustment.get("route_type") == "tool_policy"
+                        and adjustment.get("disposition") == "prefer"):
+                    route = str(adjustment.get("route") or "")
+                    if route in self.action_registry and route not in preferences:
+                        preferences.append(route)
         eligible = [route for route in self.action_registry if route not in preferences]
         return ActionStrategy(
             eligible_actions=tuple(preferences + eligible),
