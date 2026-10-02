@@ -59,6 +59,29 @@ def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def validate_qualification_result(qualification: dict, result: dict, *,
+                                 result_relative: str) -> None:
+    """Validate result shape and enforce mandatory qualification status."""
+    required = set(((qualification.get("result_contract") or {}).get("required_fields") or ()))
+    if not required.issubset(result):
+        raise RuntimeError(f"qualification result is incomplete: {result_relative}")
+    if result.get("qualification_id") != qualification.get("qualification_id"):
+        raise RuntimeError(f"qualification result identity mismatch: {result_relative}")
+
+    allowed_statuses = set(
+        ((qualification.get("result_contract") or {}).get("status_values") or ()))
+    status = result.get("status")
+    if not allowed_statuses or status not in allowed_statuses:
+        raise RuntimeError(f"qualification result has an invalid status: {result_relative}")
+
+    mandatory = qualification.get("mandatory_for_release")
+    if type(mandatory) is not bool:
+        raise RuntimeError(f"qualification release policy is missing or invalid: {result_relative}")
+    if mandatory and status != "pass":
+        raise RuntimeError(
+            f"mandatory qualification is {status}, expected pass: {result_relative}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", help="required exact tag for all three trees")
@@ -95,11 +118,8 @@ def main() -> int:
         if not result_path.is_file():
             raise RuntimeError(f"qualification result is missing: {result_relative}")
         result = json.loads(result_path.read_text(encoding="utf-8"))
-        required = set(((qualification.get("result_contract") or {}).get("required_fields") or ()))
-        if not required.issubset(result):
-            raise RuntimeError(f"qualification result is incomplete: {result_relative}")
-        if result.get("qualification_id") != qualification.get("qualification_id"):
-            raise RuntimeError(f"qualification result identity mismatch: {result_relative}")
+        validate_qualification_result(
+            qualification, result, result_relative=str(result_relative))
     if seen_qualification_classes != qualification_classes:
         raise RuntimeError("release qualification classes are incomplete")
     artifact_manifest = {

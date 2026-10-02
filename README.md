@@ -486,6 +486,9 @@ These projects are released under the [MIT License](LICENSE). Contributions are 
 Structural public-beta checks, hostile integration, real-agent behavioral
 qualification, and operational performance are separate evidence classes.
 See `contracts/qualifications/`; unexecuted results remain `not_run`.
+The final release gate requires every qualification marked
+`mandatory_for_release` to have a `pass` result; `not_run`, `fail`, and
+`blocked` results stop release.
 
 ## Concurrent-agent isolation and controlled sharing
 

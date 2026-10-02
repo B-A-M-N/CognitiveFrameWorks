@@ -84,8 +84,17 @@ def test_release_qualifications_are_separate_and_not_fabricated_evidence() -> No
         result_path = root / item["result_contract"]["path"]
         result = json.loads(result_path.read_text())
         assert set(item["result_contract"]["required_fields"]).issubset(result)
-        assert result["status"] == "not_run"
-        assert result["completed_at"] is None
+        assert result["status"] in item["result_contract"]["status_values"]
+        assert result["qualification_id"] == item["qualification_id"]
+        if result["status"] == "not_run":
+            assert result["completed_at"] is None
+            if item["evidence_class"] == "real_agent_behavioral":
+                assert result["report_path"] is None
+                assert result["benchmark_hash"] is None
+                assert result["source_commits"] == {}
+        elif result["status"] == "pass":
+            assert result["completed_at"]
+            assert result["source_commits"]
 
 
 def test_real_agent_transfer_protocol_requires_real_agent_and_external_report(tmp_path: Path) -> None:
@@ -100,3 +109,6 @@ def test_real_agent_transfer_protocol_requires_real_agent_and_external_report(tm
                          "real-agent-behavioral-v1.result.json").read_text())
     assert result["status"] == "not_run"
     assert result["completed_at"] is None
+    assert result["report_path"] is None
+    assert result["benchmark_hash"] is None
+    assert result["source_commits"] == {}
