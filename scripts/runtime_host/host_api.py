@@ -16,6 +16,7 @@ from runtime import (CompletionClaim, GateDecision, RuntimeSession,
 from runtime_contract.actions import (ActionDescriptor, HostExecutionContext,
                                        effective_action_registry)
 from runtime_contract.advisor import BehavioralAdvisor
+from runtime_contract.workflow_port import WorkflowPort, validate_workflow_port
 from resolve_runtime import RuntimeBundle, TaskRequest, resolve
 from runtime_host.session_registry import HOST_SESSION_REGISTRY as _HOST_SESSION_REGISTRY
 from runtime_host.handles import AgentSessionHandle, HostSessionHandle, RuntimeTaskHandle
@@ -37,12 +38,15 @@ class CognitiveRuntime:
                  behavioral_advisor: Optional[BehavioralAdvisor] = None,
                  sharing_verifier: Optional[Any] = None,
                  membership_authority: Optional[SharedWorkflowMembershipAuthority] = None,
-                 operator_read_model: Optional[Any] = None) -> None:
+                 operator_read_model: Optional[Any] = None,
+                 workflow_port: Optional[WorkflowPort] = None) -> None:
         self.telemetry_disabled = telemetry_disabled
         self.host_context = host_context
         self.action_registry = effective_action_registry(action_registry)
         self.routing_profile_path = routing_profile_path
         self.behavioral_advisor = behavioral_advisor
+        self.workflow_port = (validate_workflow_port(workflow_port)
+                              if workflow_port is not None else None)
         # Host-only callback; never copied into RuntimeTaskHandle or AgentSessionHandle.
         self._sharing_verifier = sharing_verifier
         self._membership_authority = membership_authority
@@ -55,7 +59,8 @@ class CognitiveRuntime:
             routing_profile_path=Path(self.routing_profile_path)
             if self.routing_profile_path else None,
             behavioral_advisor=self.behavioral_advisor,
-            sharing_verifier=self._sharing_verifier)
+            sharing_verifier=self._sharing_verifier,
+            workflow_port=self.workflow_port)
         if "telemetry_disabled" in start_options:
             if bool(start_options["telemetry_disabled"]) != self.telemetry_disabled:
                 raise ValueError("task start cannot override the runtime telemetry contract")

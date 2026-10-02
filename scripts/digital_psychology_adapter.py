@@ -32,7 +32,6 @@ _CONTROL_VALUES = {
 @dataclass(frozen=True)
 class PreparedBehaviorDirectiveBatch:
     directives: tuple[dict[str, Any], ...]
-    prior_controls: Mapping[str, Mapping[str, Any]]
     prior_behavior_state: Mapping[str, Any] | None
 
 
@@ -57,9 +56,6 @@ class CFWBehaviorAdapter:
             raise TypeError("CFW behavior adapter requires an agent context handle")
         self._session = session
         self._agent_handle = agent_handle
-        self._controls: dict[str, dict[str, Any]] = {}
-        self._current_action_index = -1
-        self._behavior_state: dict[str, Any] | None = None
         session.enable_external_behavior_authority()
 
     def available_component_ids(self) -> tuple[str, ...]:
@@ -97,15 +93,11 @@ class CFWBehaviorAdapter:
 
     @property
     def applied_behavior_state(self) -> Mapping[str, Any] | None:
-        state = self._session.external_behavior_state
+        state = self._session.effective_external_behavior_state()
         return dict(state) if state else None
 
     def collect_behavior_signals(self, observation: Any) -> tuple[dict[str, Any], ...]:
-        self._current_action_index = int(observation.action_index)
-        self._controls = {
-            key: value for key, value in self._controls.items()
-            if self._current_action_index <= value["expires_after_action_index"]
-        }
+        self._session.expire_external_behavior_leases(int(observation.action_index))
         result = []
         for envelope in self._session.signals[-32:]:
             signal_type = str(envelope.get("signal_type") or "")
@@ -133,18 +125,10 @@ class CFWBehaviorAdapter:
                 "decision": result.decision.value}
 
     def expire_local_behavior_leases(self, action_index: int) -> bool:
-        """Drop DP overlays locally when the DP control process is unavailable."""
+        """Expire only target-scoped DP leases while preserving live controls."""
         if type(action_index) is not int or action_index < 0:
             raise ValueError("local CFW lease expiry requires a non-negative action index")
-        self._current_action_index = max(self._current_action_index, action_index)
-        expired = any(self._current_action_index > int(
-            item["expires_after_action_index"]) for item in self._controls.values())
-        if not expired:
-            return False
-        self._session.restore_external_behavior_startup()
-        self._controls.clear()
-        self._behavior_state = None
-        return True
+        return self._session.expire_external_behavior_leases(action_index)
 
     def prepare_behavior_directives(
             self, directives: Sequence[Mapping[str, Any]]) -> PreparedBehaviorDirectiveBatch:
@@ -155,9 +139,8 @@ class CFWBehaviorAdapter:
             raise ValueError("CFW directive IDs must be unique")
         return PreparedBehaviorDirectiveBatch(
             directives=normalized,
-            prior_controls={key: dict(value) for key, value in self._controls.items()},
-            prior_behavior_state=(dict(self._behavior_state)
-                                  if self._behavior_state is not None else None),
+            prior_behavior_state=(dict(self._session.external_behavior_state)
+                                  if self._session.external_behavior_state else None),
         )
 
     def apply_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch,
@@ -168,40 +151,23 @@ class CFWBehaviorAdapter:
         if not isinstance(behavior_state, Mapping):
             raise TypeError("DP behavior state must be a mapping")
         self._validate_directive_state(prepared.directives, behavior_state)
-        controls = dict(self._controls)
-        for directive in prepared.directives:
-            applied = dict(directive)
-            applied["expires_after_action_index"] = (
-                self._current_action_index + directive["expires_after_actions"])
-            controls[self._target_key(directive)] = applied
-        if len(controls) > 16:
-            raise ValueError("CFW active behavior-control set exceeds its bound")
         self._session.apply_external_behavior_state(behavior_state)
-        self._controls = controls
-        self._behavior_state = json.loads(
-            json.dumps(dict(behavior_state), sort_keys=True))
         return tuple(item["directive_id"] for item in prepared.directives)
 
     def synchronize_behavior_state(self, behavior_state: Mapping[str, Any]) -> None:
         if not isinstance(behavior_state, Mapping):
             raise TypeError("DP behavior state must be a mapping")
         self._session.synchronize_external_behavior_state(behavior_state)
-        self._behavior_state = json.loads(
-            json.dumps(dict(behavior_state), sort_keys=True))
 
     def rollback_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch) -> None:
         if not isinstance(prepared, PreparedBehaviorDirectiveBatch):
             raise TypeError("CFW directive batch was not prepared by this adapter")
         if prepared.prior_behavior_state is None:
             self._session.restore_external_behavior_startup()
-            self._behavior_state = None
         else:
             self._session.rollback_external_behavior_state(
                 prepared.prior_behavior_state,
                 expected_current_revision=self._session.external_behavior_revision)
-            self._behavior_state = dict(prepared.prior_behavior_state)
-        self._controls = {key: dict(value)
-                          for key, value in prepared.prior_controls.items()}
 
     def restore_behavior_state(self, behavior_state: Mapping[str, Any], *,
                                expected_current_revision: int) -> None:
@@ -210,9 +176,6 @@ class CFWBehaviorAdapter:
             behavior_state,
             expected_current_revision=expected_current_revision,
         )
-        self._controls = {}
-        self._behavior_state = json.loads(
-            json.dumps(dict(behavior_state), sort_keys=True))
 
     def render_behavior_context(self, context: str, *,
                                 active_statework_ids: Sequence[str] = ()) -> str:
@@ -289,10 +252,6 @@ class CFWBehaviorAdapter:
             if actual != expected:
                 raise ValueError(
                     f"DP behavior state does not contain directive value for {target!r}")
-
-    @staticmethod
-    def _target_key(directive: Mapping[str, Any]) -> str:
-        return f"{directive['operation']}:{directive['target']}"
 
     @classmethod
     def _validate_directive(cls, value: Mapping[str, Any]) -> dict[str, Any]:

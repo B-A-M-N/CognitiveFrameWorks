@@ -17,10 +17,10 @@ from runtime_contract.actions import ActionDescriptor
 from runtime_contract.behavioral_fusion import fuse_action_relation
 from runtime_contract.protocol_artifact import (
     PROTOCOL_HASH, PROTOCOL_VERSION, QUESTION_REGISTRY_HASH,
-    STATE_PROJECTION_SCHEMA_HASH,
+    STATE_PROJECTION_SCHEMA_HASH, PROTOCOL_SCHEMA,
 )
 from runtime_contract.system_one import (
-    QUESTION_REGISTRY, QuestionAnswer, QuestionProbability, SystemOneCapability,
+    ActivityFact, QUESTION_REGISTRY, QuestionAnswer, QuestionProbability, SystemOneCapability,
     SystemOneIdentity, SystemOneJudgment,
 )
 from runtime_contract.task import (AcceptanceCriterion, SystemOnePolicy,
@@ -67,6 +67,31 @@ def test_system_one_latency_policy_allows_bounded_cpu_model_deadline():
     assert SystemOnePolicy(max_latency_ms=30000).max_latency_ms == 30000
     with pytest.raises(ValueError, match="max_latency_ms"):
         SystemOnePolicy(max_latency_ms=30001)
+
+
+def test_protocol_accepts_relation_certainty_and_unknown_host_telemetry():
+    import jsonschema
+
+    activity = ActivityFact(sequence=1, activity_type="action",
+                            relation_certainty="unknown").to_dict()
+    situation = {
+        "current_state": None,
+        "blockers": [],
+        "actions_since_goal_progress": 0,
+        "actions_since_artifact_change": None,
+        "verification_actions_since_artifact_change": None,
+        "recovery_epochs": 0,
+        "repeated_branch_count": 0,
+    }
+
+    activity_schema = dict(PROTOCOL_SCHEMA["$defs"]["ActivityFact"])
+    activity_schema["$defs"] = PROTOCOL_SCHEMA["$defs"]
+    jsonschema.validate(activity, activity_schema)
+    situation_schema = dict(
+        PROTOCOL_SCHEMA["$defs"]["SemanticState"]["properties"]["situation"])
+    situation_schema["$defs"] = PROTOCOL_SCHEMA["$defs"]
+    jsonschema.validate(
+        situation, situation_schema)
 
 
 class FixedJudge:

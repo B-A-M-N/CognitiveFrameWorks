@@ -9,6 +9,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .system_one import (ActivityFact, AttemptSemanticDescriptor, CriterionState,
                          WorkflowProgressFact)
+from .standalone_attention import StandaloneAttentionPolicy
 
 
 @dataclass(frozen=True)
@@ -272,11 +273,14 @@ class MetacognitiveController:
                  unresolved_contradiction: bool = False,
                  semantic: Optional[SemanticSignals] = None,
                  completion_readiness: Optional[CompletionReadiness] = None) -> MetaDecision:
-        active = tuple(item.criterion_id for item in state.criteria
-                       if item.status != "satisfied")[:8]
+        active = state.active_attention_window()
         if unresolved_contradiction:
             return MetaDecision("REINSPECT", "unresolved operator contradiction", active)
         if recovery_epochs_since_progress >= max_recovery_epochs:
+            if StandaloneAttentionPolicy.runnable(state.criteria):
+                return MetaDecision(
+                    "REPLAN", "current recovery budget exhausted; yield to runnable criteria",
+                    active, goal_reanchor_required=True)
             return MetaDecision("BLOCKED", "hard recovery budget exhausted", active)
         if support_actions_since_progress >= support_action_limit:
             return MetaDecision("REPLAN", "support-action budget reached", active,
@@ -337,6 +341,9 @@ class MetacognitiveState:
         self._workflow_limit = workflow_limit
         self._next_sequence = 0
         self._criteria: dict[str, CriterionState] = {}
+        self._criterion_action_counts: dict[str, int] = {}
+        self._criterion_retry_counts: dict[str, int] = {}
+        self._criterion_last_action_sequence: dict[str, int] = {}
         self._blockers: dict[str, BlockerFact] = {}
         self._actions_since_goal_progress = 0
         self._actions_since_artifact_change: Optional[int] = None
@@ -354,6 +361,19 @@ class MetacognitiveState:
     @property
     def criteria(self) -> tuple[CriterionState, ...]:
         return tuple(sorted(self._criteria.values(), key=lambda item: item.criterion_id))
+
+    @property
+    def criterion_retry_counts(self) -> Mapping[str, int]:
+        return dict(self._criterion_retry_counts)
+
+    @property
+    def criterion_last_action_sequence(self) -> Mapping[str, int]:
+        return dict(self._criterion_last_action_sequence)
+
+    def active_attention_window(self) -> tuple[str, ...]:
+        return StandaloneAttentionPolicy.select(
+            self.criteria, retry_counts=self._criterion_retry_counts,
+            last_action_sequence=self._criterion_last_action_sequence)
 
     @property
     def workflows(self) -> tuple[WorkflowProgressFact, ...]:
@@ -431,6 +451,9 @@ class MetacognitiveState:
                     criterion_id=criterion_id,
                     claim=str(item.get("claim") or "")[:512],
                     kind=str(item.get("kind") or "")[:64])
+                self._criterion_action_counts.setdefault(criterion_id, 0)
+                self._criterion_retry_counts.setdefault(criterion_id, 0)
+                self._criterion_last_action_sequence.setdefault(criterion_id, 0)
                 self._logical_revision += 1
             if current is None or criterion_id not in self._verification_requirements:
                 self._verification_requirements[criterion_id] = (
@@ -460,6 +483,11 @@ class MetacognitiveState:
             "repeated_branch_count": self._repeated_branch_count,
             "verification_obligations": [item.to_dict()
                                          for item in self.verification_obligations],
+            "criterion_attention": {
+                "action_counts": dict(self._criterion_action_counts),
+                "retry_counts": dict(self._criterion_retry_counts),
+                "last_action_sequence": dict(self._criterion_last_action_sequence),
+            },
         }
 
     def restore(self, value: Mapping[str, Any]) -> None:
@@ -474,8 +502,11 @@ class MetacognitiveState:
             "verification_counts", "verification_fingerprints", "logical_revision",
         }
         obligation_fields = extended_fields | {"verification_obligations"}
+        attention_fields = extended_fields | {"criterion_attention"}
+        current_fields = (extended_fields | {"verification_obligations", "criterion_attention"})
         if not isinstance(value, Mapping) or set(value) not in (
-                fields, extended_fields, obligation_fields):
+                fields, extended_fields, obligation_fields, attention_fields,
+                current_fields):
             raise ValueError("malformed metacognitive state snapshot")
 
         def activity(row: Mapping[str, Any]) -> ActivityFact:
@@ -484,7 +515,8 @@ class MetacognitiveState:
                     "target_ref_digest", "proposed_purpose", "proposed_purpose_source",
                     "affected_criterion_ids", "result_class", "artifact_changed",
                     "progress_class", "evidence_kinds"}
-            if not isinstance(row, Mapping) or set(row) != keys:
+            if (not isinstance(row, Mapping)
+                    or set(row) not in (keys, keys | {"relation_certainty"})):
                 raise ValueError("malformed System-1 activity snapshot")
             return ActivityFact(
                 sequence=int(row["sequence"]), activity_type=str(row["activity_type"]),
@@ -496,7 +528,8 @@ class MetacognitiveState:
                 proposed_purpose_source=str(row["proposed_purpose_source"]),
                 affected_criterion_ids=tuple(row["affected_criterion_ids"]),
                 result_class=row["result_class"], artifact_changed=row["artifact_changed"],
-                progress_class=row["progress_class"], evidence_kinds=tuple(row["evidence_kinds"]))
+                progress_class=row["progress_class"], evidence_kinds=tuple(row["evidence_kinds"]),
+                relation_certainty=row.get("relation_certainty"))
 
         def criterion(row: Mapping[str, Any]) -> CriterionState:
             return CriterionState(
@@ -553,6 +586,28 @@ class MetacognitiveState:
         self._failed_approaches.clear()
         self._failed_approaches.extend(failed)
         self._criteria = {item.criterion_id: item for item in criteria}
+        attention = value.get("criterion_attention") or {}
+        if not isinstance(attention, Mapping) or set(attention) not in (
+                {"action_counts", "retry_counts", "last_action_sequence"}, set()):
+            raise ValueError("malformed criterion attention snapshot")
+        criterion_ids = set(self._criteria)
+        restored_attention = {}
+        for name in ("action_counts", "retry_counts", "last_action_sequence"):
+            source = attention.get(name) or {}
+            if (not isinstance(source, Mapping) or len(source) > 256
+                    or not set(source).issubset(criterion_ids)
+                    or any(type(count) is not int or count < 0
+                           for count in source.values())):
+                raise ValueError("malformed criterion attention counters")
+            restored_attention[name] = {str(key): int(count)
+                                       for key, count in source.items()}
+        self._criterion_action_counts = {
+            key: restored_attention["action_counts"].get(key, 0) for key in criterion_ids}
+        self._criterion_retry_counts = {
+            key: restored_attention["retry_counts"].get(key, 0) for key in criterion_ids}
+        self._criterion_last_action_sequence = {
+            key: restored_attention["last_action_sequence"].get(key, 0)
+            for key in criterion_ids}
         self._blockers = {}
         for key, row in value["blockers"].items():
             if isinstance(row, Mapping):
@@ -672,6 +727,13 @@ class MetacognitiveState:
                 self._actions_since_artifact_change += 1
                 if verification_relation == "required_verification":
                     self._verification_actions_since_artifact_change += 1
+        if activity_type in {"action", "retry"}:
+            for criterion_id in fact.affected_criterion_ids:
+                if criterion_id not in self._criteria:
+                    continue
+                self._criterion_action_counts[criterion_id] = (
+                    self._criterion_action_counts.get(criterion_id, 0) + 1)
+                self._criterion_last_action_sequence[criterion_id] = fact.sequence
         if artifact_changed is True:
             self._artifact_revision += 1
             self._actions_since_artifact_change = 0
@@ -695,6 +757,9 @@ class MetacognitiveState:
                 "GOAL_PROGRESS", "BLOCKER_REMOVED"}:
             self._actions_since_goal_progress = 0
             self._goal_directed_actions_since_goal_progress = 0
+            for criterion_id in fact.affected_criterion_ids:
+                if criterion_id in self._criteria:
+                    self._criterion_retry_counts[criterion_id] = 0
         if activity_type == "retry" and fact.result_class == "equivalent_retry":
             self._repeated_branch_count += 1
         if (activity_type == "action"
@@ -833,6 +898,11 @@ class MetacognitiveState:
 
     def record_failed_approach(self, descriptor: AttemptSemanticDescriptor) -> None:
         self._failed_approaches.append(descriptor)
+        for criterion_id in descriptor.affected_criterion_ids:
+            if criterion_id in self._criteria:
+                self._criterion_retry_counts[criterion_id] = (
+                    self._criterion_retry_counts.get(criterion_id, 0) + 1)
+                self._criterion_last_action_sequence[criterion_id] = self._next_sequence
         self._logical_revision += 1
 
     def record_recovery_epoch(self) -> None:

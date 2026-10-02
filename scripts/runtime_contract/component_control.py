@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -81,10 +82,79 @@ class ComponentControl:
 
 
 @dataclass(frozen=True)
+class AppliedControlLease:
+    """Target-scoped DP control layer owned by the CFW runtime overlay."""
+
+    directive_id: str
+    intervention_id: str
+    target: str
+    applied_value: str
+    previous_value: str
+    expires_at_action: int
+    behavior_revision: int
+
+    def __post_init__(self) -> None:
+        for name in ("directive_id", "intervention_id", "target",
+                     "applied_value", "previous_value"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value or len(value) > 2048:
+                raise ValueError(f"applied behavior lease {name} is invalid")
+        if (type(self.expires_at_action) is not int or self.expires_at_action < 0
+                or type(self.behavior_revision) is not int or self.behavior_revision < 0):
+            raise ValueError("applied behavior lease bounds are invalid")
+        if self.target == "mode":
+            modes = {"RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
+                     "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}
+            if self.applied_value not in modes or self.previous_value not in modes:
+                raise ValueError("applied behavior lease mode is unsupported")
+        elif self.target.startswith("framework:"):
+            component_id = self.target.split(":", 1)[1].lower()
+            if (component_id not in COMPONENT_IDS
+                    or self.applied_value not in COMPONENT_ALLOWED_MODES[component_id]
+                    or self.previous_value not in COMPONENT_ALLOWED_MODES[component_id]):
+                raise ValueError("applied behavior lease component mode is unsupported")
+            if (component_id in COMPONENT_HARD_FLOOR_MODES
+                    and (self.applied_value != COMPONENT_HARD_FLOOR_MODES[component_id]
+                         or self.previous_value != COMPONENT_HARD_FLOOR_MODES[component_id])):
+                raise PermissionError("applied behavior lease cannot lower a hard floor")
+        else:
+            target = self.target.removeprefix("control:")
+            choices = {
+                "verification_intensity": {"passive", "normal", "high", "strict"},
+                "exploration_budget": {"disabled", "low", "normal", "bounded"},
+                "retry_policy": {"normal", "materially_different_only", "no_retry"},
+                "context_strategy": {"standard", "compact", "criterion_focused"},
+                "response_strategy": {"direct", "detailed", "structured"},
+            }
+            if target == "recovery_level":
+                if (not self.applied_value.isdigit() or not self.previous_value.isdigit()
+                        or not 0 <= int(self.applied_value) <= 3
+                        or not 0 <= int(self.previous_value) <= 3):
+                    raise ValueError("applied behavior lease recovery level is unsupported")
+            elif target == "focus_criteria":
+                try:
+                    applied, previous = (json.loads(self.applied_value),
+                                         json.loads(self.previous_value))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("applied behavior lease focus is malformed") from exc
+                for values in (applied, previous):
+                    if (not isinstance(values, list) or len(values) > 8
+                            or len(values) != len(set(values))
+                            or any(not isinstance(item, str) or not item or len(item) > 128
+                                   for item in values)):
+                        raise ValueError("applied behavior lease focus is malformed")
+            elif (target not in choices
+                  or self.applied_value not in choices[target]
+                  or self.previous_value not in choices[target]):
+                raise ValueError("applied behavior lease control is unsupported")
+
+
+@dataclass(frozen=True)
 class ComponentOverlay:
     behavior_revision: int
     behavior_mode: str
     controls: tuple[ComponentControl, ...]
+    target_leases: tuple[AppliedControlLease, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.behavior_revision) is not int or self.behavior_revision < 0:
@@ -95,6 +165,11 @@ class ComponentOverlay:
             raise ValueError("component overlay behavior mode is unsupported")
         if not isinstance(self.controls, tuple) or len(self.controls) > len(COMPONENT_IDS):
             raise ValueError("component overlay exceeds the supported component bound")
+        if (not isinstance(self.target_leases, tuple)
+                or len(self.target_leases) > 16 * 12
+                or any(not isinstance(item, AppliedControlLease)
+                       for item in self.target_leases)):
+            raise ValueError("component overlay target leases exceed their bound")
         ids = [item.component_id for item in self.controls]
         if len(ids) != len(set(ids)):
             raise ValueError("component overlay contains duplicate component IDs")
@@ -127,33 +202,52 @@ class ComponentOverlay:
         if len(scopes) > 1:
             raise ValueError("component overlay interventions escape one DP runtime scope")
         scope = next(iter(scopes), None)
-        expiries: dict[str, int] = {}
+        target_leases: list[AppliedControlLease] = []
         for intervention in value.get("active_interventions", ()):
             if not isinstance(intervention, Mapping):
                 continue
-            expiry = intervention.get("baseline_action_index", 0) + intervention.get(
-                "expires_after_actions", 0)
-            if type(expiry) is not int or expiry < 0:
-                continue
+            baseline = intervention.get("baseline_action_index", 0)
+            duration = intervention.get("expires_after_actions", 0)
+            intervention_id = intervention.get("intervention_id")
+            behavior_revision = intervention.get("start_revision")
+            if (type(baseline) is not int or baseline < 0
+                    or type(duration) is not int or not 1 <= duration <= 64
+                    or not isinstance(intervention_id, str) or not intervention_id
+                    or type(behavior_revision) is not int or behavior_revision < 0):
+                raise ValueError("DP intervention target lease metadata is malformed")
+            # The stored index is the last action covered by this lease.
+            expiry = baseline + duration - 1
             for target in intervention.get("targets", ()):
                 if not isinstance(target, Mapping):
                     continue
                 name = target.get("target")
-                if isinstance(name, str) and name.startswith("framework:"):
-                    component_id = name.split(":", 1)[1].lower()
-                    if component_id in COMPONENT_IDS:
-                        expiries[component_id] = max(expiries.get(component_id, 0), expiry)
+                previous = target.get("previous_value")
+                applied = target.get("applied_value")
+                if (not isinstance(name, str) or not name
+                        or not isinstance(previous, str) or not isinstance(applied, str)):
+                    raise ValueError("DP intervention target lease is malformed")
+                directive_id = "lease-" + hashlib.sha256(
+                    f"{intervention_id}\0{name}".encode()).hexdigest()[:32]
+                target_leases.append(AppliedControlLease(
+                    directive_id=directive_id,
+                    intervention_id=intervention_id,
+                    target=name,
+                    applied_value=applied,
+                    previous_value=previous,
+                    expires_at_action=expiry,
+                    behavior_revision=behavior_revision,
+                ))
 
         controls = tuple(ComponentControl(
             component_id=component_id,
             mode=normalized[component_id],
             scope=scope,
-            expires_at_action=expiries.get(component_id),
+            expires_at_action=None,
             source_revision=revision,
         ) for component_id in sorted(COMPONENT_IDS))
         return cls(behavior_revision=revision,
                    behavior_mode=str(value.get("cognitive_mode") or ""),
-                   controls=controls)
+                   controls=controls, target_leases=tuple(target_leases))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -166,10 +260,34 @@ class ComponentOverlay:
                 "expires_at_action": item.expires_at_action,
                 "source_revision": item.source_revision,
             } for item in self.controls],
+            "target_leases": [{
+                "directive_id": item.directive_id,
+                "intervention_id": item.intervention_id,
+                "target": item.target,
+                "applied_value": item.applied_value,
+                "previous_value": item.previous_value,
+                "expires_at_action": item.expires_at_action,
+                "behavior_revision": item.behavior_revision,
+            } for item in self.target_leases],
         }
 
     def by_component(self) -> dict[str, ComponentControl]:
         return {item.component_id: item for item in self.controls}
+
+    def effective_target_value(self, target: str, action_index: int) -> str | None:
+        leases = [item for item in self.target_leases if item.target == target]
+        if not leases:
+            return None
+        active = [item for item in leases if action_index <= item.expires_at_action]
+        if active:
+            return max(active, key=lambda item: (
+                item.behavior_revision, item.directive_id)).applied_value
+        return min(leases, key=lambda item: (
+            item.behavior_revision, item.directive_id)).previous_value
+
+    def has_expired_target_leases(self, action_index: int) -> bool:
+        return any(action_index > item.expires_at_action
+                   for item in self.target_leases)
 
 
 @dataclass(frozen=True)
@@ -202,5 +320,5 @@ __all__ = ["COMPONENT_IDS", "COMPONENT_MODES", "COMPONENT_ALLOWED_MODES",
            "COMPONENT_BASELINE_MODES",
            "COMPONENT_DYNAMIC_CONTROL", "COMPONENT_HARD_FLOOR_MODES",
            "COMPONENT_MODEL_VISIBILITY",
-           "ComponentControl", "ComponentOverlay",
+           "AppliedControlLease", "ComponentControl", "ComponentOverlay",
            "PreparedComponentOverlay"]

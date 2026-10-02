@@ -60,6 +60,8 @@ def wheel_files(project: Path) -> set[str]:
                 "assert root.joinpath('tuid/manifest.yaml').is_file(); "
                 "from cognitive_statework.flow_selectors import FlowSelector; "
                 "assert FlowSelector; "
+                "from cognitive_statework.workflow_planner import WorkflowPlanner; "
+                "assert WorkflowPlanner; "
                 "from cognitive_statework.cfw_authority import CFWAuthorityAdapter; "
                 "assert CFWAuthorityAdapter; "
                 "from cognitive_statework.cfw_provider import CognitiveStateWorkProvider; "
@@ -93,10 +95,12 @@ def main() -> int:
     assert "cognitive_statework/compiled-registry.json" in csw
     assert "cognitive_statework/tuid/manifest.yaml" in csw
     assert "cognitive_statework/flow_selectors.py" in csw
+    assert "cognitive_statework/workflow_planner.py" in csw
     assert "cognitive_statework/cfw_authority.py" in csw
     assert "runtime_contract/contracts/behavioral-routing-profile.schema.json" in cfw
     assert "runtime_contract/contracts/routing-experiment-plan.schema.json" in cfw
     assert "runtime_contract/pipeline.yaml" in cfw
+    assert "runtime_contract/workflow_port.py" in cfw
     print("PACKAGE_RESOURCE_TEST=PASS")
     return 0
 

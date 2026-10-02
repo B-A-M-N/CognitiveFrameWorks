@@ -327,6 +327,9 @@
             "type": "string",
             "maxLength": 64
           }
+        },
+        "relation_certainty": {
+          "enum": ["explicit", "inferred", "unknown", null]
         }
       },
       "additionalProperties": false
@@ -528,7 +531,7 @@
               "minimum": 0
             },
             "verification_actions_since_artifact_change": {
-              "type": "integer",
+              "type": ["integer", "null"],
               "minimum": 0
             },
             "recovery_epochs": {

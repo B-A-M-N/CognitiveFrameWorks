@@ -4,6 +4,11 @@ from pathlib import Path
 
 import pytest
 from runtime_contract.statework_provider import StateWorkProviderError
+from runtime_contract.statework_provider import default_statework_root
+from runtime_contract.workflow_port import (
+    WorkflowEligibility, WorkflowPort, WorkflowResolution, validate_workflow_port,
+)
+from runtime_contract.component_control import COMPONENT_IDS, ComponentOverlay
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -32,11 +37,11 @@ def test_advisor_cannot_bypass_mandatory_stage():
                         behavioral_advisor=WardSuppressor())
 
 
-def test_cfw_only_uses_empty_statework_capability(tmp_path):
+def test_cfw_only_uses_empty_statework_capability():
     resolve = _resolver()
     before = {name for name in sys.modules if name.startswith("CognitiveStateWork")}
-    bundle = resolve.resolve(resolve.TaskRequest(task_id="standalone", application_id="app", shape="quick"),
-                             cow_root=tmp_path / "absent")
+    bundle = resolve.resolve(resolve.TaskRequest(
+        task_id="standalone", application_id="app", shape="quick"))
     assert bundle.stateworks == ()
     assert bundle.kernel == ("sispis",)
     after = {name for name in sys.modules if name.startswith("CognitiveStateWork")}
@@ -61,6 +66,97 @@ def test_statework_provider_contract_and_fail_closed_configured_root(tmp_path):
         resolve.load_stateworks(invalid)
 
 
+def test_cfw_does_not_discover_optional_provider_during_default_startup():
+    # Even when an optional CSW entry point is installed, startup defaults to
+    # the CFW-owned registry location. Hosts opt in by supplying a root/port.
+    assert default_statework_root() == ROOT / "statework"
+
+
+def test_neutral_workflow_port_is_structural_and_engine_agnostic():
+    class HostWorkflows:
+        def snapshot(self, *, runtime_identity, task_context):
+            return {"revision": 1}
+
+        def active_guidance(self, *, runtime_identity, task_context):
+            return {"revision": 1, "guidance": []}
+
+        def apply_step(self, *, runtime_identity, step):
+            return {"accepted": True}
+
+        def eligible_routes(self, *, runtime_identity, task_context):
+            return WorkflowEligibility(eligible_routes=())
+
+        def resolve_workflows(self, *, runtime_identity, task_context,
+                              routing_adjustments):
+            return WorkflowResolution(
+                execution_order=(), active_workflows=(), capsules={},
+                registry_version="", dependency_checks_passed=True)
+
+    port = validate_workflow_port(HostWorkflows())
+    assert isinstance(port, WorkflowPort)
+    assert port.snapshot(runtime_identity={}, task_context={}) == {"revision": 1}
+    assert port.active_guidance(runtime_identity={}, task_context={})["guidance"] == []
+    assert port.apply_step(runtime_identity={}, step={"step": "advance"})["accepted"]
+
+    with pytest.raises(TypeError, match="snapshot"):
+        validate_workflow_port(object())
+
+
+def test_resolver_uses_host_workflow_capability_without_provider_loading():
+    resolve = _resolver()
+    subject = "database:service-a"
+    workflow = {
+        "id": "service-workflow", "version": "1.0.0",
+        "manifest_hash": "manifest-hash", "runtime_hash": "runtime-hash",
+        "domain": "database", "purpose": "host integration fixture",
+        "selected_flow": None, "selected_specialists": (),
+        "workflow_engine_kind": "host", "workflow_contract_version": "1.0.0",
+        "workflow_contract_hash": "workflow-contract-hash", "flow_selection": {},
+        "subject_ref": subject, "composition": {}, "inputs": {},
+        "emits": [], "integrations": {}, "flow_integrations": {},
+    }
+
+    class HostWorkflowPort:
+        def __init__(self):
+            self.resolved_with = None
+
+        def snapshot(self, *, runtime_identity, task_context):
+            return {"revision": 1}
+
+        def active_guidance(self, *, runtime_identity, task_context):
+            return {"revision": 1, "guidance": []}
+
+        def apply_step(self, *, runtime_identity, step):
+            return {"accepted": True}
+
+        def eligible_routes(self, *, runtime_identity, task_context):
+            assert runtime_identity["subject_ref"] == subject
+            assert task_context["domains"] == ("database",)
+            return WorkflowEligibility(
+                eligible_routes=({"route_type": "statework", "route": "service-workflow",
+                                  "statework_id": "service-workflow"},),
+                workflow_versions={"service-workflow": "1.0.0"})
+
+        def resolve_workflows(self, *, runtime_identity, task_context, routing_adjustments):
+            self.resolved_with = tuple(routing_adjustments)
+            assert runtime_identity["task_id"] == "host-workflow-task"
+            return WorkflowResolution(
+                execution_order=(workflow,), active_workflows=(workflow,), capsules={},
+                registry_version="2.0.0", dependency_checks_passed=True)
+
+    port = HostWorkflowPort()
+    request = resolve.TaskRequest(
+        task_id="host-workflow-task", application_id="app", shape="quick",
+        domain_tags=("database",), subject_ref=subject)
+    from runtime_host.host_api import CognitiveRuntime
+    task = CognitiveRuntime(telemetry_disabled=True, workflow_port=port).begin_task(
+        request, runtime_mode="standalone_advisory")
+
+    assert port.resolved_with == ()
+    assert port.eligible_routes
+    task.close()
+
+
 def test_resolver_does_not_own_csw_loading_primitives():
     source = (SCRIPTS / "resolve-runtime.py").read_text(encoding="utf-8")
     assert "_load_compiled_csw_registry" not in source
@@ -68,18 +164,88 @@ def test_resolver_does_not_own_csw_loading_primitives():
     assert "_CSW_COMPILED_REGISTRIES" not in source
     assert "control.FlowSelector" not in source
     assert "module.PacketStore" not in source
+    task_source = (SCRIPTS / "resolver" / "task_resolution.py").read_text(encoding="utf-8")
+    assert "resolver.workflows" not in task_source
+    assert "plan_statework_dag" not in task_source
+    assert "match_stateworks" not in task_source
 
 
 def test_cfw_runtime_uses_the_neutral_state_authority_port():
     source = (SCRIPTS / "runtime.py").read_text(encoding="utf-8")
     assert "class CSWStateAuthority" not in source
     assert "import cognitive_statework" not in source
-    assert "def create_state_authority(" in source
+    assert "from runtime_session.host_authority import" in source
+    assert "create_state_authority" in source
     resolver_source = (SCRIPTS / "resolve-runtime.py").read_text(encoding="utf-8")
     assert "COW_ROOT" not in resolver_source
     assert "cow_runtime_hash" not in resolver_source
     assert "runtime_hash_paths" not in resolver_source
     assert "behavior_hash_paths" not in resolver_source
+
+
+def test_partial_component_lease_expiry_preserves_other_live_targets():
+    from types import SimpleNamespace
+    from runtime import LifecycleController
+
+    scope = "dp-runtime-" + "a" * 64
+    state = {
+        "revision": 3,
+        "cognitive_mode": "RECOVER",
+        "framework_modes": {name: ("mandatory" if name == "ward" else "normal")
+                            for name in COMPONENT_IDS},
+        "active_interventions": [
+            {
+                "intervention_id": "owl-lease", "start_revision": 2,
+                "scope": scope, "baseline_action_index": 0,
+                "expires_after_actions": 1,
+                "targets": [{"target": "framework:owl",
+                             "previous_value": "normal", "applied_value": "off"}],
+            },
+            {
+                "intervention_id": "flow-lease", "start_revision": 3,
+                "scope": scope, "baseline_action_index": 0,
+                "expires_after_actions": 3,
+                "targets": [{"target": "framework:flow",
+                             "previous_value": "normal", "applied_value": "off"}],
+            },
+        ],
+    }
+    overlay = ComponentOverlay.from_behavior_state(state)
+    lifecycle = LifecycleController(SimpleNamespace(kernel_instructions=()))
+    prepared = lifecycle.prepare_component_overlay(overlay)
+    lifecycle.apply_component_overlay(prepared, startup_active=set())
+
+    assert lifecycle.component_mode("owl") == "off"
+    assert lifecycle.component_mode("flow") == "off"
+    assert lifecycle.expire_behavior_leases(1) is True
+    assert lifecycle.component_mode("owl") == "normal"
+    assert lifecycle.component_mode("flow") == "off"
+    assert lifecycle.component_mode("ward") == "mandatory"
+    assert lifecycle.expire_behavior_leases(1) is False
+    assert lifecycle.expire_behavior_leases(3) is True
+    assert lifecycle.component_mode("flow") == "normal"
+
+
+def test_latest_active_layer_wins_then_restores_oldest_previous_target():
+    from runtime_contract.component_control import AppliedControlLease
+    from runtime_contract.component_control import ComponentControl
+
+    controls = tuple(ComponentControl(
+        component_id=name,
+        mode="mandatory" if name == "ward" else "normal",
+        scope=None, expires_at_action=None, source_revision=3,
+    ) for name in COMPONENT_IDS)
+    overlay = ComponentOverlay(
+        behavior_revision=3, behavior_mode="RECOVER", controls=controls,
+        target_leases=(
+            AppliedControlLease("d1", "i1", "framework:flow", "off", "normal", 2, 1),
+            AppliedControlLease("d2", "i2", "framework:flow", "elevated", "off", 0, 2),
+        ),
+    )
+
+    assert overlay.effective_target_value("framework:flow", 0) == "elevated"
+    assert overlay.effective_target_value("framework:flow", 1) == "off"
+    assert overlay.effective_target_value("framework:flow", 3) == "normal"
 
 
 def test_explicit_ineligible_flow_is_rejected():

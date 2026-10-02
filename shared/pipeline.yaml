@@ -109,7 +109,7 @@ components:
     deactivation_predicates: [response.emitted]
     runtime_cost_class: low
     context_cost_class: low
-    model_visibility: guidance
+    model_visibility: consequence_only
   dox:
     owner: dox
     requires: []

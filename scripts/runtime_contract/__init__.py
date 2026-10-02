@@ -11,7 +11,7 @@ from .evidence import (CompletionClaim, CompletionPermit, EvidenceAttestation,
 from .validators import VALIDATOR_REGISTRY, evaluate_validator, validator_registry_hash
 from .handlers import SUPPORTED_HANDLERS, enforcement_for_guard, validate_enforcement
 from .stateworks import ExecutionSegment, SegmentStatus
-from .component_control import (ComponentControl, ComponentOverlay,
+from .component_control import (AppliedControlLease, ComponentControl, ComponentOverlay,
                                 PreparedComponentOverlay)
 from .task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
                   VerificationPolicy, SystemOnePolicy)
@@ -24,7 +24,8 @@ __all__ = [
     "SUPPORTED_HANDLERS", "enforcement_for_guard", "validate_enforcement",
     "ExecutionSegment",
     "SegmentStatus",
-    "ComponentControl", "ComponentOverlay", "PreparedComponentOverlay",
+    "AppliedControlLease", "ComponentControl", "ComponentOverlay",
+    "PreparedComponentOverlay",
     "TaskRequest",
     "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy", "SystemOnePolicy",
 ]

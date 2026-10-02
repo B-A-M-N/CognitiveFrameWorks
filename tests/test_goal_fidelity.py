@@ -4,6 +4,8 @@ import sys
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -57,6 +59,23 @@ def test_goal_contract_is_pinned_in_policy_manifest_and_model_context():
     assert "C1: Visual composition changed" in context
     assert "Do not redesign unrelated panels" in context
     assert context.index("TASK CONTRACT") < context.index("ACTIVE PIPELINE")
+
+
+def test_component_visibility_hides_enforcement_only_stage_identity():
+    resolve, runtime = _modules()
+    session = runtime.start(resolve.resolve("visibility-contract", "implement"),
+                            session_nonce="visibility-contract", telemetry_disabled=True)
+    session.active_lifecycle.update({"owl", "ward", "sispis"})
+    session.injected["ward"] = "WARD private enforcement capsule"
+    session.injected["sispis"] = "SISPIS output-only capsule"
+
+    context = runtime.context_for(session)
+
+    visible_pipeline = context.split("ACTIVE PIPELINE:", 1)[1].splitlines()[0]
+    assert "ward" not in visible_pipeline
+    assert "sispis" not in visible_pipeline
+    assert "WARD private enforcement capsule" not in context
+    assert "SISPIS output-only capsule" not in context
 
 
 def test_default_action_strategy_does_not_claim_an_ordering():
@@ -307,9 +326,13 @@ def test_metacognitive_readiness_waits_for_host_attested_boundary_evidence():
         subject_ref="repo:readiness", goal_contract=goal))
     session = runtime.start(bundle, telemetry_disabled=True,
                             session_nonce="completion-readiness")
+    assert session.behavior_authority is None
     session.metacognitive_state.mark_criterion_satisfied(
         "C1", evidence_ref="criterion-proof", evidence_kind="validator_result")
     assert session._evaluate_metacognition().mode == "VERIFY"
+    assert session.metacognitive_controller is not None
+    with pytest.raises(RuntimeError, match="standalone behavior services"):
+        session.enable_external_behavior_authority()
 
     host = session._host_ingress()
     host.record_tool_result("test", "pass", "repo:readiness",

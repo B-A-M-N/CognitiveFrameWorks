@@ -29,6 +29,10 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
         telemetry_disabled=True,
     )
     adapter = task.digital_psychology_adapter()
+    assert adapter._session.external_behavior_authority
+    assert adapter._session.metacognitive_controller is None
+    assert adapter._session.system_one_projector is None
+    assert adapter._session.semantic_signal_store is None
     assert {"owl", "anchor", "fuse", "ward"}.issubset(
         adapter.available_component_ids())
     directive = {

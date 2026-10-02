@@ -61,16 +61,17 @@ The example resolves an `implement` task, shows the host action gate decision, a
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
-CFW resolves StateWork capabilities through the `cognitiveframeworks.statework_providers` entry-point contract. CFW-only tasks use an empty provider and never load CSW. In a combined install, CSW registers its adapter as an optional provider and supplies its compiled registry, flow selector, packet store, and a CSW-owned implementation of CFW's neutral `StateAuthority` port. Task snapshots pin StateWork manifests and workflow contracts; CSW owns its executable revision checks.
+CFW-only startup does not discover or import an installed CSW provider. A host can inject `WorkflowPort` into `CognitiveRuntime` to supply eligible workflow choices and the resolved execution plan; this path keeps matching, prerequisite planning, and flow selection behind the host contract. The same contract also exposes snapshot, active-guidance, and step operations for workflow hosts. CFW validates returned task scope, pins, dependency attestation, and capsule hashes. CSW remains responsible for its registry, workflow selection, packet store, and legal transitions. The explicit-root `cognitiveframeworks.statework_providers` integration remains as a compatibility path; it still performs StateWork matching and planning inside `resolve-runtime.py` and should be removed after hosts migrate to `WorkflowPort`.
 
 For the sibling source checkouts, install CSW into the same Python environment
-that runs CFW so its provider entry point is discoverable:
+that runs CFW, then pass the CSW root to the host or set
+`COGNITIVE_STATEWORK_ROOT`:
 
 ```bash
 python3 -m pip install -e ../CognitiveStateWork
 ```
 
-This provider install is optional; CFW remains standalone when it is absent.
+This provider install and root configuration are optional; CFW remains standalone when they are absent.
 
 | Deployment | CFW role | Other-system requirement |
 | --- | --- | --- |

@@ -117,6 +117,7 @@ class ActivityFact:
     artifact_changed: Optional[bool] = None
     progress_class: Optional[str] = None
     evidence_kinds: Tuple[str, ...] = ()
+    relation_certainty: Optional[str] = None
 
     ACTIVITY_TYPES = frozenset({"action", "tool_result", "validation", "state_transition",
                                 "workflow_progress", "retry", "goal_progress", "blocker",
@@ -148,6 +149,9 @@ class ActivityFact:
             _bounded_text(value, "evidence kind", 64)
         if self.progress_class is not None and self.progress_class not in self.PROGRESS_CLASSES:
             raise ValueError("unsupported activity progress class")
+        if self.relation_certainty is not None and self.relation_certainty not in {
+                "explicit", "inferred", "unknown"}:
+            raise ValueError("unsupported activity relation certainty")
 
     def to_dict(self) -> dict[str, Any]:
         return {"sequence": self.sequence, "activity_type": self.activity_type,
@@ -159,7 +163,8 @@ class ActivityFact:
                 "proposed_purpose_source": self.proposed_purpose_source,
                 "affected_criterion_ids": list(self.affected_criterion_ids),
                 "result_class": self.result_class, "artifact_changed": self.artifact_changed,
-                "progress_class": self.progress_class, "evidence_kinds": list(self.evidence_kinds)}
+                "progress_class": self.progress_class, "evidence_kinds": list(self.evidence_kinds),
+                "relation_certainty": self.relation_certainty}
 
 
 @dataclass(frozen=True)
@@ -448,7 +453,8 @@ class SystemOneFrame:
                 proposed_purpose_source=row["proposed_purpose_source"],
                 affected_criterion_ids=tuple(row["affected_criterion_ids"]),
                 result_class=row["result_class"], artifact_changed=row["artifact_changed"],
-                progress_class=row["progress_class"], evidence_kinds=tuple(row["evidence_kinds"]))
+                progress_class=row["progress_class"], evidence_kinds=tuple(row["evidence_kinds"]),
+                relation_certainty=row.get("relation_certainty"))
 
         def workflow(row: Mapping[str, Any]) -> WorkflowProgressFact:
             payload = dict(row)

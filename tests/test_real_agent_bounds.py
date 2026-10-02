@@ -65,6 +65,37 @@ def test_budget_stops_model_calls_tokens_cost_and_time() -> None:
         raise AssertionError("elapsed budget was not enforced")
 
 
+def test_agent_tool_visibility_uses_a_fixed_model_request_without_dp_tools() -> None:
+    request = module.model_visible_agent_request(
+        task={"task_id": "visibility-check", "instruction": "Inspect and report."},
+        prompt="Use the host provided action protocol.", turn=0, previous_results=[],
+    )
+
+    assert set(request) == module.MODEL_VISIBLE_REQUEST_KEYS
+    serialized = __import__("json").dumps(request).lower()
+    assert not any(tool in serialized for tool in module.FORBIDDEN_DP_AGENT_TOOLS)
+    assert "tools" not in request
+    assert "mcp_servers" not in request
+
+    try:
+        module.model_visible_agent_request(
+            task={"task_id": "visibility-check", "tools": ["write"]},
+            prompt="", turn=0, previous_results=[])
+    except RuntimeError as exc:
+        assert "tool registry" in str(exc)
+    else:
+        raise AssertionError("model-visible MCP registry was accepted")
+
+    try:
+        module.model_visible_agent_request(
+            task={"task_id": "visibility-check"},
+            prompt="prepare_control_tick", turn=0, previous_results=[])
+    except RuntimeError as exc:
+        assert "DP MCP control tool" in str(exc)
+    else:
+        raise AssertionError("DP control tool name reached the model request")
+
+
 def test_persistent_agent_close_terminates_descendant_process_group() -> None:
     marker = Path(tempfile.mkdtemp()) / "child.pid"
     code = f'''import os, time

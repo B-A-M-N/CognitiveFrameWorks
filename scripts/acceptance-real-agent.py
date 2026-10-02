@@ -44,6 +44,40 @@ QUALIFICATION_MODEL_REVISION = "external-model-revision"
 QUALIFICATION_MODEL_CAPABILITY = "external-model-capability"
 QUALIFICATION_HARNESS = "external-agent-harness"
 QUALIFICATION_HARNESS_VERSION = "qualification-harness-v1"
+MODEL_VISIBLE_REQUEST_KEYS = frozenset({"task", "prompt", "turn", "previous_results"})
+FORBIDDEN_DP_AGENT_TOOLS = frozenset({
+    "digital-psychology-control", "digital-psychology-admin",
+    "open_control_session", "prepare_control_tick", "commit_control_tick",
+    "run_registered_slow_loop", "behavioral_advice",
+})
+
+
+def model_visible_agent_request(*, task: dict[str, Any], prompt: str, turn: int,
+                                previous_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build and enforce the actual external-agent request boundary."""
+    request = {"task": task, "prompt": prompt, "turn": turn,
+               "previous_results": previous_results}
+    if set(request) != MODEL_VISIBLE_REQUEST_KEYS:
+        raise RuntimeError("model-visible request escaped the fixed harness contract")
+    forbidden_registry_keys = {"tools", "mcp_tools", "mcp_servers", "tool_registry",
+                               "available_tools"}
+
+    def inspect(value: Any) -> None:
+        if isinstance(value, Mapping):
+            for key, nested in value.items():
+                if str(key).lower() in forbidden_registry_keys:
+                    raise RuntimeError("model-visible request contains a tool registry")
+                inspect(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                inspect(nested)
+        elif isinstance(value, str):
+            lowered = value.lower()
+            if any(tool in lowered for tool in FORBIDDEN_DP_AGENT_TOOLS):
+                raise RuntimeError("model-visible request exposes a DP MCP control tool")
+
+    inspect(request)
+    return request
 
 
 class PersistentAgent:
@@ -245,13 +279,13 @@ def run_trial(api_module: Any, resolve: Any, command: list[str], *, task_id: str
             # present.  The agent sees only the real model-facing context.
             if budget is not None:
                 budget.check()
-            response = agent_process.request({
-                "task": {"task_id": task_id, "subject_ref": request.subject_ref,
-                         "shape": request.shape, "domain_tags": list(request.domain_tags),
-                         "instruction": "Write runtime-correct\n to the fixture target, then complete.",
-                         "fixture_target": str(fixture_target)},
-                "prompt": prompt, "turn": turn, "previous_results": previous,
-            }, timeout)
+            response = agent_process.request(model_visible_agent_request(
+                task={"task_id": task_id, "subject_ref": request.subject_ref,
+                      "shape": request.shape, "domain_tags": list(request.domain_tags),
+                      "instruction": "Write runtime-correct\n to the fixture target, then complete.",
+                      "fixture_target": str(fixture_target)},
+                prompt=prompt, turn=turn, previous_results=previous,
+            ), timeout)
             if budget is not None:
                 budget.record_response(response)
             action = response.get("action")

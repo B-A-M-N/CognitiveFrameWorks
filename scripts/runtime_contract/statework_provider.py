@@ -1,8 +1,8 @@
 """Host boundary for optional StateWork capabilities.
 
-CFW owns composition policy. An installed provider supplies registry data and
-the small set of validated runtime primitives; CFW does not import CSW's
-implementation modules directly.
+CFW consumes an optional CSW-owned workflow capability provider through this
+neutral contract. CSW is authoritative for eligibility and legal composition;
+CFW does not import CSW's implementation modules directly.
 """
 from __future__ import annotations
 
@@ -30,7 +30,13 @@ def _provider_entrypoint() -> Optional[EntryPoint]:
 
 
 def default_statework_root() -> Path:
-    """Resolve an explicitly configured or installed optional provider root."""
+    """Resolve only an explicitly configured or CFW-bundled registry root.
+
+    A sibling checkout or installed plugin is not an implicit runtime
+    dependency. Hosts that compose CFW with a workflow engine select that
+    provider explicitly and pass its root (or, preferably, a neutral
+    ``WorkflowPort``) at the integration boundary.
+    """
     cfw_root = Path(__file__).resolve().parents[2]
     bundled = cfw_root / "statework"
     configured = os.environ.get("COGNITIVE_STATEWORK_ROOT")
@@ -38,14 +44,9 @@ def default_statework_root() -> Path:
         return Path(configured)
     if (bundled / "registry.yaml").is_file():
         return bundled
-    plugin = _provider_entrypoint()
-    if plugin is not None:
-        provider_type = plugin.load()
-        default_root = getattr(provider_type, "default_root", None)
-        if callable(default_root):
-            return Path(default_root())
-    # A sibling checkout alone does not activate CSW. The empty bundled path
-    # keeps CFW usable on its own; integrated hosts install the CSW provider.
+    # Do not import an optional provider merely because it is installed. This
+    # keeps CFW startup CFW-only; explicit provider roots still activate the
+    # plugin through statework_provider().
     return bundled
 
 
@@ -72,6 +73,11 @@ class StateWorkProvider(Protocol):
     def flow_selector(self) -> Any: ...
     def registry_document(self) -> Dict[str, Any]: ...
     def create_state_authority(self, **options: Any) -> Any: ...
+    def eligible_routes(self, *, runtime_identity: Mapping[str, Any],
+                        task_context: Mapping[str, Any]) -> Dict[str, Any]: ...
+    def resolve_workflows(self, *, runtime_identity: Mapping[str, Any],
+                          task_context: Mapping[str, Any],
+                          routing_adjustments: Iterable[Mapping[str, Any]]) -> Dict[str, Any]: ...
 
 
 class EmptyStateWorkProvider:
@@ -119,6 +125,16 @@ class EmptyStateWorkProvider:
     def create_state_authority(self, **_options: Any) -> Any:
         raise StateWorkProviderError(
             "StateWork authority is unavailable without an installed provider")
+
+    def eligible_routes(self, *, runtime_identity: Mapping[str, Any],
+                        task_context: Mapping[str, Any]) -> Dict[str, Any]:
+        return {"eligible_routes": [], "workflow_versions": {}}
+
+    def resolve_workflows(self, *, runtime_identity: Mapping[str, Any],
+                          task_context: Mapping[str, Any],
+                          routing_adjustments: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
+        return {"execution_order": [], "active_workflows": [], "capsules": {},
+                "registry_version": "", "dependency_checks_passed": True}
 
 
 @lru_cache(maxsize=8)

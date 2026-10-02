@@ -209,8 +209,10 @@ def test_shared_authority_scope_is_immutable_and_task_views_do_not_mutate_parent
             namespace_id=namespace, subject_ref="repo:shared", shape="quick",
             domain_tags=("terminal interface",), phase="domain_state",
             shared_workflow_membership=grant)
-    a = resolve.resolve(request("task-a", "ns-a", "instance-a"), requested_flows={"tuid": "discover"})
-    b = resolve.resolve(request("task-b", "ns-b", "instance-b"), requested_flows={"tuid": "discover"})
+    a = resolve.resolve(request("task-a", "ns-a", "instance-a"), cow_root=COW,
+                        requested_flows={"tuid": "discover"})
+    b = resolve.resolve(request("task-b", "ns-b", "instance-b"), cow_root=COW,
+                        requested_flows={"tuid": "discover"})
     session_a = runtime.start(a, telemetry_disabled=True, state_authority=authority,
                               runtime_mode="combined_enforcing",
                               membership_authority=membership_authority)
@@ -248,7 +250,8 @@ def test_unauthorized_membership_transition_is_rejected_without_mutation(tmp_pat
         namespace_id="ns", subject_ref="repo:shared", shape="quick",
         domain_tags=("terminal interface",), phase="domain_state",
         shared_workflow_membership=forged)
-    bundle = resolve.resolve(request, requested_flows={"tuid": "discover"})
+    bundle = resolve.resolve(request, cow_root=COW,
+                             requested_flows={"tuid": "discover"})
     with pytest.raises(PermissionError, match="not host-authorized"):
         runtime.start(bundle, telemetry_disabled=True, state_authority=authority,
                       runtime_mode="combined_enforcing",
