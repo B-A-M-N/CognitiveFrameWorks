@@ -29,6 +29,10 @@ COMPONENT_ALLOWED_MODES = {
     str(component_id).lower(): frozenset(component.get("allowed_modes") or ())
     for component_id, component in _COMPONENT_CATALOG.items()
 }
+COMPONENT_BASELINE_MODES = {
+    str(component_id).lower(): str(component["baseline_mode"])
+    for component_id, component in _COMPONENT_CATALOG.items()
+}
 COMPONENT_DYNAMIC_CONTROL = {
     str(component_id).lower(): component.get("dynamic_control") is True
     for component_id, component in _COMPONENT_CATALOG.items()
@@ -195,6 +199,7 @@ class PreparedComponentOverlay:
 
 
 __all__ = ["COMPONENT_IDS", "COMPONENT_MODES", "COMPONENT_ALLOWED_MODES",
+           "COMPONENT_BASELINE_MODES",
            "COMPONENT_DYNAMIC_CONTROL", "COMPONENT_HARD_FLOOR_MODES",
            "COMPONENT_MODEL_VISIBILITY",
            "ComponentControl", "ComponentOverlay",

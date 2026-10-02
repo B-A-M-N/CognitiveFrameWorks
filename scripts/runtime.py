@@ -60,7 +60,8 @@ from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
 from runtime_contract.convergence import (AttemptDescriptor, ConvergenceController,
                                            ConvergenceIdentity, SharedBranchLedger,
                                            TERMINAL_DISPOSITIONS)
-from runtime_contract.component_control import (COMPONENT_IDS,
+from runtime_contract.component_control import (COMPONENT_BASELINE_MODES,
+                                                COMPONENT_IDS,
                                                 COMPONENT_MODEL_VISIBILITY,
                                                 ComponentOverlay,
                                                 PreparedComponentOverlay)
@@ -310,6 +311,7 @@ class LifecycleController:
         self.artifact_active: set[str] = set()
         self.response_active: set[str] = set()
         self.counts: Dict[str, int] = {}
+        self.action_index = 0
         self._component_overlay: Optional[ComponentOverlay] = None
         self._startup_active: set[str] = set()
 
@@ -326,21 +328,32 @@ class LifecycleController:
         if self._component_overlay is None:
             return None
         control = self._component_overlay.by_component().get(component_id)
-        return control.mode if control is not None else None
+        if control is None:
+            return None
+        if (control.expires_at_action is not None
+                and self.action_index >= control.expires_at_action):
+            return COMPONENT_BASELINE_MODES[component_id]
+        return control.mode
+
+    def synchronize_action_index(self, action_index: int) -> None:
+        """Advance to a host/DP action basis without rewinding local progress."""
+        if type(action_index) is not int or action_index < 0:
+            raise ValueError("CFW action index must be a non-negative integer")
+        self.action_index = max(self.action_index, action_index)
 
     def _stage_permitted(self, stage: str) -> bool:
         overlay = self._component_overlay
         if overlay is None:
             return True
         owner = stage.split("_", 1)[0].lower()
-        control = overlay.by_component().get(owner)
-        if control is None:
+        mode = self.component_mode(owner)
+        if mode is None:
             return owner not in COMPONENT_IDS
         if owner == "ward" or self._required_by_hard_floor(stage):
             return True
-        if control.mode == "off":
+        if mode == "off":
             return False
-        if control.mode == "passive":
+        if mode == "passive":
             return stage in self._startup_active
         return True
 
@@ -606,6 +619,7 @@ class LifecycleController:
             self.activate("ward", "action_gate")
 
     def on_action_complete(self) -> None:
+        self.action_index += 1
         self.action_active.clear()
 
     def on_artifact(self, *, flow_triggered: bool = False,
@@ -1584,9 +1598,24 @@ class RuntimeSession:
                        for key, item in attention_last_seen.items())):
             raise ValueError("DP attention history is malformed")
 
+        interventions = value.get("active_interventions")
+        if not isinstance(interventions, (tuple, list)) or len(interventions) > 16:
+            raise ValueError("DP active interventions are malformed")
+        intervention_action_index = 0
+        for intervention in interventions:
+            if not isinstance(intervention, Mapping):
+                raise ValueError("DP active intervention is malformed")
+            baseline = intervention.get("baseline_action_index")
+            expiry = intervention.get("expires_after_actions")
+            if (type(baseline) is not int or baseline < 0
+                    or type(expiry) is not int or not 1 <= expiry <= 64):
+                raise ValueError("DP intervention lease bounds are malformed")
+            intervention_action_index = max(intervention_action_index, baseline)
+
         overlay = ComponentOverlay.from_behavior_state(value)
         if self.lifecycle is None:
             raise RuntimeError("CFW lifecycle controller is unavailable for a DP overlay")
+        self.lifecycle.synchronize_action_index(intervention_action_index)
         prior_lifecycle = set(self.active_lifecycle)
         prepared_overlay = self.lifecycle.prepare_component_overlay(
             overlay, allow_rollback=allow_rollback)

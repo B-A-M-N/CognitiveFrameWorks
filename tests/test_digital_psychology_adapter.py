@@ -163,6 +163,58 @@ def test_dp_component_overlay_changes_actual_flow_lifecycle_activation():
     task.close()
 
 
+def test_dp_temporary_component_control_expires_without_a_dp_tick():
+    resolve = _load_resolver()
+    from cognitive_runtime import CognitiveRuntime
+
+    runtime = CognitiveRuntime(telemetry_disabled=True)
+    task = runtime.begin_task(
+        resolve.TaskRequest(task_id="dp-flow-local-expiry", application_id="dp-test",
+                            shape="performance", subject_ref="repo:dp-flow-local-expiry"),
+        telemetry_disabled=True,
+    )
+    adapter = task.digital_psychology_adapter()
+    runtime_session = adapter._session
+    state = {
+        "revision": 1,
+        "cognitive_mode": "DELIVER",
+        "framework_modes": {"owl": "normal", "anchor": "passive",
+                             "fuse": "normal", "ward": "mandatory",
+                             "flow": "off", "sispis": "normal", "dox": "off"},
+        "active_stateworks": [], "focus_criteria": [],
+        "attention_lease": None, "attention_last_seen": {},
+        "verification_intensity": "normal", "exploration_budget": "normal",
+        "retry_policy": "normal", "recovery_level": 0,
+        "context_strategy": "standard", "response_strategy": "direct",
+        "active_interventions": [{
+            "intervention_id": "intv-flow-local-expiry", "cause": "goal_drift",
+            "expected_effect": "Temporarily suppress FLOW for one completed action.",
+            "start_revision": 1, "scope": "dp-runtime-" + "a" * 64,
+            "expires_after_actions": 1, "evaluation_horizon_actions": 1,
+            "actions_elapsed": 0,
+            "targets": [{"target": "framework:flow", "previous_value": "normal",
+                         "applied_value": "off"}],
+            "target_criteria": [], "baseline_criterion_status": {},
+            "baseline_action_index": 0, "concurrent_intervention_ids": [],
+        }],
+        "intervention_history": [],
+    }
+
+    runtime_session.apply_external_behavior_state(state)
+    runtime_session.on_artifact(flow_triggered=True)
+    assert runtime_session.lifecycle.component_mode("flow") == "off"
+    assert "flow" not in runtime_session.lifecycle.active
+
+    # The host's local action boundary expires the overlay even if DP is gone.
+    runtime.host_handle(task).complete_action()
+    assert runtime_session.lifecycle.action_index == 1
+    assert runtime_session.lifecycle.component_mode("flow") == "normal"
+    assert runtime_session.lifecycle.component_mode("ward") == "mandatory"
+    runtime_session.on_artifact(flow_triggered=True)
+    assert "flow" in runtime_session.lifecycle.active
+    task.close()
+
+
 def test_dp_reset_mode_reexecutes_the_selected_component_stage():
     resolve = _load_resolver()
     from cognitive_runtime import CognitiveRuntime
