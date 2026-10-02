@@ -147,6 +147,8 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
         runtime_dst / "scripts" / "runtime_host" / "__init__.py",
         runtime_dst / "scripts" / "runtime_host" / "session_registry.py",
         runtime_dst / "scripts" / "runtime_host" / "handles.py",
+        runtime_dst / "scripts" / "runtime_host" / "host_api.py",
+        runtime_dst / "scripts" / "runtime_host" / "interceptor.py",
         runtime_dst / "scripts" / "runtime_contract" / "actions.py",
         runtime_dst / "host-interceptor.json",
         runtime_dst / "SISPIS" / "runtime" / "calibrate.py",

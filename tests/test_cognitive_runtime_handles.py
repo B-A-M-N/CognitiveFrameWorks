@@ -8,6 +8,9 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from runtime_host.handles import (AgentSessionHandle, HostSessionHandle,
                                   RuntimeTaskHandle)
+from runtime_host.host_api import CognitiveRuntime as RuntimeHostAPI
+from runtime_host.interceptor import install_host_interceptor
+from cognitive_runtime import CognitiveRuntime
 
 
 def test_runtime_handles_live_outside_the_interceptor_module() -> None:
@@ -31,3 +34,9 @@ def test_host_handle_accepts_the_runtime_host_api_explicitly() -> None:
     handle = HostSessionHandle("unresolved-test-token", host_api=host_api)
 
     assert handle._host_api() is host_api
+
+
+def test_interceptor_module_is_a_compatibility_facade() -> None:
+    assert CognitiveRuntime is RuntimeHostAPI
+    assert CognitiveRuntime.__module__ == "runtime_host.host_api"
+    assert callable(install_host_interceptor)

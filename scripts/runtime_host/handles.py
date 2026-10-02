@@ -130,7 +130,7 @@ class HostSessionHandle:
 
     def _host_api(self):
         if self._host_api_instance is None:
-            from cognitive_runtime import CognitiveRuntime
+            from runtime_host.host_api import CognitiveRuntime
             self._host_api_instance = CognitiveRuntime()
         return self._host_api_instance
 
