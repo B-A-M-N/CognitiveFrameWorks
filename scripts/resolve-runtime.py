@@ -73,8 +73,6 @@ from runtime_contract.statework_provider import (
     DEFAULT_STATEWORK_ROOT, statework_provider,
 )
 
-COW_ROOT = DEFAULT_STATEWORK_ROOT
-
 
 def dp_trusted_guard_pack_path() -> Path:
     """The only DP deployment artifact CFW consumes."""
@@ -153,40 +151,30 @@ def _tree_runtime_hash(paths: Iterable[Path], *, relative_to: Optional[Path] = N
     return digest.hexdigest()
 
 
-def cow_runtime_hash(cow_root: Path = COW_ROOT) -> str:
-    """Hash the executable StateWork engine and its policy schemas."""
-    provider = statework_provider(cow_root)
-    paths = provider.runtime_hash_paths()
-    if paths is None:
-        return hashlib.sha256(b"statework-capability:absent\0" + str(cow_root).encode()).hexdigest()
-    return _tree_runtime_hash(paths, relative_to=cow_root)
-
-
-def runtime_build_manifest(cow_root: Path = COW_ROOT,
-                           action_registry: Optional[Mapping[str, Any]] = None) -> Dict[str, str]:
+def runtime_build_manifest(
+        action_registry: Optional[Mapping[str, Any]] = None) -> Dict[str, str]:
     manifest = {
         "runtime_version": str(json.loads((ROOT / "plugin.json").read_text(
             encoding="utf-8")).get("version", "unknown")),
-        "runtime_behavior_hash": runtime_behavior_hash(cow_root),
+        "runtime_behavior_hash": runtime_behavior_hash(),
         "handler_registry_hash": handler_registry_hash(),
         "validator_registry_hash": validator_registry_hash(),
         "action_contract_hash": action_contract_hash(
             effective_action_registry(action_registry)),
-        "cow_runtime_hash": cow_runtime_hash(cow_root),
     }
     manifest["manifest_hash"] = _stable_contract_hash(manifest)
     return manifest
 
 
-def runtime_behavior_hash(cow_root: Path = COW_ROOT) -> str:
-    """Hash all executable enforcement code included in a composed policy."""
+def runtime_behavior_hash() -> str:
+    """Hash CFW-owned runtime code; external providers own their own revisions."""
     paths = [ROOT / "scripts" / "runtime.py",
              ROOT / "scripts" / "resolve-runtime.py",
              ROOT / "scripts" / "cognitive_runtime.py",
-             ROOT / "SISPIS" / "runtime" / "calibrate.py",
-             cow_root / "scripts" / "validate-repository-truth.py"]
+             ROOT / "scripts" / "digital_psychology_adapter.py",
+             ROOT / "SISPIS" / "runtime" / "calibrate.py"]
     paths.extend(sorted((ROOT / "scripts" / "runtime_contract").glob("*.py")))
-    paths.extend(statework_provider(cow_root).behavior_hash_paths())
+    paths.extend(sorted((ROOT / "scripts" / "runtime_host").glob("*.py")))
     return _tree_runtime_hash(paths, relative_to=ROOT)
 
 
@@ -289,7 +277,7 @@ def _statework_root(cow_root: Path, statework: Any) -> Path:
         raise PacketDependencyError(str(exc)) from exc
 
 
-def load_stateworks(cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
+def load_stateworks(cow_root: Path = DEFAULT_STATEWORK_ROOT) -> List[Dict[str, Any]]:
     try:
         return statework_provider(cow_root).load_stateworks()
     except Exception as exc:
@@ -409,7 +397,7 @@ def match_stateworks(stateworks: List[Dict[str, Any]], domains: Iterable[str],
 
 # ------------------------------------------------- packet-prerequisite chain
 
-def parse_packet_registry(cow_root: Path = COW_ROOT) -> Dict[str, Any]:
+def parse_packet_registry(cow_root: Path = DEFAULT_STATEWORK_ROOT) -> Dict[str, Any]:
     try:
         return statework_provider(cow_root).packet_registry()
     except Exception as exc:
@@ -433,7 +421,7 @@ def _consumed_inputs(sw: Dict[str, Any]) -> Tuple[List[str], List[str]]:
 
 
 def _load_cow_packet_store(packets: Optional[Iterable[Dict[str, Any]]],
-                           cow_root: Path = COW_ROOT):
+                           cow_root: Path = DEFAULT_STATEWORK_ROOT):
     """Build the provider-validated packet store through the host boundary."""
     try:
         return statework_provider(cow_root).packet_store(packets)
@@ -450,7 +438,7 @@ def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
                          subject_ref: Optional[str] = None,
                          statework_subject_refs: Optional[Mapping[str, str]] = None,
                          observation_context: Optional[Mapping[str, Any]] = None,
-                         cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
+                         cow_root: Path = DEFAULT_STATEWORK_ROOT) -> List[Dict[str, Any]]:
     """Plan a composable DAG from every desired StateWork root.
 
     Required packets, declared bundle dependencies, and all roots are merged
@@ -1222,7 +1210,6 @@ class EffectivePolicy:
     validator_registry_hash: str = ""
     handler_registry_hash: str = ""
     action_contract_hash: str = ""
-    cow_runtime_hash: str = ""
     runtime_build_manifest_hash: str = ""
     routing_profile_hash: str = ""
     parent_decision_ref: Optional[str] = None
@@ -1236,7 +1223,7 @@ class EffectivePolicy:
     statework_subject_refs: Mapping[str, str] = field(default_factory=dict)
     policy_revocation_revision: int = 0
     revocation_mode: str = "deferred"
-    policy_contract_version: str = "2.2.0"
+    policy_contract_version: str = "2.3.0"
 
     def canonical(self) -> Dict[str, Any]:
         return {
@@ -1272,7 +1259,6 @@ class EffectivePolicy:
             "validator_registry_hash": self.validator_registry_hash,
             "handler_registry_hash": self.handler_registry_hash,
             "action_contract_hash": self.action_contract_hash,
-            "cow_runtime_hash": self.cow_runtime_hash,
             "runtime_build_manifest_hash": self.runtime_build_manifest_hash,
             "routing_profile_hash": self.routing_profile_hash,
             "parent_decision_ref": self.parent_decision_ref,
@@ -1752,7 +1738,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             model: Optional[str] = None, harness: Optional[str] = None,
             toolset: Optional[str] = None, trigger: Optional[str] = None,
             packet_store: Optional[Dict[str, Dict[str, Any]]] = None,
-            cow_root: Path = COW_ROOT,
+            cow_root: Path = DEFAULT_STATEWORK_ROOT,
             allow_missing_required: bool = False,
             missing_required: Optional[List[str]] = None,
             requested_flows: Optional[Dict[str, str]] = None,
@@ -2198,8 +2184,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "validator_registry_hash": validator_registry_hash(),
         "handler_registry_hash": handler_registry_hash(),
         "action_contract_hash": action_contract_hash(effective_actions),
-        "cow_runtime_hash": cow_runtime_hash(cow_root),
-        "runtime_behavior_hash": runtime_behavior_hash(cow_root),
+        "runtime_behavior_hash": runtime_behavior_hash(),
         "routing_profile": routing_profile,
         "routing_experiment": routing_experiment,
     }
@@ -2209,8 +2194,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     if not behavior_schema_version:
         raise SnapshotIntegrityError("behavior-event schema has no pinned schema_version")
     policy_documents["behavior_event_schema_version"] = behavior_schema_version
-    policy_documents["runtime_build_manifest"] = runtime_build_manifest(
-        cow_root, effective_actions)
+    policy_documents["runtime_build_manifest"] = runtime_build_manifest(effective_actions)
     policy_documents["runtime_build_manifest_hash"] = (
         policy_documents["runtime_build_manifest"]["manifest_hash"])
     policy_documents["statework_workflows"] = {
@@ -2329,7 +2313,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         validator_registry_hash=policy_documents["validator_registry_hash"],
         handler_registry_hash=policy_documents["handler_registry_hash"],
         action_contract_hash=policy_documents["action_contract_hash"],
-        cow_runtime_hash=policy_documents["cow_runtime_hash"],
         runtime_build_manifest_hash=policy_documents["runtime_build_manifest"]["manifest_hash"],
         routing_profile_hash=hashlib.sha256(
             f"{routing_pack_hash}:{routing_experiment_plan.get('plan_hash', '')}:{routing_cohort or ''}".encode()

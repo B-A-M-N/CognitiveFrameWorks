@@ -61,7 +61,7 @@ The example resolves an `implement` task, shows the host action gate decision, a
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
-CFW resolves StateWork capabilities through the `cognitiveframeworks.statework_providers` entry-point contract. CFW-only tasks use an empty provider and never load CSW. In a combined install, CSW registers its adapter as an optional provider and supplies its compiled registry, flow selector, and packet store without CFW importing CSW implementation modules.
+CFW resolves StateWork capabilities through the `cognitiveframeworks.statework_providers` entry-point contract. CFW-only tasks use an empty provider and never load CSW. In a combined install, CSW registers its adapter as an optional provider and supplies its compiled registry, flow selector, packet store, and a CSW-owned implementation of CFW's neutral `StateAuthority` port. Task snapshots pin StateWork manifests and workflow contracts; CSW owns its executable revision checks.
 
 For the sibling source checkouts, install CSW into the same Python environment
 that runs CFW so its provider entry point is discoverable:

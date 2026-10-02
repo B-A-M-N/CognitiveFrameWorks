@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from runtime_contract.statework_provider import StateWorkProviderError
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -48,8 +49,10 @@ def test_statework_provider_contract_and_fail_closed_configured_root(tmp_path):
     assert provider.load_stateworks() == []
     assert provider.packet_registry() == {}
     for method in ("packet_store", "bundle_root", "validate_flow_contracts",
-                   "flow_metadata", "flow_selector"):
+                   "flow_metadata", "flow_selector", "create_state_authority"):
         assert callable(getattr(provider, method))
+    with pytest.raises(StateWorkProviderError, match="unavailable without an installed provider"):
+        provider.create_state_authority()
 
     invalid = tmp_path / "invalid-csw"
     invalid.mkdir()
@@ -65,6 +68,18 @@ def test_resolver_does_not_own_csw_loading_primitives():
     assert "_CSW_COMPILED_REGISTRIES" not in source
     assert "control.FlowSelector" not in source
     assert "module.PacketStore" not in source
+
+
+def test_cfw_runtime_uses_the_neutral_state_authority_port():
+    source = (SCRIPTS / "runtime.py").read_text(encoding="utf-8")
+    assert "class CSWStateAuthority" not in source
+    assert "import cognitive_statework" not in source
+    assert "def create_state_authority(" in source
+    resolver_source = (SCRIPTS / "resolve-runtime.py").read_text(encoding="utf-8")
+    assert "COW_ROOT" not in resolver_source
+    assert "cow_runtime_hash" not in resolver_source
+    assert "runtime_hash_paths" not in resolver_source
+    assert "behavior_hash_paths" not in resolver_source
 
 
 def test_explicit_ineligible_flow_is_rejected():

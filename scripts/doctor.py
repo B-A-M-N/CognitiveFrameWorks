@@ -162,6 +162,7 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
                               runtime_dst / "statework" / "scripts" / "registry.py",
                               runtime_dst / "statework" / "scripts" / "bundles.py",
                               runtime_dst / "statework" / "scripts" / "contracts.py",
+                              runtime_dst / "statework" / "scripts" / "cfw_authority.py",
                               runtime_dst / "statework" / "schemas" / "packet-registry.yaml"])
     for required in runtime_files:
         if not required.exists():

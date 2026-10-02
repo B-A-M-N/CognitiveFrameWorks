@@ -27,7 +27,7 @@ def _runtime_modules():
 
 def test_independent_cfw_tasks_share_csw_subject_revision(tmp_path):
     resolve, runtime = _runtime_modules()
-    authority = runtime.CSWStateAuthority(
+    authority = runtime.create_state_authority(
         COW, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json"
     )
     for task_id, output_state, trigger, evidence_type in (
@@ -125,7 +125,7 @@ def test_shared_authority_identity_uses_task_origin(tmp_path):
         shape="quick", domain_tags=("terminal interface",),
     )
     bundle = resolve.resolve(request, cow_root=COW, requested_flows={"tuid": "discover"})
-    authority = runtime.CSWStateAuthority(
+    authority = runtime.create_state_authority(
         COW, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
     session = runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing", state_authority=authority)
     snapshot = authority.inspect(
@@ -191,7 +191,7 @@ def test_task_handle_does_not_expose_host_authority():
 def test_shared_authority_scope_is_immutable_and_task_views_do_not_mutate_parent(tmp_path):
     from datetime import datetime, timedelta, timezone
     resolve, runtime = _runtime_modules()
-    authority = runtime.CSWStateAuthority(
+    authority = runtime.create_state_authority(
         COW, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json",
         namespace_id="host-service", application_id="service", application_instance_id="service",
         workflow_id="service-workflow")
@@ -233,7 +233,7 @@ def test_shared_authority_scope_is_immutable_and_task_views_do_not_mutate_parent
 
 def test_unauthorized_membership_transition_is_rejected_without_mutation(tmp_path):
     resolve, runtime = _runtime_modules()
-    authority = runtime.CSWStateAuthority(
+    authority = runtime.create_state_authority(
         COW, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
     membership_authority = runtime.SharedWorkflowMembershipAuthority(b"m" * 32)
     forged = {

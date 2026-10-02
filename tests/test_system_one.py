@@ -695,7 +695,7 @@ def test_provider_identity_must_match_policy_before_start():
 
 
 def _route_epoch_bundles(resolve, task_id, policy):
-    cow = Path(resolve.COW_ROOT)
+    cow = Path(resolve.DEFAULT_STATEWORK_ROOT)
     request = resolve.TaskRequest(
         task_id=task_id, application_id="system-one-route-epoch",
         subject_ref="infra:route-epoch", shape="implement",
@@ -727,8 +727,8 @@ def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child(tmp_
     target = "flow:infrae:incident"
     judge = FixedJudge(goal_drift="yes", calibrated=True,
                        route_preference=target)
-    authority = runtime.CSWStateAuthority(
-        Path(resolve.COW_ROOT), state_path=tmp_path / "subjects.json",
+    authority = runtime.create_state_authority(
+        Path(resolve.DEFAULT_STATEWORK_ROOT), state_path=tmp_path / "subjects.json",
         evidence_path=tmp_path / "evidence.json")
     session = runtime.start(parent, behavioral_judge=judge, state_authority=authority,
                             telemetry_disabled=True,
@@ -784,8 +784,8 @@ def test_policy_epoch_rejects_an_unresolved_or_forged_route_bundle(tmp_path):
     policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
     _request_contract, parent, children = _route_epoch_bundles(
         resolve, "system-one-route-epoch-invalid", policy)
-    authority = runtime.CSWStateAuthority(
-        Path(resolve.COW_ROOT), state_path=tmp_path / "subjects.json",
+    authority = runtime.create_state_authority(
+        Path(resolve.DEFAULT_STATEWORK_ROOT), state_path=tmp_path / "subjects.json",
         evidence_path=tmp_path / "evidence.json")
     session = runtime.start(parent, state_authority=authority,
                             behavioral_judge=FixedJudge(goal_drift="yes", calibrated=True),

@@ -59,7 +59,11 @@ def wheel_files(project: Path) -> set[str]:
                 "assert root.joinpath('compiled-registry.json').is_file(); "
                 "assert root.joinpath('tuid/manifest.yaml').is_file(); "
                 "from cognitive_statework.flow_selectors import FlowSelector; "
-                "assert FlowSelector"
+                "assert FlowSelector; "
+                "from cognitive_statework.cfw_authority import CFWAuthorityAdapter; "
+                "assert CFWAuthorityAdapter; "
+                "from cognitive_statework.cfw_provider import CognitiveStateWorkProvider; "
+                "assert callable(CognitiveStateWorkProvider.create_state_authority)"
             ),
             "CognitiveFrameWorks": (
                 "from runtime_contract.routing import _profile_schema_text; "
@@ -89,6 +93,7 @@ def main() -> int:
     assert "cognitive_statework/compiled-registry.json" in csw
     assert "cognitive_statework/tuid/manifest.yaml" in csw
     assert "cognitive_statework/flow_selectors.py" in csw
+    assert "cognitive_statework/cfw_authority.py" in csw
     assert "runtime_contract/contracts/behavioral-routing-profile.schema.json" in cfw
     assert "runtime_contract/contracts/routing-experiment-plan.schema.json" in cfw
     assert "runtime_contract/pipeline.yaml" in cfw

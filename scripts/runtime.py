@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCAL_CONTRACT_ROOT = ROOT / "contracts"
@@ -90,11 +90,9 @@ else:
     _rr_spec.loader.exec_module(resolve_runtime)
 
 _SISPIS_CALIBRATION = None
-_STATEWORK_TRANSITIONS = None
-_STATEWORK_TRANSITION_MODULES: Dict[str, Any] = {}
 
 TelemetrySink = Callable[[Dict[str, Any]], None]
-SCHEMA_VERSION = "2.6.0"
+SCHEMA_VERSION = "2.7.0"
 CATEGORIES = {
     "observation", "assumption", "inference", "decision", "action",
     "tool_result", "validation", "correction", "contradiction", "retry",
@@ -1150,7 +1148,7 @@ class HostIngress:
             self._capability, packet, observation_context=observation_context)
 
 
-class StateAuthority:
+class StateAuthority(Protocol):
     """Engine-neutral host interface for authoritative workflow state."""
     def inspect(self, *, statework_id: str, subject_ref: str, contract_hash: str) -> Dict[str, Any]:
         raise NotImplementedError
@@ -1177,6 +1175,17 @@ class StateAuthority:
                             expected_revision: int,
                             evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Any:
         raise NotImplementedError
+
+
+def create_state_authority(root: Optional[Path] = None, **options: Any) -> StateAuthority:
+    """Create the optional provider's adapter for CFW's neutral state port."""
+    provider = resolve_runtime.statework_provider(
+        Path(root or resolve_runtime.DEFAULT_STATEWORK_ROOT).resolve())
+    factory = getattr(provider, "create_state_authority", None)
+    if not callable(factory):
+        raise RuntimeError(
+            "configured StateWork provider does not expose a StateAuthority adapter")
+    return factory(**options)
 
 
 class PolicyRevocationAuthority:
@@ -1247,177 +1256,6 @@ class SharedWorkflowMembershipAuthority:
         return expiry > datetime.now(timezone.utc)
 
 
-class CSWStateAuthority(StateAuthority):
-    """Concrete combined-mode adapter owned by CSW, injected into CFW."""
-    def __init__(self, root: Path, *, state_path: Optional[Path] = None,
-                 evidence_path: Optional[Path] = None,
-                 namespace_id: str = "default", application_id: str = "cognitiveframeworks-runtime",
-                 application_instance_id: str = "cognitiveframeworks-runtime",
-                 workflow_id: str = "default-workflow",
-                 statework_memberships: Optional[Mapping[str, Mapping[str, Any]]] = None) -> None:
-        self.root = Path(root)
-        self.control = _load_statework_control_plane(self.root)
-        self.compiled_registry = self.control.load_compiled_registry(self.root)
-        self.state_store = self.control.SubjectStateStore(
-            Path(state_path) if state_path else self.root / "state" / "subjects.json")
-        self.evidence_store = self.control.EvidenceStore()
-        self.evidence_path = Path(evidence_path) if evidence_path else self.root / "state" / "evidence.json"
-        object.__setattr__(self, "namespace_id", str(namespace_id))
-        object.__setattr__(self, "application_id", str(application_id))
-        object.__setattr__(self, "application_instance_id", str(application_instance_id))
-        object.__setattr__(self, "workflow_id", str(workflow_id))
-        self.statework_memberships = {
-            str(key): MappingProxyType(dict(value))
-            for key, value in (statework_memberships or {}).items()}
-        object.__setattr__(self, "_frozen_scope", True)
-        self._controllers: Dict[str, Any] = {}
-        self._load_evidence()
-        self.workflow_authority = self.control.WorkflowAuthority(
-            root=self.root, state_store=self.state_store,
-            evidence_store=self.evidence_store)
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if getattr(self, "_frozen_scope", False) and name in {
-                "namespace_id", "application_id", "application_instance_id", "workflow_id"}:
-            raise AttributeError("CSW authority scope is immutable")
-        object.__setattr__(self, name, value)
-
-    def bind_scope(self, *, namespace_id: str, application_id: str,
-                   application_instance_id: str, workflow_id: str,
-                   statework_memberships: Optional[Mapping[str, Mapping[str, Any]]] = None
-                   ) -> "CSWStateAuthority":
-        """Return a task-scoped view while sharing durable storage services."""
-        return CSWStateAuthority(
-            self.root, state_path=self.state_store.path,
-            evidence_path=self.evidence_path, namespace_id=namespace_id,
-            application_id=application_id, application_instance_id=application_instance_id,
-            workflow_id=workflow_id,
-            statework_memberships=statework_memberships)
-
-    def _load_evidence(self) -> None:
-        if not self.evidence_path.exists():
-            return
-        try:
-            records = json.loads(self.evidence_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError("CSW evidence authority is unreadable") from exc
-        if isinstance(records, list):
-            self.evidence_store = self.control.EvidenceStore.load_attested(records)
-
-    def _contract(self, statework_id: str, contract_hash: str) -> tuple[Dict[str, Any], str]:
-        identity = self.workflow_authority.workflow_contract_identity(
-            statework_id, contract_hash)
-        return dict(identity["contract"]), str(identity["contract_hash"])
-
-    def _workflow_identity(self, *, statework_id: str, subject_ref: str,
-                           contract_hash: str) -> Any:
-        contract_identity = self.workflow_authority.workflow_contract_identity(
-            statework_id, contract_hash)
-        membership = self.statework_memberships.get(statework_id) or {}
-        if membership and membership.get("subject_ref") != subject_ref:
-            raise PermissionError("workflow subject differs from its host membership binding")
-        return self.control.WorkflowIdentity(
-            namespace_id=str(membership.get("namespace_id") or self.namespace_id),
-            application_id=str(membership.get("application_id") or self.application_id),
-            application_instance_id=str(membership.get("application_instance_id")
-                                        or self.application_instance_id),
-            workflow_id=str(membership.get("workflow_id") or self.workflow_id),
-            subject_ref=subject_ref,
-            statework_id=statework_id,
-            contract_version=str(contract_identity["contract_version"]))
-
-    def workflow_contract_identity(self, statework_id: str,
-                                   contract_hash: str) -> Dict[str, Any]:
-        return self.workflow_authority.workflow_contract_identity(
-            statework_id, contract_hash)
-
-    def inspect_workflow(self, *, statework_id: str, subject_ref: str,
-                         contract_hash: str) -> Any:
-        identity = self._workflow_identity(
-            statework_id=statework_id, subject_ref=subject_ref,
-            contract_hash=contract_hash)
-        return self.workflow_authority.inspect_workflow(
-            identity, contract_hash=contract_hash)
-
-    def resolve_legacy_step(self, *, statework_id: str, subject_ref: str,
-                            contract_hash: str, to_state: str,
-                            trigger: Optional[str]) -> str:
-        identity = self._workflow_identity(
-            statework_id=statework_id, subject_ref=subject_ref,
-            contract_hash=contract_hash)
-        return self.workflow_authority.resolve_legacy_step(
-            identity, contract_hash=contract_hash, to_state=to_state,
-            trigger=trigger)
-
-    def apply_workflow_step(self, *, statework_id: str, subject_ref: str,
-                            contract_hash: str, step_id: str,
-                            expected_revision: int,
-                            evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Any:
-        identity = self._workflow_identity(
-            statework_id=statework_id, subject_ref=subject_ref,
-            contract_hash=contract_hash)
-        scoped_refs: list[str] = []
-        for record in evidence_records or ():
-            copied = dict(record)
-            original_ref = str(copied.get("ref") or "")
-            if not original_ref:
-                raise ValueError("CSW evidence record requires a ref")
-            scoped_ref = "evidence:" + hashlib.sha256(
-                (f"{identity.namespace_id}|{identity.application_id}|"
-                 f"{identity.application_instance_id}|{identity.workflow_id}|"
-                 f"{statework_id}|{subject_ref}|{original_ref}").encode("utf-8")
-            ).hexdigest()
-            copied.update({"ref": scoped_ref, "origin_ref": original_ref,
-                           "namespace_id": identity.namespace_id,
-                           "application_id": identity.application_id,
-                           "application_instance_id": identity.application_instance_id,
-                           "workflow_id": identity.workflow_id})
-            self.evidence_store.create(copied)
-            scoped_refs.append(scoped_ref)
-        if scoped_refs:
-            self.evidence_store.save(self.evidence_path)
-        return self.workflow_authority.apply_step(
-            identity, contract_hash=contract_hash, step_id=step_id,
-            evidence_refs=scoped_refs, expected_revision=expected_revision)
-
-    def _identity(self, *, statework_id: str, subject_ref: str, contract: Mapping[str, Any]) -> Dict[str, Any]:
-        return {"namespace_id": self.namespace_id, "application_id": self.application_id,
-                "application_instance_id": self.application_instance_id,
-                "workflow_id": self.workflow_id,
-                "subject_ref": subject_ref, "statework_id": statework_id,
-                "contract_version": str(contract.get("version") or "1.0.0")}
-
-    def inspect(self, *, statework_id: str, subject_ref: str, contract_hash: str) -> Dict[str, Any]:
-        snapshot = self.inspect_workflow(statework_id=statework_id,
-                                         subject_ref=subject_ref,
-                                         contract_hash=contract_hash)
-        return {"state": snapshot.current_state, "current_state": snapshot.current_state,
-                "revision": snapshot.revision, "updated_at": None,
-                "engine_kind": snapshot.engine_kind,
-                "completed": snapshot.completed,
-                "workflow_data": dict(snapshot.data)}
-
-    def commit(self, *, statework_id: str, subject_ref: str, contract_hash: str,
-               expected_revision: int, output_state: str, evidence_refs: list[str], trigger: str,
-               evidence_records: Optional[list[Mapping[str, Any]]] = None) -> Dict[str, Any]:
-        snapshot = self.inspect_workflow(statework_id=statework_id,
-                                         subject_ref=subject_ref,
-                                         contract_hash=contract_hash)
-        step_id = self.resolve_legacy_step(
-            statework_id=statework_id, subject_ref=subject_ref,
-            contract_hash=contract_hash, to_state=output_state, trigger=trigger)
-        decision = self.apply_workflow_step(
-            statework_id=statework_id, subject_ref=subject_ref,
-            contract_hash=contract_hash, step_id=step_id,
-            expected_revision=expected_revision, evidence_records=evidence_records)
-        if not decision.allowed:
-            raise ValueError(f"CSW authority blocked workflow step: {decision.reason}")
-        return {"state": decision.current_state, "current_state": decision.current_state,
-                "revision": decision.revision, "updated_at": None,
-                "engine_kind": decision.engine_kind,
-                "completed": decision.completed,
-                "workflow_data": dict(decision.state_data),
-                "transition": decision.to_dict()}
 
 
 @dataclass
@@ -3620,14 +3458,11 @@ class RuntimeSession:
         self._require_host(capability)
         if not isinstance(observation_context, Mapping) or not observation_context:
             raise ValueError("repository truth requires trusted freshness context")
-        control = _load_statework_control_plane(
-            Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
-        store = control.PacketStore(
-            packet_registry_path=Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
-            "schemas" / "packet-registry.yaml")
+        provider = resolve_runtime.statework_provider(
+            Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
         if packet.get("packet_type") != "repository_truth_packet":
             raise ValueError("repository truth adapter accepts only repository truth packets")
-        if not store.validate_current(dict(packet), observation_context=observation_context):
+        if not provider.validate_repository_truth(dict(packet), observation_context):
             raise ValueError("repository truth packet failed trusted freshness validation")
         subject_ref = subject_ref or packet.get("subject_ref")
         return self._record_attestation(
@@ -3858,11 +3693,9 @@ class RuntimeSession:
         if observation_type in AUTHORITATIVE_EVIDENCE_KINDS:
             raise ValueError(
                 f"{observation_type} is registered transition authority; use its typed host adapter")
-        control = _load_statework_control_plane(
-            Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
-        evidence_registry = control.load_evidence_kind_registry(
-            Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
-            "schemas" / "evidence-kinds.yaml")
+        provider = resolve_runtime.statework_provider(
+            Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
+        evidence_registry = provider.evidence_kind_registry()
         if observation_type in set((evidence_registry.get("kinds") or {})):
             raise ValueError(
                 f"{observation_type} is a registered evidence kind; use the StateWork evidence adapter")
@@ -3886,9 +3719,9 @@ class RuntimeSession:
             raise ValueError("StateWork evidence requires a subject reference")
         if not isinstance(content, Mapping) or not content:
             raise ValueError("StateWork evidence requires non-empty host-captured content")
-        root = Path(self.bundle.statework_root or resolve_runtime.COW_ROOT)
-        control = _load_statework_control_plane(root)
-        registry = control.load_evidence_kind_registry(root / "schemas" / "evidence-kinds.yaml")
+        root = Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT)
+        provider = resolve_runtime.statework_provider(root)
+        registry = provider.evidence_kind_registry()
         spec = (registry.get("kinds") or {}).get(evidence_type)
         if not spec or spec.get("mintable_by_host") is not True:
             raise PermissionError(
@@ -4446,15 +4279,15 @@ class RuntimeSession:
         if not workflow_complete:
             raise PermissionError("handoff requires the producer workflow to be complete")
         if self._packet_store is None:
-            control = _load_statework_control_plane(
-                Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
+            provider = resolve_runtime.statework_provider(
+                Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
             packet_root = resolve_runtime.runtime_state_dir() / "packets"
             safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.bundle.task_id)[:128] or "task"
-            self._packet_store = control.PacketStore(
-                packet_registry_path=Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
-                "schemas" / "packet-registry.yaml",
-                storage_path=packet_root / f"{safe_task}.json")
-        packet_meta = self._packet_store.registry.get(packet.get("packet_type"), {})
+            self._packet_store = provider.packet_store(
+                None, storage_path=packet_root / f"{safe_task}.json")
+        provider = resolve_runtime.statework_provider(
+            Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
+        packet_meta = provider.packet_metadata(str(packet.get("packet_type") or ""))
         freshness_contract = packet_meta.get("freshness")
         if freshness_contract is None and packet_meta.get("freshness_validator"):
             freshness_contract = {"strategy": "trusted_validator",
@@ -4491,14 +4324,12 @@ class RuntimeSession:
                         expected_subject_ref: str,
                         observation_context: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
         if self._packet_store is None:
-            control = _load_statework_control_plane(
-                Path(self.bundle.statework_root or resolve_runtime.COW_ROOT))
+            provider = resolve_runtime.statework_provider(
+                Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
             packet_root = resolve_runtime.runtime_state_dir() / "packets"
             safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.bundle.task_id)[:128] or "task"
-            self._packet_store = control.PacketStore(
-                packet_registry_path=Path(self.bundle.statework_root or resolve_runtime.COW_ROOT) /
-                "schemas" / "packet-registry.yaml",
-                storage_path=packet_root / f"{safe_task}.json")
+            self._packet_store = provider.packet_store(
+                None, storage_path=packet_root / f"{safe_task}.json")
         packet = (self._packet_store.get_current(
             expected_packet_type, task_id=self.bundle.task_id,
             subject_ref=expected_subject_ref,
@@ -5282,8 +5113,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     supplied_context = host_context or HostExecutionContext()
     pinned_contracts = bundle.pinned.get("contracts", {})
     pinned_runtime_hash = pinned_contracts.get("runtime_behavior_hash")
-    source_root = Path(bundle.statework_root or resolve_runtime.COW_ROOT)
-    if pinned_runtime_hash != resolve_runtime.runtime_behavior_hash(source_root):
+    if pinned_runtime_hash != resolve_runtime.runtime_behavior_hash():
         raise resolve_runtime.SnapshotIntegrityError(
             "runtime enforcement code changed after policy composition")
     system_one_policy = SystemOnePolicy(**dict(bundle.pinned.get("system_one_policy") or {}))
@@ -5374,9 +5204,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
                             session_nonce=session_nonce)
     resolved_action_registry = effective_action_registry(
         bundle.action_registry or DEFAULT_ACTION_REGISTRY)
-    current_manifest = resolve_runtime.runtime_build_manifest(
-        Path(bundle.statework_root or resolve_runtime.COW_ROOT),
-        resolved_action_registry)
+    current_manifest = resolve_runtime.runtime_build_manifest(resolved_action_registry)
     pinned_manifest = pinned_contracts.get("runtime_build_manifest") or {}
     if (pinned_contracts.get("runtime_build_manifest_hash")
             != current_manifest.get("manifest_hash")
@@ -5462,7 +5290,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
             raise ValueError("combined_enforcing requires an injected shared StateAuthority")
         if not bundle.stateworks:
             raise ValueError("combined_enforcing requires at least one StateWork-backed task")
-        if isinstance(state_authority, CSWStateAuthority):
+        if callable(getattr(state_authority, "bind_scope", None)):
             memberships = list(session.shared_workflow_memberships)
             if session.shared_workflow_membership and not any(
                     dict(item) == dict(session.shared_workflow_membership)
@@ -5511,13 +5339,20 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
             and state_authority is None):
         raise ValueError(
             "standalone_enforcing with StateWorks requires an explicitly injected StateAuthority")
-    if isinstance(state_authority, CSWStateAuthority) and runtime_mode != "combined_enforcing":
+    if (runtime_mode != "combined_enforcing"
+            and callable(getattr(state_authority, "bind_scope", None))):
+        workflow_id = getattr(state_authority, "workflow_id", None)
+        if not workflow_id:
+            workflow_id = (
+                f"private:{bundle.pinned.get('namespace_id', 'default')}:"
+                f"{bundle.pinned.get('application_instance_id', 'unknown')}:"
+                f"{session.agent_instance_id}")
         state_authority = state_authority.bind_scope(
             namespace_id=bundle.pinned.get("namespace_id", "default"),
             application_id=bundle.pinned.get("application_id", "cognitiveframeworks-runtime"),
             application_instance_id=bundle.pinned.get(
                 "application_instance_id", "cognitiveframeworks-runtime"),
-            workflow_id=state_authority.workflow_id,
+            workflow_id=workflow_id,
             statework_memberships={str(item.get("statework_id")): item
                                    for item in session.shared_workflow_memberships})
     if runtime_mode == "standalone_advisory" and state_authority is not None:
@@ -5937,23 +5772,6 @@ def resume_task(bundle: resolve_runtime.RuntimeBundle, session_nonce: str, **kwa
     if not session_nonce:
         raise ValueError("resume requires the original session nonce")
     return start(bundle, session_nonce=session_nonce, resume=True, **kwargs)
-
-
-def _load_statework_control_plane(cow_root: Optional[Path] = None):
-    """Load CSW's authority API through the optional provider boundary."""
-    global _STATEWORK_TRANSITIONS
-    root = Path(cow_root or resolve_runtime.COW_ROOT).resolve()
-    cache_key = str(root)
-    if cache_key in _STATEWORK_TRANSITION_MODULES:
-        return _STATEWORK_TRANSITION_MODULES[cache_key]
-    provider = resolve_runtime.statework_provider(root)
-    control_plane = getattr(provider, "control_plane", None)
-    if not callable(control_plane):
-        raise RuntimeError("configured StateWork provider does not expose the CSW authority API")
-    module = control_plane()
-    _STATEWORK_TRANSITIONS = module
-    _STATEWORK_TRANSITION_MODULES[cache_key] = module
-    return module
 
 
 def _sispis_calibration():

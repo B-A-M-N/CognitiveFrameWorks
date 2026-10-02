@@ -363,7 +363,7 @@ def main() -> int:
     schema_bundle = resolve.resolve("schema-pin", "quick")
     check("telemetry pins exact DP schema hash/version",
           telemetry.schema_hash == schema_bundle.policy.behavior_event_schema_hash and
-          telemetry.schema_version == "2.6.0")
+          telemetry.schema_version == "2.7.0")
     try:
         telemetry.emit({"category": "NOT_A_CATEGORY", "payload": {"secret": "leak"}})
         check("host telemetry schema bypass rejected", False, "invalid event persisted")
@@ -465,7 +465,7 @@ def main() -> int:
         allow_missing_required=True)
     segment_state_tmp = tempfile.TemporaryDirectory(prefix="cfw-segment-state-")
     segment_state_dir = Path(segment_state_tmp.name)
-    segment_authority = runtime.CSWStateAuthority(
+    segment_authority = runtime.create_state_authority(
         COW, state_path=segment_state_dir / "subjects.json",
         evidence_path=segment_state_dir / "evidence.json")
     segment_session = runtime.start(
@@ -563,7 +563,7 @@ def main() -> int:
         requested_flows={"tuid": "debug"})
     transition_state_tmp = tempfile.TemporaryDirectory(prefix="cfw-transition-state-")
     transition_state_dir = Path(transition_state_tmp.name)
-    transition_authority = runtime.CSWStateAuthority(
+    transition_authority = runtime.create_state_authority(
         COW, state_path=transition_state_dir / "subjects.json",
         evidence_path=transition_state_dir / "evidence.json")
     transition_session = runtime.start(

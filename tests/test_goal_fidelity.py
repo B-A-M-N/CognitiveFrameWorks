@@ -143,7 +143,7 @@ def test_goal_contract_survives_resume():
 
 def test_generic_layout_does_not_select_tuid_but_terminal_layout_does():
     resolve, _runtime = _modules()
-    stateworks = resolve.load_stateworks(resolve.COW_ROOT)
+    stateworks = resolve.load_stateworks(resolve.DEFAULT_STATEWORK_ROOT)
     selected, ambiguous = resolve.match_statework(stateworks, ["layout"])
     assert selected is None
     assert ambiguous == []
@@ -170,17 +170,17 @@ def test_goal_comparison_context_keeps_dimensions_without_exact_contract_hash():
 
 def test_tuid_implement_task_cannot_select_test_flow():
     resolve, _runtime = _modules()
-    stateworks = resolve.load_stateworks(resolve.COW_ROOT)
+    stateworks = resolve.load_stateworks(resolve.DEFAULT_STATEWORK_ROOT)
     tuid = next(item for item in stateworks if item["id"] == "tuid")
     implement, _ = resolve.select_statework_runtime(
-        tuid, resolve.COW_ROOT, operation="implement", trigger="mutation",
+        tuid, resolve.DEFAULT_STATEWORK_ROOT, operation="implement", trigger="mutation",
         task_shape="implement", current_state="DESIGNED")
     test, _ = resolve.select_statework_runtime(
-        tuid, resolve.COW_ROOT, operation="test", trigger="test_requested",
+        tuid, resolve.DEFAULT_STATEWORK_ROOT, operation="test", trigger="test_requested",
         task_shape="test", current_state="IMPLEMENTED")
     assert implement["flow_metadata"]["flow"] == "implement"
     assert test["flow_metadata"]["flow"] == "test"
-    selector = resolve._flow_selector(resolve.COW_ROOT)
+    selector = resolve._flow_selector(resolve.DEFAULT_STATEWORK_ROOT)
     context = {"operation": "test", "trigger": "test_requested",
                "task_shape": "test", "current_state": "IMPLEMENTED"}
     assert not selector.evaluate(implement["flow_metadata"]["when"], context)[0]
@@ -199,8 +199,8 @@ def test_tuid_completion_is_claim_sensitive(tmp_path):
         task_id="visual-claim", application_id="test", shape="implement",
         domain_tags=("terminal UI",), operation="implement", trigger="mutation",
         subject_ref="component:buddy", goal_contract=goal))
-    authority = runtime.CSWStateAuthority(
-        resolve.COW_ROOT, state_path=tmp_path / "subjects.json",
+    authority = runtime.create_state_authority(
+        resolve.DEFAULT_STATEWORK_ROOT, state_path=tmp_path / "subjects.json",
         evidence_path=tmp_path / "evidence.json")
     session = runtime.start(bundle, telemetry_disabled=True,
                             state_authority=authority,

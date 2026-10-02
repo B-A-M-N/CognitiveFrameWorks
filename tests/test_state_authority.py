@@ -10,11 +10,12 @@ def test_csw_authority_is_shared_and_compare_and_swap(tmp_path):
     import importlib.util, sys
     spec = importlib.util.spec_from_file_location("cfw_state_runtime", Path(__file__).parents[1] / "scripts" / "runtime.py")
     module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
-    CSWStateAuthority = module.CSWStateAuthority
+    create_state_authority = module.create_state_authority
 
     root = Path("/home/bamn/CognitiveStateWork")
-    first = CSWStateAuthority(root, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
-    second = CSWStateAuthority(root, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
+    first = create_state_authority(root, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
+    second = create_state_authority(root, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
+    assert type(first).__module__ == "cognitive_statework.cfw_authority"
     contract_path = root / "gitter" / "transitions.yaml"
     contract_hash = hashlib.sha256(json.dumps(json.loads("{}"), sort_keys=True).encode()).hexdigest()
     import yaml

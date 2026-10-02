@@ -65,7 +65,7 @@ def private_agent(index: int, state_path: str, evidence_path: str, output_path: 
         agent_instance_id=request.agent_instance_id, session_id="session",
         task_id=request.task_id, attempt_id=request.attempt_id,
         interaction_id=request.interaction_id)
-    authority = runtime.CSWStateAuthority(
+    authority = runtime.create_state_authority(
         COW, state_path=Path(state_path), evidence_path=Path(evidence_path),
         namespace_id=request.namespace_id, application_id=request.application_id,
         application_instance_id=request.application_instance_id)
@@ -146,7 +146,7 @@ def shared_state_race(root: Path) -> None:
 
 def dp_event(index: int, event_id: str) -> dict:
     return {
-        "schema_version": "2.6.0", "event_id": event_id,
+        "schema_version": "2.7.0", "event_id": event_id,
         "timestamp": "2026-09-24T12:00:00Z", "task_id": "task",
         "agent_id": "agent", "agent_instance_id": "agent",
         "session_id": "session", "attempt_id": "attempt-1",
@@ -248,7 +248,7 @@ def reused_evidence_ref_is_origin_scoped(root: Path) -> None:
     evidence_path = root / "scoped-evidence.json"
     authorities = []
     for index in (0, 1):
-        authorities.append(runtime.CSWStateAuthority(
+        authorities.append(runtime.create_state_authority(
             COW, state_path=root / f"evidence-state-{index}.json",
             evidence_path=evidence_path,
             namespace_id=f"ns-{index}", application_id="app",

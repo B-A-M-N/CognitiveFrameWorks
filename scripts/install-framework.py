@@ -443,6 +443,7 @@ def _main_impl() -> int:
             for filename in ("__init__.py", "control_plane.py", "errors.py",
                              "workflow_engines.py", "flow_selectors.py", "resources.py",
                              "evidence.py", "registry.py", "bundles.py", "contracts.py",
+                             "cfw_authority.py",
                              "validate-repository-truth.py", "operator_projection.py"):
                 source_script = statework_root / "scripts" / filename
                 if source_script.exists():

@@ -59,16 +59,19 @@ class StateWorkProvider(Protocol):
 
     def load_stateworks(self) -> List[Dict[str, Any]]: ...
     def packet_registry(self) -> Dict[str, Any]: ...
-    def packet_store(self, packets: Optional[Iterable[Dict[str, Any]]]) -> Any: ...
+    def packet_store(self, packets: Optional[Iterable[Dict[str, Any]]], *,
+                     storage_path: Optional[Path] = None) -> Any: ...
+    def packet_metadata(self, packet_type: str) -> Dict[str, Any]: ...
+    def evidence_kind_registry(self) -> Dict[str, Any]: ...
+    def validate_repository_truth(self, packet: Mapping[str, Any],
+                                  observation_context: Mapping[str, Any]) -> bool: ...
     def bundle_root(self, statework: Any) -> Path: ...
     def validate_flow_contracts(self, statework_id: str, *,
                                 owner_root: Optional[Path] = None) -> None: ...
     def flow_metadata(self, statework: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]: ...
     def flow_selector(self) -> Any: ...
-    def runtime_hash_paths(self) -> Optional[List[Path]]: ...
-    def behavior_hash_paths(self) -> List[Path]: ...
     def registry_document(self) -> Dict[str, Any]: ...
-    def control_plane(self) -> Any: ...
+    def create_state_authority(self, **options: Any) -> Any: ...
 
 
 class EmptyStateWorkProvider:
@@ -83,8 +86,19 @@ class EmptyStateWorkProvider:
     def packet_registry(self) -> Dict[str, Any]:
         return {}
 
-    def packet_store(self, packets: Optional[Iterable[Dict[str, Any]]]) -> Any:
+    def packet_store(self, packets: Optional[Iterable[Dict[str, Any]]], *,
+                     storage_path: Optional[Path] = None) -> Any:
         raise StateWorkProviderError("StateWork packet store is unavailable without a provider")
+
+    def packet_metadata(self, packet_type: str) -> Dict[str, Any]:
+        return {}
+
+    def evidence_kind_registry(self) -> Dict[str, Any]:
+        return {}
+
+    def validate_repository_truth(self, packet: Mapping[str, Any],
+                                  observation_context: Mapping[str, Any]) -> bool:
+        return False
 
     def bundle_root(self, statework: Any) -> Path:
         raise StateWorkProviderError("StateWork bundle is unavailable without a provider")
@@ -99,17 +113,12 @@ class EmptyStateWorkProvider:
     def flow_selector(self) -> Any:
         raise StateWorkProviderError("StateWork flow selector is unavailable without a provider")
 
-    def runtime_hash_paths(self) -> Optional[List[Path]]:
-        return None
-
-    def behavior_hash_paths(self) -> List[Path]:
-        return []
-
     def registry_document(self) -> Dict[str, Any]:
         return {"version": "1.0.0", "stateworks": []}
 
-    def control_plane(self) -> Any:
-        raise StateWorkProviderError("StateWork control plane is unavailable without a provider")
+    def create_state_authority(self, **_options: Any) -> Any:
+        raise StateWorkProviderError(
+            "StateWork authority is unavailable without an installed provider")
 
 
 @lru_cache(maxsize=8)

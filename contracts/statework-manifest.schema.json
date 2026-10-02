@@ -74,6 +74,16 @@
         "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
       }
     },
+    "behavior_tags": {
+      "description": "Bounded advisory vocabulary used by DigitalPsychology to rank only CSW-eligible StateWorks. Tags never grant workflow or transition authority.",
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+      }
+    },
     "inputs": {
       "type": "object",
       "required": [
