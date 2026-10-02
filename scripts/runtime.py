@@ -5938,22 +5938,17 @@ def resume_task(bundle: resolve_runtime.RuntimeBundle, session_nonce: str, **kwa
 
 
 def _load_statework_control_plane(cow_root: Optional[Path] = None):
-    """Load validated machine transition contracts for active StateWorks."""
+    """Load CSW's authority API through the optional provider boundary."""
     global _STATEWORK_TRANSITIONS
     root = Path(cow_root or resolve_runtime.COW_ROOT).resolve()
     cache_key = str(root)
     if cache_key in _STATEWORK_TRANSITION_MODULES:
         return _STATEWORK_TRANSITION_MODULES[cache_key]
-    module_path = root / "scripts" / "control_plane.py"
-    package_name = "cfw_cow_runtime_" + hashlib.sha256(str(root).encode()).hexdigest()[:12]
-    package = types.ModuleType(package_name)
-    package.__path__ = [str(module_path.parent)]
-    sys.modules[package_name] = package
-    spec = importlib.util.spec_from_file_location(
-        package_name + ".control_plane", module_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[package_name + ".control_plane"] = module
-    spec.loader.exec_module(module)
+    provider = resolve_runtime.statework_provider(root)
+    control_plane = getattr(provider, "control_plane", None)
+    if not callable(control_plane):
+        raise RuntimeError("configured StateWork provider does not expose the CSW authority API")
+    module = control_plane()
     _STATEWORK_TRANSITIONS = module
     _STATEWORK_TRANSITION_MODULES[cache_key] = module
     return module

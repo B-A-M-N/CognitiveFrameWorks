@@ -70,7 +70,7 @@ from runtime_contract.routing import (
     validate_experiment_plan,
 )
 from runtime_contract.statework_provider import (
-    DEFAULT_STATEWORK_ROOT, StateWorkProviderError, statework_provider,
+    DEFAULT_STATEWORK_ROOT, statework_provider,
 )
 
 COW_ROOT = DEFAULT_STATEWORK_ROOT
@@ -285,14 +285,14 @@ def order_kernel(active: Iterable[str], stages: Dict[str, Any]) -> List[str]:
 def _statework_root(cow_root: Path, statework: Any) -> Path:
     try:
         return statework_provider(cow_root).bundle_root(statework)
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
 
 
 def load_stateworks(cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
     try:
         return statework_provider(cow_root).load_stateworks()
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
 
 
@@ -301,7 +301,7 @@ def _validate_statework_flow_contracts(cow_root: Path, statework_id: str, *,
     try:
         statework_provider(cow_root).validate_flow_contracts(
             statework_id, owner_root=owner_root)
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
 
 
@@ -309,14 +309,14 @@ def _statework_flow_metadata(sw: Mapping[str, Any], cow_root: Path
                              ) -> Dict[str, Dict[str, Any]]:
     try:
         return statework_provider(cow_root).flow_metadata(sw)
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
 
 
 def _flow_selector(cow_root: Path) -> Any:
     try:
         return statework_provider(cow_root).flow_selector()
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
 
 
@@ -412,7 +412,7 @@ def match_stateworks(stateworks: List[Dict[str, Any]], domains: Iterable[str],
 def parse_packet_registry(cow_root: Path = COW_ROOT) -> Dict[str, Any]:
     try:
         return statework_provider(cow_root).packet_registry()
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
 
 
@@ -437,7 +437,7 @@ def _load_cow_packet_store(packets: Optional[Iterable[Dict[str, Any]]],
     """Build the provider-validated packet store through the host boundary."""
     try:
         return statework_provider(cow_root).packet_store(packets)
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
 
 
@@ -2149,7 +2149,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     pack = routing_pack_for_context
     try:
         statework_registry = statework_provider(cow_root).registry_document()
-    except StateWorkProviderError as exc:
+    except Exception as exc:
         raise PacketDependencyError(str(exc)) from exc
     behavior_contract_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
     behavior_contract = _load_document(behavior_contract_path, _load_json)

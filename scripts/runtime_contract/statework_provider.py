@@ -1,33 +1,55 @@
 """Host boundary for optional StateWork capabilities.
 
-CFW owns composition policy; a provider supplies registry data and the small
-set of validated runtime primitives needed to compose it. Importing this
-module never imports a StateWork checkout.
+CFW owns composition policy. An installed provider supplies registry data and
+the small set of validated runtime primitives; CFW does not import CSW's
+implementation modules directly.
 """
 from __future__ import annotations
 
 import os
 from functools import lru_cache
+from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol
 
 
-def default_statework_root() -> Path:
-    """Resolve the conventional optional checkout location without loading it."""
-    cfw_root = Path(__file__).resolve().parents[2]
-    bundled = cfw_root / "statework"
-    sibling = cfw_root.parent / "CognitiveStateWork"
-    configured = os.environ.get("COGNITIVE_STATEWORK_ROOT")
-    if configured:
-        return Path(configured)
-    return bundled if bundled.exists() else sibling
-
-
-DEFAULT_STATEWORK_ROOT = default_statework_root()
+_PROVIDER_GROUP = "cognitiveframeworks.statework_providers"
 
 
 class StateWorkProviderError(ValueError):
     """A configured StateWork provider is present but invalid."""
+
+
+def _provider_entrypoint() -> Optional[EntryPoint]:
+    matches = [item for item in entry_points(group=_PROVIDER_GROUP)
+               if item.name == "csw"]
+    if len(matches) > 1:
+        raise StateWorkProviderError(
+            "multiple CognitiveStateWork provider plugins are installed")
+    return matches[0] if matches else None
+
+
+def default_statework_root() -> Path:
+    """Resolve an explicitly configured or installed optional provider root."""
+    cfw_root = Path(__file__).resolve().parents[2]
+    bundled = cfw_root / "statework"
+    configured = os.environ.get("COGNITIVE_STATEWORK_ROOT")
+    if configured:
+        return Path(configured)
+    if (bundled / "registry.yaml").is_file():
+        return bundled
+    plugin = _provider_entrypoint()
+    if plugin is not None:
+        provider_type = plugin.load()
+        default_root = getattr(provider_type, "default_root", None)
+        if callable(default_root):
+            return Path(default_root())
+    # A sibling checkout alone does not activate CSW. The empty bundled path
+    # keeps CFW usable on its own; integrated hosts install the CSW provider.
+    return bundled
+
+
+DEFAULT_STATEWORK_ROOT = default_statework_root()
 
 
 class StateWorkProvider(Protocol):
@@ -46,6 +68,7 @@ class StateWorkProvider(Protocol):
     def runtime_hash_paths(self) -> Optional[List[Path]]: ...
     def behavior_hash_paths(self) -> List[Path]: ...
     def registry_document(self) -> Dict[str, Any]: ...
+    def control_plane(self) -> Any: ...
 
 
 class EmptyStateWorkProvider:
@@ -85,11 +108,24 @@ class EmptyStateWorkProvider:
     def registry_document(self) -> Dict[str, Any]:
         return {"version": "1.0.0", "stateworks": []}
 
+    def control_plane(self) -> Any:
+        raise StateWorkProviderError("StateWork control plane is unavailable without a provider")
+
 
 @lru_cache(maxsize=8)
 def _provider_for_root(resolved: Path) -> StateWorkProvider:
-    from runtime_contract.statework_csw_adapter import CognitiveStateWorkProvider
-    return CognitiveStateWorkProvider(resolved)
+    plugin = _provider_entrypoint()
+    if plugin is None:
+        raise StateWorkProviderError(
+            "CognitiveStateWork is configured but its optional provider plugin is not installed")
+    try:
+        provider_type = plugin.load()
+        return provider_type(resolved)
+    except StateWorkProviderError:
+        raise
+    except Exception as exc:
+        raise StateWorkProviderError(
+            f"CognitiveStateWork provider plugin could not be loaded: {exc}") from exc
 
 
 def statework_provider(root: Path = DEFAULT_STATEWORK_ROOT) -> StateWorkProvider:

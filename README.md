@@ -55,13 +55,13 @@ The example resolves an `implement` task, shows the host action gate decision, a
 ## Optional integrations
 
 - **CFW alone:** required for the example above. No CSW or DP installation is loaded.
-- **CFW + CSW:** point `--statework-root` at a CognitiveStateWorks checkout. CSW owns workflow selection, state, evidence, and legal transitions; CFW supplies compatible component context and action gates.
+- **CFW + CSW:** install CSW's optional CFW provider and point `--statework-root` at its registry. CSW owns workflow state, evidence, and legal transitions; CFW consumes the provider contract for compatible component context and action gates.
 - **CFW + CSW + DP:** CFW and CSW keep those same authorities; the trusted DP host uses their declared ports to coordinate bounded behavioral interventions and measures outcomes using host evidence.
 - **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, the trusted host passes `RuntimeTaskHandle.digital_psychology_adapter()` to DP's `HostControlBridge`; the host launches DP's private MCP process and applies its prepared directives through CFW's lifecycle overlay. The bridge is not part of `AgentSessionHandle`, and CFW keeps its hard permission gates active.
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
-CFW resolves StateWork capabilities through a provider boundary. CFW-only tasks use an empty provider without importing CSW; when a registry is present, the CSW adapter validates the compiled registry and provides its flow selector and packet store to CFW's composition logic.
+CFW resolves StateWork capabilities through the `cognitiveframeworks.statework_providers` entry-point contract. CFW-only tasks use an empty provider and never load CSW. In a combined install, CSW registers its adapter as an optional provider and supplies its compiled registry, flow selector, and packet store without CFW importing CSW implementation modules.
 
 | Deployment | CFW role | Other-system requirement |
 | --- | --- | --- |
