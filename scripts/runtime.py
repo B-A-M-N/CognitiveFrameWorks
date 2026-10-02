@@ -60,6 +60,8 @@ from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
 from runtime_contract.convergence import (AttemptDescriptor, ConvergenceController,
                                            ConvergenceIdentity, SharedBranchLedger,
                                            TERMINAL_DISPOSITIONS)
+from runtime_contract.component_control import (COMPONENT_IDS, ComponentOverlay,
+                                                PreparedComponentOverlay)
 from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema_contract
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
 from runtime_contract.operator_events import OperatorEvent
@@ -299,17 +301,200 @@ class LifecycleController:
         self.artifact_active: set[str] = set()
         self.response_active: set[str] = set()
         self.counts: Dict[str, int] = {}
+        self._component_overlay: Optional[ComponentOverlay] = None
+        self._startup_active: set[str] = set()
 
     @property
     def active(self) -> set[str]:
         """Everything currently visible to the model in this segment."""
-        return (self.task_active | self.segment_active | self.action_active
-                | self.artifact_active | self.response_active)
+        active = (self.task_active | self.segment_active | self.action_active
+                  | self.artifact_active | self.response_active)
+        if self._component_overlay is None:
+            return active
+        return {stage for stage in active if self._stage_permitted(stage)}
+
+    def component_mode(self, component_id: str) -> Optional[str]:
+        if self._component_overlay is None:
+            return None
+        control = self._component_overlay.by_component().get(component_id)
+        return control.mode if control is not None else None
+
+    def _stage_permitted(self, stage: str) -> bool:
+        overlay = self._component_overlay
+        if overlay is None:
+            return True
+        owner = stage.split("_", 1)[0].lower()
+        control = overlay.by_component().get(owner)
+        if control is None:
+            return owner not in COMPONENT_IDS
+        if owner == "ward" or self._required_by_hard_floor(stage):
+            return True
+        if control.mode == "off":
+            return False
+        if control.mode == "passive":
+            return stage in self._startup_active
+        return True
+
+    def _required_by_hard_floor(self, stage: str) -> bool:
+        pending = [candidate for candidate in self.specs
+                   if candidate.split("_", 1)[0].lower() == "ward"]
+        visited: set[str] = set()
+        while pending:
+            candidate = pending.pop()
+            if candidate in visited:
+                continue
+            visited.add(candidate)
+            for dependency in self.specs.get(candidate, {}).get("requires") or ():
+                if dependency == stage:
+                    return True
+                pending.append(dependency)
+        return False
+
+    def prepare_component_overlay(self, overlay: ComponentOverlay, *,
+                                  allow_rollback: bool = False
+                                  ) -> PreparedComponentOverlay:
+        if not isinstance(overlay, ComponentOverlay):
+            raise TypeError("CFW requires a validated ComponentOverlay")
+        prior = self._component_overlay
+        current_revision = prior.behavior_revision if prior is not None else -1
+        if not allow_rollback and overlay.behavior_revision < current_revision:
+            raise ValueError("CFW rejects a stale component-overlay revision")
+        if (not allow_rollback and overlay.behavior_revision == current_revision
+                and prior is not None and overlay != prior):
+            raise ValueError("same component-overlay revision cannot carry different controls")
+        return PreparedComponentOverlay(
+            overlay=overlay,
+            expected_current_revision=current_revision,
+            previous_overlay=prior,
+            previous_lifecycle_state=self.capture_state(),
+        )
+
+    def apply_component_overlay(self, prepared: PreparedComponentOverlay, *,
+                                startup_active: set[str],
+                                allow_rollback: bool = False) -> set[str]:
+        """Apply component gates to CFW's event-driven lifecycle.
+
+        DP owns each component mode. CFW still owns the registered lifecycle
+        events that execute a component. The overlay can suppress stages,
+        request bounded component resets, and elevate FLOW postflight runs.
+        """
+        if not isinstance(prepared, PreparedComponentOverlay):
+            raise TypeError("CFW component application requires a prepared overlay")
+        prior_revision = (self._component_overlay.behavior_revision
+                          if self._component_overlay is not None else -1)
+        if prepared.expected_current_revision != prior_revision:
+            raise RuntimeError("CFW component overlay changed after preparation")
+        if prepared.previous_overlay != self._component_overlay:
+            raise RuntimeError("CFW component overlay no longer matches its prepared basis")
+        if (not allow_rollback
+                and prepared.overlay.behavior_revision < prior_revision):
+            raise ValueError("CFW rejects a stale component-overlay revision")
+        if (not allow_rollback and prior_revision >= 0
+                and prepared.overlay.behavior_revision == prior_revision
+                and prepared.overlay != self._component_overlay):
+            raise ValueError("same component-overlay revision cannot carry different controls")
+        prior = self._component_overlay
+        self._startup_active = set(startup_active)
+        prior_modes = {key: item.mode for key, item in (prior.by_component().items()
+                                                        if prior is not None else ())}
+        self._component_overlay = prepared.overlay
+        modes = {key: item.mode for key, item in prepared.overlay.by_component().items()}
+        for component_id, mode in modes.items():
+            if mode not in {"reset", "reopen", "recovery"}:
+                continue
+            if prior_modes.get(component_id) in {"reset", "reopen", "recovery"}:
+                continue
+            self._reset_component(component_id, mode)
+        return self.active
+
+    def rollback_component_overlay(self, prepared: PreparedComponentOverlay, *,
+                                   expected_current_revision: int) -> set[str]:
+        if not isinstance(prepared, PreparedComponentOverlay):
+            raise TypeError("CFW rollback requires a prepared component overlay")
+        current_revision = (self._component_overlay.behavior_revision
+                            if self._component_overlay is not None else -1)
+        if current_revision != expected_current_revision:
+            raise RuntimeError("CFW component rollback revision changed; re-inspect required")
+        if expected_current_revision != prepared.overlay.behavior_revision:
+            raise ValueError("CFW rollback guard does not match the prepared revision")
+        if self._component_overlay != prepared.overlay:
+            raise RuntimeError("CFW active overlay differs from the prepared transition")
+        self.restore_state(prepared.previous_lifecycle_state)
+        self._component_overlay = prepared.previous_overlay
+        return self.active
+
+    def synchronize_component_overlay(self, overlay: ComponentOverlay, *,
+                                      startup_active: set[str],
+                                      prepared: Optional[PreparedComponentOverlay] = None
+                                      ) -> set[str]:
+        """Reconstruct the actuator state from DP's persisted behavior state."""
+        prepared = prepared or self.prepare_component_overlay(overlay)
+        if prepared.overlay != overlay:
+            raise ValueError("CFW synchronization payload differs from its prepared overlay")
+        return self.apply_component_overlay(prepared, startup_active=startup_active)
+
+    def capture_state(self) -> dict[str, Any]:
+        return {"task_active": set(self.task_active),
+                "segment_active": set(self.segment_active),
+                "action_active": set(self.action_active),
+                "artifact_active": set(self.artifact_active),
+                "response_active": set(self.response_active),
+                "counts": dict(self.counts),
+                "startup_active": set(self._startup_active)}
+
+    def restore_state(self, value: Mapping[str, Any]) -> set[str]:
+        expected = {"task_active", "segment_active", "action_active",
+                    "artifact_active", "response_active", "counts",
+                    "startup_active"}
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("CFW lifecycle snapshot is malformed")
+        for key in ("task_active", "segment_active", "action_active",
+                    "artifact_active", "response_active", "startup_active"):
+            stages = value[key]
+            if not isinstance(stages, set) or not stages.issubset(self.specs):
+                raise ValueError("CFW lifecycle snapshot contains an unknown stage")
+        counts = value["counts"]
+        if (not isinstance(counts, Mapping)
+                or any(stage not in self.specs or type(count) is not int or count < 0
+                       for stage, count in counts.items())):
+            raise ValueError("CFW lifecycle snapshot counts are malformed")
+        self._component_overlay = None
+        self.task_active = set(value["task_active"])
+        self.segment_active = set(value["segment_active"])
+        self.action_active = set(value["action_active"])
+        self.artifact_active = set(value["artifact_active"])
+        self.response_active = set(value["response_active"])
+        self.counts = dict(counts)
+        self._startup_active = set(value["startup_active"])
+        return self.active
+
+    def _reset_component(self, component_id: str, mode: str) -> None:
+        stages = [stage for stage in self.specs
+                  if stage.split("_", 1)[0].lower() == component_id]
+        for stage in stages:
+            self.task_active.discard(stage)
+            self.segment_active.discard(stage)
+            self.action_active.discard(stage)
+            self.artifact_active.discard(stage)
+            self.response_active.discard(stage)
+            self.counts.pop(stage, None)
+        stage = {
+            "owl": "owl",
+            "anchor": "anchor_open",
+            "dox": "dox_load",
+        }.get(component_id)
+        if stage in self.specs and self._stage_permitted(stage):
+            self.activate(stage, f"dp_component_{mode}")
 
     def activate(self, stage: str, reason: str) -> None:
         spec = self.specs.get(stage)
-        if spec is None:
+        if spec is None or not self._stage_permitted(stage):
             return
+        for dependency in spec.get("requires") or ():
+            if dependency not in self.specs or not self._stage_permitted(dependency):
+                return
+            if dependency not in self.active:
+                self.activate(dependency, f"required_by:{stage}")
         frequency = spec.get("frequency")
         if frequency == "per_task" and self.counts.get(stage, 0):
             return
@@ -391,6 +576,8 @@ class LifecycleController:
         on_tool_planning activates action wrappers when a tool decision begins.
         """
         self.on_task_start({"task_complexity": task_complexity})
+        if self.component_mode("owl") == "elevated":
+            self._reset_component("owl", "elevated")
 
     def on_tool_planning(self, descriptor: Optional[ActionDescriptor] = None) -> None:
         """Expose temporary action guidance only at an explicit planning boundary."""
@@ -416,11 +603,12 @@ class LifecycleController:
                     durable_contract_changed: bool = False,
                     state_changed: bool = True) -> None:
         self.artifact_active.clear()
-        if flow_triggered:
+        if flow_triggered or self.component_mode("flow") == "elevated":
             self.activate("flow", "artifact_trigger")
-        if durable_contract_changed:
+        if (durable_contract_changed
+                or self.component_mode("dox") == "elevated"):
             self.activate("dox_closeout", "durable_contract")
-        if state_changed:
+        if state_changed or self.component_mode("anchor") == "elevated":
             self.activate("anchor_closeout", "artifact_state")
 
     def on_artifact_processed(self) -> None:
@@ -428,6 +616,9 @@ class LifecycleController:
 
     def on_completion(self) -> None:
         self.response_active.clear()
+        if (self._component_overlay is not None
+                and self._component_overlay.behavior_mode == "READY_TO_COMPLETE"):
+            self.activate("anchor_closeout", "ready_to_complete")
         self.activate("sispis", "completion")
 
     def on_response_complete(self) -> None:
@@ -1325,6 +1516,10 @@ class RuntimeSession:
     external_behavior_authority: bool = False
     external_behavior_state: Dict[str, Any] = field(default_factory=dict, repr=False)
     _external_startup_lifecycle: set[str] = field(default_factory=set, repr=False)
+    _external_startup_lifecycle_state: Optional[Mapping[str, Any]] = field(
+        default=None, repr=False)
+    _last_component_overlay_transition: Optional[PreparedComponentOverlay] = field(
+        default=None, repr=False)
     _pending_action_requests: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     _pending_retry_candidates: Dict[str, ActivityFact] = field(default_factory=dict, repr=False)
     _action_objective_bindings: Dict[str, ActionObjectiveBinding] = field(
@@ -1366,7 +1561,8 @@ class RuntimeSession:
                 "metacognitive_decision",
                 "system_one_sequence", "system_one_decisions", "system_one_outcomes",
                 "external_behavior_authority", "external_behavior_state",
-                "_external_startup_lifecycle",
+                "_external_startup_lifecycle", "_external_startup_lifecycle_state",
+                "_last_component_overlay_transition",
         "_pending_action_requests", "_pending_retry_candidates",
         "_action_objective_bindings", "policy_epoch_record"}:
             raise AttributeError(f"runtime security field {name!r} is immutable after start")
@@ -1389,6 +1585,9 @@ class RuntimeSession:
                 "DigitalPsychology must bind before CFW behavioral activity begins")
         object.__setattr__(self, "_external_startup_lifecycle",
                            set(self.active_lifecycle))
+        if self.lifecycle is not None:
+            object.__setattr__(self, "_external_startup_lifecycle_state",
+                               self.lifecycle.capture_state())
         object.__setattr__(self, "external_behavior_authority", True)
         return self.available_component_ids()
 
@@ -1400,15 +1599,36 @@ class RuntimeSession:
         """Materialize a DP-owned behavior state through CFW's declared API."""
         self._materialize_external_behavior_state(value, allow_rollback=False)
 
+    def synchronize_external_behavior_state(self, value: Mapping[str, Any]) -> None:
+        """Reconstruct CFW component activation from persisted DP state."""
+        self._materialize_external_behavior_state(
+            value, allow_rollback=False, synchronize=True)
+
     def rollback_external_behavior_state(
             self, value: Mapping[str, Any], *, expected_current_revision: int) -> None:
         """Restore a prepared prior overlay with an exact revision guard."""
         if expected_current_revision != self.external_behavior_revision:
             raise RuntimeError("CFW behavior rollback revision changed; re-inspect required")
+        transition = self._last_component_overlay_transition
+        prior_overlay = (ComponentOverlay.from_behavior_state(value)
+                         if isinstance(value, Mapping) and value else None)
+        if (transition is not None and self.lifecycle is not None
+                and transition.previous_overlay == prior_overlay
+                and transition.overlay.behavior_revision == expected_current_revision):
+            prior_lifecycle = set(self.active_lifecycle)
+            active = self.lifecycle.rollback_component_overlay(
+                transition, expected_current_revision=expected_current_revision)
+            object.__setattr__(self, "external_behavior_state",
+                               json.loads(json.dumps(dict(value), sort_keys=True)))
+            object.__setattr__(self, "active_lifecycle", set(active))
+            object.__setattr__(self, "_last_component_overlay_transition", None)
+            self._emit_lifecycle_activations(prior_lifecycle)
+            return
         self._materialize_external_behavior_state(value, allow_rollback=True)
 
     def _materialize_external_behavior_state(
-            self, value: Mapping[str, Any], *, allow_rollback: bool) -> None:
+            self, value: Mapping[str, Any], *, allow_rollback: bool,
+            synchronize: bool = False) -> None:
         if not self.external_behavior_authority:
             raise RuntimeError("external behavior authority has not been bound")
         if not isinstance(value, Mapping) or len(value) > 24:
@@ -1515,43 +1735,43 @@ class RuntimeSession:
                        for key, item in attention_last_seen.items())):
             raise ValueError("DP attention history is malformed")
 
-        available = self.available_component_ids()
-        stages_by_owner: dict[str, list[str]] = {}
-        for stage in self.bundle.kernel:
-            owner = stage.split("_", 1)[0].lower()
-            if owner in available:
-                stages_by_owner.setdefault(owner, []).append(stage)
-        active: set[str] = {
-            stage for stage in self.bundle.kernel
-            if stage.split("_", 1)[0].lower() not in allowed_frameworks
-            and stage in self._external_startup_lifecycle
-        }
-        for framework in available:
-            component_stages = stages_by_owner.get(framework, ())
-            component_mode = normalized.get(framework, "off")
-            if component_mode == "off":
-                continue
-            if framework == "anchor":
-                preferred = ("anchor_closeout" if mode == "READY_TO_COMPLETE"
-                             else "anchor_open")
-                selected = next((stage for stage in component_stages
-                                 if stage == preferred), component_stages[0])
-                active.add(selected)
-            elif component_stages:
-                active.add(component_stages[0])
+        overlay = ComponentOverlay.from_behavior_state(value)
+        if self.lifecycle is None:
+            raise RuntimeError("CFW lifecycle controller is unavailable for a DP overlay")
+        prior_lifecycle = set(self.active_lifecycle)
+        prepared_overlay = self.lifecycle.prepare_component_overlay(
+            overlay, allow_rollback=allow_rollback)
+        if synchronize and not allow_rollback:
+            active = self.lifecycle.synchronize_component_overlay(
+                overlay, startup_active=set(self._external_startup_lifecycle),
+                prepared=prepared_overlay)
+        else:
+            active = self.lifecycle.apply_component_overlay(
+                prepared_overlay, startup_active=set(self._external_startup_lifecycle),
+                allow_rollback=allow_rollback)
 
-        # State changes are applied only here, after schema and hard-floor checks.
+        # The validated overlay changes actual lifecycle activation. The
+        # behavior context below only describes the applied runtime state.
         object.__setattr__(self, "external_behavior_state",
                            json.loads(json.dumps(dict(value), sort_keys=True)))
-        object.__setattr__(self, "active_lifecycle", active)
+        object.__setattr__(self, "active_lifecycle", set(active))
+        object.__setattr__(self, "_last_component_overlay_transition", prepared_overlay)
+        self._emit_lifecycle_activations(prior_lifecycle)
 
     def restore_external_behavior_startup(self) -> None:
         """Restore the immutable CFW startup preset after a failed DP apply."""
         if not self.external_behavior_authority:
             raise RuntimeError("external behavior authority has not been bound")
         object.__setattr__(self, "external_behavior_state", {})
+        object.__setattr__(self, "_last_component_overlay_transition", None)
+        if self.lifecycle is not None:
+            if self._external_startup_lifecycle_state is None:
+                raise RuntimeError("CFW startup lifecycle snapshot is unavailable")
+            active = self.lifecycle.restore_state(self._external_startup_lifecycle_state)
+        else:
+            active = set(self._external_startup_lifecycle)
         object.__setattr__(self, "active_lifecycle",
-                           set(self._external_startup_lifecycle))
+                           set(active))
 
     @property
     def action_registry(self) -> Mapping[str, ActionDescriptor]:
@@ -1571,18 +1791,35 @@ class RuntimeSession:
         A learned preference may order already-authorized bindings, but this
         object grants no permission; ``before_action`` remains authoritative.
         """
-        preferences = []
+        preferences: list[str] = []
+        constrained = (self.lifecycle is not None
+                       and self.lifecycle.component_mode("fuse") == "constrained")
+        focus = set(self.external_behavior_state.get("focus_criteria") or ())
+        if constrained:
+            objective_routes = []
+            for route, descriptor in self.action_registry.items():
+                if descriptor.goal_relation not in {
+                        "advances_primary_goal", "removes_concrete_blocker",
+                        "required_verification"}:
+                    continue
+                affected = set(descriptor.affected_criterion_ids)
+                if focus and affected and not focus.intersection(affected):
+                    continue
+                objective_routes.append(route)
+            preferences.extend(sorted(objective_routes))
         for adjustment in self.bundle.guard_pack.get("routing_adjustments", ()):
             if (adjustment.get("route_type") == "tool_policy"
                     and adjustment.get("disposition") == "prefer"):
                 route = str(adjustment.get("route") or "")
-                if route in self.action_registry:
+                if route in self.action_registry and route not in preferences:
                     preferences.append(route)
         eligible = [route for route in self.action_registry if route not in preferences]
         return ActionStrategy(
             eligible_actions=tuple(preferences + eligible),
             priorities={route: index for index, route in enumerate(preferences)},
-            reason="learned preference within host-authorized action set",
+            reason=("FUSE-constrained objective-first ordering over host-authorized actions"
+                    if constrained else
+                    "learned preference within host-authorized action set"),
             policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
         ).to_dict()
 
@@ -1592,13 +1829,21 @@ class RuntimeSession:
             return ""
         preferred = [action for action, _priority in sorted(
             strategy["priorities"].items(), key=lambda pair: pair[1])]
-        if not preferred:
+        constrained = (self.lifecycle is not None
+                       and self.lifecycle.component_mode("fuse") == "constrained")
+        if not preferred and not constrained:
             return ""
         other = [action for action in strategy["eligible_actions"] if action not in preferred]
-        lines = ["\n===== ACTION STRATEGY =====",
-                 f"Preferred when relevant: {', '.join(preferred[:12])}."]
+        lines = ["\n===== ACTION STRATEGY ====="]
+        if preferred:
+            lines.append(f"Preferred when relevant: {', '.join(preferred[:12])}.")
+        if constrained:
+            lines.append(
+                "FUSE is constrained: choose an objective or focused-criterion route "
+                "when relevant, then reassess host-evidenced progress.")
         if other:
-            lines.append(f"Other authorized actions: {', '.join(other[:12])}.")
+            label = "Other authorized actions" if preferred else "Authorized actions"
+            lines.append(f"{label}: {', '.join(other[:12])}.")
         lines.append("Preferences do not grant permission; every action still passes the host gate.")
         return "\n".join(lines)
 
@@ -1606,7 +1851,7 @@ class RuntimeSession:
                           action_hint: Optional[Mapping[str, Any]] = None,
                           behavior_context: str = "",
                           active_statework_ids: Optional[Sequence[str]] = None) -> str:
-        if self.lifecycle is not None and not self.external_behavior_authority:
+        if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
             complexity = (self.bundle.pinned.get("goal_contract") or {}).get(
@@ -1623,7 +1868,7 @@ class RuntimeSession:
     def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None,
                              *, behavior_context: str = "",
                              active_statework_ids: Optional[Sequence[str]] = None) -> str:
-        if self.lifecycle is not None and not self.external_behavior_authority:
+        if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
             self.lifecycle.on_tool_planning(descriptor)
@@ -1634,7 +1879,7 @@ class RuntimeSession:
                            active_statework_ids=active_statework_ids)
 
     def artifact_processed(self) -> None:
-        if self.lifecycle is not None and not self.external_behavior_authority:
+        if self.lifecycle is not None:
             self.lifecycle.on_artifact_processed()
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
@@ -1677,7 +1922,7 @@ class RuntimeSession:
                       segment_index=target, statework_id=self.current_segment.statework_id)
         statework_id = self.current_segment.statework_id
         self.active_statework_ids = {statework_id} if statework_id else set()
-        if self.lifecycle is not None and not self.external_behavior_authority:
+        if self.lifecycle is not None:
             self.lifecycle.reset_for_segment()
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)
@@ -2885,7 +3130,7 @@ class RuntimeSession:
                                "action_request_id": action_request_id,
                                "advice_priority": strategy["priorities"].get(request.binding_id),
                                "policy_hash": strategy["policy_hash"]}})
-        if self.lifecycle is not None and not self.external_behavior_authority:
+        if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             self.lifecycle.on_action(decision, descriptor=descriptor)
             self.active_lifecycle = set(self.lifecycle.active)
@@ -3069,7 +3314,7 @@ class RuntimeSession:
     def on_artifact(self, *, flow_triggered: bool = False,
                     durable_contract_changed: bool = False,
                     state_changed: bool = True) -> None:
-        if self.lifecycle is not None and not self.external_behavior_authority:
+        if self.lifecycle is not None:
             self.lifecycle.on_artifact(
                 flow_triggered=flow_triggered,
                 durable_contract_changed=durable_contract_changed,
@@ -3889,7 +4134,7 @@ class RuntimeSession:
 
     def _complete_action(self, capability: _HostCapability) -> None:
         self._require_host(capability)
-        if self.lifecycle is not None and not self.external_behavior_authority:
+        if self.lifecycle is not None:
             prior = set(self.active_lifecycle)
             self.lifecycle.on_action_complete()
             self.active_lifecycle = set(self.lifecycle.active)
@@ -4903,7 +5148,7 @@ class RuntimeSession:
         if run_final_hooks:
             for hook in self.final_hooks:
                 hook(result)
-        if complete and self.lifecycle is not None and not self.external_behavior_authority:
+        if complete and self.lifecycle is not None:
             self.lifecycle.on_completion()
             self.active_lifecycle = set(self.lifecycle.active)
             self.lifecycle_counts = dict(self.lifecycle.counts)

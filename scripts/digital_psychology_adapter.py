@@ -1,7 +1,7 @@
 """Explicit CFW component port for the DigitalPsychology runtime host.
 
-This adapter composes with a host-owned RuntimeSession and agent handle. It
-does not replace, subclass, or patch the CFW runtime classes.
+This adapter composes with a host-owned RuntimeSession and agent handle through
+CFW's explicit runtime and component-overlay APIs.
 """
 from __future__ import annotations
 
@@ -43,6 +43,8 @@ class CFWBehaviorAdapter:
             raise TypeError("CFW behavior adapter requires a started RuntimeSession")
         if (not callable(getattr(session, "enable_external_behavior_authority", None))
                 or not callable(getattr(session, "apply_external_behavior_state", None))
+                or not callable(getattr(session, "synchronize_external_behavior_state", None))
+                or not callable(getattr(session, "rollback_external_behavior_state", None))
                 or not callable(getattr(session, "restore_external_behavior_startup", None))
                 or not callable(getattr(session, "available_component_ids", None))):
             raise TypeError("CFW runtime lacks the explicit DP behavior authority API")
@@ -126,7 +128,7 @@ class CFWBehaviorAdapter:
     def synchronize_behavior_state(self, behavior_state: Mapping[str, Any]) -> None:
         if not isinstance(behavior_state, Mapping):
             raise TypeError("DP behavior state must be a mapping")
-        self._session.apply_external_behavior_state(behavior_state)
+        self._session.synchronize_external_behavior_state(behavior_state)
         self._behavior_state = json.loads(
             json.dumps(dict(behavior_state), sort_keys=True))
 
@@ -150,7 +152,7 @@ class CFWBehaviorAdapter:
             raise ValueError("DP behavior projection must be bounded text")
         control_lines = [
             "===== APPLIED DIGITAL PSYCHOLOGY CONTROLS =====",
-            "These controls shape component guidance; CFW guards and WARD remain authoritative.",
+            "The CFW lifecycle activates the selected components; local hard guards and WARD remain authoritative.",
         ]
         for directive in sorted(self._controls.values(),
                                 key=lambda item: (item["target"], item["directive_id"])):
