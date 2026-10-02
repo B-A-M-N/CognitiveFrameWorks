@@ -9,7 +9,6 @@ must use an external IPC/RPC gateway as described in ``SECURITY.md``.
 """
 from __future__ import annotations
 
-import uuid
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Optional
 
@@ -19,22 +18,15 @@ from runtime_contract.actions import (ActionDescriptor, HostExecutionContext,
                                        effective_action_registry)
 from runtime_contract.advisor import BehavioralAdvisor
 from resolve_runtime import RuntimeBundle, TaskRequest, resolve
-
-
-_HOST_SESSION_REGISTRY: dict[str, RuntimeSession] = {}
+from runtime_host.session_registry import HOST_SESSION_REGISTRY as _HOST_SESSION_REGISTRY
 
 
 def _register_host_session(session: RuntimeSession) -> str:
-    token = f"host-session-{uuid.uuid4().hex}"
-    _HOST_SESSION_REGISTRY[token] = session
-    return token
+    return _HOST_SESSION_REGISTRY.register(session)
 
 
 def _resolve_host_session(token: str) -> RuntimeSession:
-    session = _HOST_SESSION_REGISTRY.get(token)
-    if session is None:
-        raise RuntimeError("unknown or expired host session handle")
-    return session
+    return _HOST_SESSION_REGISTRY.resolve(token)
 
 
 class AgentSessionHandle:
@@ -138,9 +130,7 @@ class RuntimeTaskHandle:
         return AgentSessionHandle(self._session_token)
 
     def close(self) -> None:
-        session = _HOST_SESSION_REGISTRY.pop(self._session_token, None)
-        if session is not None and session._telemetry_exporter is not None:
-            session._telemetry_exporter.close()
+        _HOST_SESSION_REGISTRY.close(self._session_token)
 
 
 class HostSessionHandle:
@@ -169,9 +159,7 @@ class HostSessionHandle:
         return _resolve_host_session(self._session_token)._operator_trace()
 
     def close(self) -> None:
-        session = _HOST_SESSION_REGISTRY.pop(self._session_token, None)
-        if session is not None and session._telemetry_exporter is not None:
-            session._telemetry_exporter.close()
+        _HOST_SESSION_REGISTRY.close(self._session_token)
 
     def after_tool(self, **kwargs: Any) -> str:
         return CognitiveRuntime().after_tool(self._session(), **kwargs)
