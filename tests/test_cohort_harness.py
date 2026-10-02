@@ -95,3 +95,28 @@ def test_agent_adapter_never_fabricates_a_successful_outcome():
     # An unparsable agent reply must be recorded as blocked, not as success.
     assert '"status": "blocked"' in source
     assert "no parsable JSON from agent" in source
+
+
+def test_agent_adapter_satisfies_the_benchmark_line_protocol():
+    """Pin the two protocol facts the harness depends on.
+
+    The benchmark loop ends a trial only when `complete` is True, and every
+    evaluator calls `json.loads(response["answer"])`. Emitting a nested object
+    for `answer`, or omitting `complete`, silently scores every correct trial
+    as a budget failure.
+    """
+    import ast
+    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    payload_defaults = [
+        ast.literal_eval(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        and node.target.id == "payload" and isinstance(node.value, ast.Dict)
+    ]
+    assert payload_defaults, "adapter must declare a default payload"
+    default = payload_defaults[0]
+    assert default.get("complete") is True, "default payload must end the trial"
+    assert default.get("answer") == "", "answer defaults to empty, never a fake success"
+    # The answer is serialized to a string, not left as a nested object.
+    assert "isinstance(answer, str) else json.dumps(answer)" in source

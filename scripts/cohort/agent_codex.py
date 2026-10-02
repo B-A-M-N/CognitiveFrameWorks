@@ -22,7 +22,7 @@ You have no prior turns for this trial. Decide the correct final answer now,
 consulting nothing outside the task workspace.
 
 Respond with EXACTLY one JSON object and nothing else. Required shape:
-{{"answer": "<a JSON STRING holding the task fields>", "usage": {{"input_tokens": 0, "output_tokens": 0}}}}
+{{"answer": "<a JSON STRING holding the task fields>", "complete": true, "usage": {{"input_tokens": 0, "output_tokens": 0}}}}
 
 The "answer" value must itself be a JSON-encoded string. For this task family
 it must contain these fields: {fields}.
@@ -62,26 +62,36 @@ def main() -> int:
             env={**os.environ, "CODEX_SANDBOX": "danger-full-access"})
         raw = proc.stdout.strip()
     except Exception as exc:  # a real infra failure must stay visible, not be faked
-        print(json.dumps({"answer": {"status": "error", "reason": str(exc)},
+        print(json.dumps({"answer": json.dumps({"status": "error", "reason": str(exc)}),
+                          "complete": True,
                           "usage": {"input_tokens": 0, "output_tokens": 0}}), flush=True)
         return 0
-    payload = {"answer": {}, "usage": {"input_tokens": 0, "output_tokens": 0}}
+    payload: dict = {"answer": "", "complete": True,
+                    "usage": {"input_tokens": 0, "output_tokens": 0}}
     for candidate in raw.splitlines():
         candidate = candidate.strip()
-        if candidate.startswith("{") and candidate.endswith("}"):
-            try:
-                parsed = json.loads(candidate)
-                if isinstance(parsed, dict) and "answer" in parsed:
-                    payload = parsed
-                    break
-                if isinstance(parsed, dict):
-                    payload["answer"] = parsed
-                    break
-            except json.JSONDecodeError:
-                continue
+        if not (candidate.startswith("{") and candidate.endswith("}")):
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        answer = parsed.get("answer", parsed)
+        # The evaluators json.loads() the answer, so it must be a JSON string.
+        payload["answer"] = answer if isinstance(answer, str) else json.dumps(answer)
+        usage = parsed.get("usage")
+        if isinstance(usage, dict):
+            payload["usage"] = usage
+        # The harness ends a trial only on an explicit completion flag.
+        payload["complete"] = True
+        break
     if not payload["answer"]:
-        payload["answer"] = {"status": "blocked",
-                             "reason": f"no parsable JSON from agent: {raw[:200]}"}
+        # Never fabricate a successful outcome; record the failure honestly.
+        payload["answer"] = json.dumps(
+            {"status": "blocked",
+             "reason": f"no parsable JSON from agent: {raw[:200]}"})
     print(json.dumps(payload), flush=True)
     return 0
 
