@@ -187,7 +187,7 @@ def test_tuid_implement_task_cannot_select_test_flow():
     assert selector.evaluate(test["flow_metadata"]["when"], context)[0]
 
 
-def test_tuid_completion_is_claim_sensitive():
+def test_tuid_completion_is_claim_sensitive(tmp_path):
     resolve, runtime = _modules()
     goal = TaskGoalContract(
         objective="Change the static visual composition.",
@@ -199,7 +199,11 @@ def test_tuid_completion_is_claim_sensitive():
         task_id="visual-claim", application_id="test", shape="implement",
         domain_tags=("terminal UI",), operation="implement", trigger="mutation",
         subject_ref="component:buddy", goal_contract=goal))
+    authority = runtime.CSWStateAuthority(
+        resolve.COW_ROOT, state_path=tmp_path / "subjects.json",
+        evidence_path=tmp_path / "evidence.json")
     session = runtime.start(bundle, telemetry_disabled=True,
+                            state_authority=authority,
                             session_nonce="visual-claim")
     assert session._criterion_evidence_kinds("static_visual") == {"rendered_observation"}
     assert session._criterion_evidence_kinds("interaction") == {"interaction_validation"}

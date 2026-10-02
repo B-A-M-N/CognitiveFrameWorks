@@ -105,6 +105,18 @@ def test_combined_enforcing_requires_shared_authority():
         runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing")
 
 
+def test_standalone_stateworks_require_explicit_authority():
+    resolve, runtime = _runtime_modules()
+    request = resolve.TaskRequest(
+        task_id="requires-explicit-authority", application_id="app",
+        subject_ref="repo:standalone", shape="quick",
+        domain_tags=("terminal interface",),
+    )
+    bundle = resolve.resolve(request, cow_root=COW, requested_flows={"tuid": "discover"})
+    with pytest.raises(ValueError, match="explicitly injected StateAuthority"):
+        runtime.start(bundle, telemetry_disabled=True)
+
+
 def test_shared_authority_identity_uses_task_origin(tmp_path):
     resolve, runtime = _runtime_modules()
     request = resolve.TaskRequest(

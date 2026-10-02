@@ -5505,29 +5505,11 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
             if authorized_memberships:
                 shared_branch_path = resolve_runtime.runtime_state_dir() / "shared-branches.sqlite3"
                 session.shared_branch_ledger = SharedBranchLedger(shared_branch_path)
-    if (state_authority is None and runtime_mode != "combined_enforcing"
-            and bundle.stateworks):
-        # Even a private workflow uses CSW's engine-neutral authority. Keep its
-        # durable store task-scoped so standalone sessions cannot share state by
-        # accidentally reusing a display subject.
-        task_scope = hashlib.sha256(("|".join((
-            bundle.pinned.get("namespace_id", "default"),
-            bundle.pinned.get("application_id", "unknown-application"),
-            bundle.pinned.get("application_instance_id", "unknown-instance"),
-            bundle.task_id,
-        ))).encode("utf-8")).hexdigest()
-        authority_dir = resolve_runtime.runtime_state_dir() / "workflow-authorities" / task_scope
-        state_authority = CSWStateAuthority(
-            source_root, state_path=authority_dir / "subjects.json",
-            evidence_path=authority_dir / "evidence.json",
-            namespace_id=bundle.pinned.get("namespace_id", "default"),
-            application_id=bundle.pinned.get("application_id", "cognitiveframeworks-runtime"),
-            application_instance_id=bundle.pinned.get(
-                "application_instance_id", "cognitiveframeworks-runtime"),
-            workflow_id=(f"private:{bundle.task_id}:{session.agent_instance_id}"),
-            statework_memberships={str(item.get("statework_id")): item
-                                   for item in session.shared_workflow_memberships})
-    elif isinstance(state_authority, CSWStateAuthority) and runtime_mode != "combined_enforcing":
+    if (runtime_mode == "standalone_enforcing" and bundle.stateworks
+            and state_authority is None):
+        raise ValueError(
+            "standalone_enforcing with StateWorks requires an explicitly injected StateAuthority")
+    if isinstance(state_authority, CSWStateAuthority) and runtime_mode != "combined_enforcing":
         state_authority = state_authority.bind_scope(
             namespace_id=bundle.pinned.get("namespace_id", "default"),
             application_id=bundle.pinned.get("application_id", "cognitiveframeworks-runtime"),
