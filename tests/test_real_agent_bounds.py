@@ -30,6 +30,28 @@ def test_budget_stops_model_calls_tokens_cost_and_time() -> None:
         assert "model-call" in str(exc)
     else:
         raise AssertionError("model-call budget was not enforced")
+    token_bounded = module.QualificationBudget(
+        max_model_calls=10, max_elapsed_seconds=10,
+        max_external_tokens=4, max_monetary_cost=2,
+    )
+    token_bounded.record_response({"usage": {"input_tokens": 3, "output_tokens": 2}})
+    try:
+        token_bounded.check()
+    except RuntimeError as exc:
+        assert "external-token" in str(exc)
+    else:
+        raise AssertionError("external-token budget was not enforced")
+    cost_bounded = module.QualificationBudget(
+        max_model_calls=10, max_elapsed_seconds=10,
+        max_external_tokens=10, max_monetary_cost=0.5,
+    )
+    cost_bounded.record_response({"usage": {"cost": 0.5}})
+    try:
+        cost_bounded.check()
+    except RuntimeError as exc:
+        assert "monetary-cost" in str(exc)
+    else:
+        raise AssertionError("monetary-cost budget was not enforced")
     bounded = module.QualificationBudget(
         max_model_calls=10, max_elapsed_seconds=0.001,
         max_external_tokens=10, max_monetary_cost=2,
