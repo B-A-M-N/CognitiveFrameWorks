@@ -1,7 +1,7 @@
-version: 1.2.0
-# Canonical pipeline manifest. adapters/docs derive their repetitive integration
-# sections from this file; the validator checks semantics here, not English
-# phrases scattered through prose.
+version: 1.3.0
+# Standalone CFW startup presets and component catalog. Combined runtimes may
+# enable or suppress dynamically controllable components through the declared
+# host contract; this manifest does not define a universal cross-system loop.
 #
 # requires:     hard dependency — the stage cannot run unless these are active.
 # order_after:  ordering only — "if both are active, these run before this".
@@ -23,6 +23,100 @@ profiles:
   implement: [owl, anchor, fuse, ward, sispis]
   performance: [owl, flow, sispis]
   doc_edit: [owl, anchor, dox, fuse, ward, sispis]
+
+components:
+  owl:
+    owner: owl
+    requires: []
+    order_after: []
+    hard_floor: false
+    dynamic_control: true
+    baseline_mode: normal
+    allowed_modes: ["off", passive, normal, elevated, reset]
+    scope: [task, action, artifact]
+    activation_predicates: [task.nontrivial, action.assumption_uncertain]
+    deactivation_predicates: [task.trivial, task.closed]
+    runtime_cost_class: low
+    context_cost_class: low
+  anchor:
+    owner: anchor
+    requires: [owl]
+    order_after: [owl]
+    hard_floor: false
+    dynamic_control: true
+    baseline_mode: normal
+    allowed_modes: ["off", passive, normal, elevated, reset, reopen, recovery]
+    scope: [task, action]
+    activation_predicates: [task.multi_turn, task.requires_recovery]
+    deactivation_predicates: [task.closed, task.stateless]
+    runtime_cost_class: low
+    context_cost_class: low
+  fuse:
+    owner: fuse
+    requires: []
+    order_after: [owl, anchor, dox]
+    hard_floor: false
+    dynamic_control: true
+    baseline_mode: normal
+    allowed_modes: ["off", passive, normal, constrained]
+    scope: [action]
+    activation_predicates: [action.any]
+    deactivation_predicates: [action.closed]
+    runtime_cost_class: low
+    context_cost_class: low
+  ward:
+    owner: ward
+    requires: [fuse]
+    order_after: [fuse]
+    hard_floor: true
+    dynamic_control: false
+    hard_floor_mode: mandatory
+    baseline_mode: mandatory
+    allowed_modes: [mandatory]
+    scope: [action]
+    activation_predicates: [action.mutating, action.external_effect, action.secret_access, action.high_blast_radius, action.untrusted]
+    deactivation_predicates: []
+    runtime_cost_class: low
+    context_cost_class: low
+  flow:
+    owner: flow
+    requires: []
+    order_after: [anchor, fuse, ward]
+    hard_floor: false
+    dynamic_control: true
+    baseline_mode: normal
+    allowed_modes: ["off", passive, normal, elevated]
+    scope: [artifact]
+    activation_predicates: [artifact.flow_triggered]
+    deactivation_predicates: [artifact.closed, artifact.no_flow_trigger]
+    runtime_cost_class: medium
+    context_cost_class: medium
+  sispis:
+    owner: sispis
+    requires: []
+    order_after: [owl, anchor, dox, fuse, ward, flow]
+    hard_floor: false
+    dynamic_control: true
+    baseline_mode: normal
+    allowed_modes: ["off", passive, normal]
+    scope: [response]
+    activation_predicates: [response.requested]
+    deactivation_predicates: [response.emitted]
+    runtime_cost_class: low
+    context_cost_class: low
+  dox:
+    owner: dox
+    requires: []
+    order_after: [anchor]
+    hard_floor: false
+    dynamic_control: true
+    baseline_mode: normal
+    allowed_modes: ["off", passive, normal, elevated, reset, reopen]
+    scope: [edit]
+    activation_predicates: [edit.dox_contract_applies]
+    deactivation_predicates: [edit.no_dox_contract, edit.closed]
+    runtime_cost_class: low
+    context_cost_class: medium
 
 stages:
   - id: owl

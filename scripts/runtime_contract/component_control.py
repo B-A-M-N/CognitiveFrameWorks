@@ -2,26 +2,33 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import re
 from types import MappingProxyType
 from typing import Any, Mapping
+from .pipeline import load_pipeline_document
 
 
-COMPONENT_IDS = frozenset({"owl", "anchor", "fuse", "ward", "flow", "sispis", "dox"})
-COMPONENT_MODES = frozenset({
-    "off", "passive", "normal", "elevated", "reset", "reopen",
-    "mandatory", "recovery", "constrained",
-})
+_PIPELINE_PATH = Path(__file__).resolve().parents[2] / "shared" / "pipeline.yaml"
+_COMPONENT_CATALOG = load_pipeline_document(_PIPELINE_PATH)["components"]
+if not isinstance(_COMPONENT_CATALOG, Mapping) or not _COMPONENT_CATALOG:
+    raise RuntimeError("CFW component catalog is missing or malformed")
+COMPONENT_IDS = frozenset(str(item).lower() for item in _COMPONENT_CATALOG)
 COMPONENT_ALLOWED_MODES = {
-    "owl": frozenset({"off", "passive", "normal", "elevated", "reset"}),
-    "anchor": frozenset({"off", "passive", "normal", "elevated", "reset",
-                          "reopen", "recovery"}),
-    "fuse": frozenset({"off", "passive", "normal", "constrained"}),
-    "ward": frozenset({"mandatory"}),
-    "flow": frozenset({"off", "passive", "normal", "elevated"}),
-    "sispis": frozenset({"off", "passive", "normal"}),
-    "dox": frozenset({"off", "passive", "normal", "elevated", "reset", "reopen"}),
+    str(component_id).lower(): frozenset(component.get("allowed_modes") or ())
+    for component_id, component in _COMPONENT_CATALOG.items()
 }
+COMPONENT_DYNAMIC_CONTROL = {
+    str(component_id).lower(): component.get("dynamic_control") is True
+    for component_id, component in _COMPONENT_CATALOG.items()
+}
+COMPONENT_HARD_FLOOR_MODES = {
+    str(component_id).lower(): str(component["hard_floor_mode"])
+    for component_id, component in _COMPONENT_CATALOG.items()
+    if component.get("hard_floor") is True
+}
+COMPONENT_MODES = frozenset(mode for modes in COMPONENT_ALLOWED_MODES.values()
+                            for mode in modes)
 _DP_SCOPE = re.compile(r"^dp-runtime-[0-9a-f]{64}$")
 
 
@@ -41,6 +48,14 @@ class ComponentControl:
         if self.mode not in COMPONENT_ALLOWED_MODES[self.component_id]:
             raise ValueError(
                 f"mode {self.mode!r} is not defined for component {self.component_id!r}")
+        if (self.component_id in COMPONENT_HARD_FLOOR_MODES
+                and self.mode != COMPONENT_HARD_FLOOR_MODES[self.component_id]):
+            raise PermissionError(
+                f"component {self.component_id!r} is a non-overridable hard floor")
+        if (not COMPONENT_DYNAMIC_CONTROL[self.component_id]
+                and self.component_id not in COMPONENT_HARD_FLOOR_MODES):
+            raise PermissionError(
+                f"component {self.component_id!r} is not dynamically controllable")
         if self.scope is not None and not _DP_SCOPE.fullmatch(self.scope):
             raise ValueError("component control scope is not a DP runtime identity")
         if self.expires_at_action is not None and (
@@ -72,9 +87,11 @@ class ComponentOverlay:
             raise ValueError("component overlay must declare every supported component")
         if any(item.source_revision != self.behavior_revision for item in self.controls):
             raise ValueError("component control revision differs from its overlay")
-        wards = [item for item in self.controls if item.component_id == "ward"]
-        if len(wards) != 1 or wards[0].mode != "mandatory":
-            raise PermissionError("component overlay cannot lower the WARD hard floor")
+        for component_id, floor_mode in COMPONENT_HARD_FLOOR_MODES.items():
+            floors = [item for item in self.controls if item.component_id == component_id]
+            if len(floors) != 1 or floors[0].mode != floor_mode:
+                raise PermissionError(
+                    f"component overlay cannot lower the {component_id.upper()} hard floor")
 
     @classmethod
     def from_behavior_state(cls, value: Mapping[str, Any]) -> "ComponentOverlay":
@@ -167,5 +184,6 @@ class PreparedComponentOverlay:
 
 
 __all__ = ["COMPONENT_IDS", "COMPONENT_MODES", "COMPONENT_ALLOWED_MODES",
+           "COMPONENT_DYNAMIC_CONTROL", "COMPONENT_HARD_FLOOR_MODES",
            "ComponentControl", "ComponentOverlay",
            "PreparedComponentOverlay"]

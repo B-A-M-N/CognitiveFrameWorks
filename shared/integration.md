@@ -22,9 +22,16 @@ per-task guard pack is layered on top of it. The distinction is maximum
 — runtime agents should see less, not more, as the system gets more
 sophisticated.
 
-## Canonical Pipeline
+## Standalone Component Catalog and Startup Presets
 
-When used together:
+`shared/pipeline.yaml` defines CFW's standalone startup presets and its
+component lifecycle catalog. It provides defaults and legal component modes;
+it is not the universal runtime loop for a deployment that also composes CSW
+or DigitalPsychology. In combined mode, the trusted host supplies runtime
+observations and DP may change only catalog entries marked `dynamic_control`.
+WARD remains a mandatory hard floor.
+
+When the CFW standalone `implement` preset is selected:
 
 ```text
 Request

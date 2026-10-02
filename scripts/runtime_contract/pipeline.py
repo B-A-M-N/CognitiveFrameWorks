@@ -9,8 +9,12 @@ def load_pipeline_document(path: Path) -> Dict[str, Any]:
     import yaml
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     stages = {item["id"]: item for item in data.get("stages", [])}
+    components = data.get("components", {}) or {}
+    if isinstance(components, list):
+        components = {str(item["id"]): item for item in components}
     return {
         "stages": stages,
+        "components": components,
         "aliases": data.get("aliases", {}) or {},
         "profiles": data.get("profiles", {}) or {},
     }

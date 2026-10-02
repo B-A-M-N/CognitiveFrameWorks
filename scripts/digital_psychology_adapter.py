@@ -12,13 +12,14 @@ import re
 from typing import Any, Mapping, Sequence
 
 from runtime import context_for
+from runtime_contract.component_control import (COMPONENT_ALLOWED_MODES,
+                                                COMPONENT_HARD_FLOOR_MODES,
+                                                COMPONENT_IDS)
 
 
 _SCOPE = re.compile(r"^dp-runtime-[0-9a-f]{64}$")
 _MODES = {"RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY", "READY_TO_COMPLETE",
           "DELIVER", "REPLAN", "BLOCKED"}
-_FRAMEWORK_MODES = {"off", "passive", "normal", "elevated", "reset", "reopen",
-                    "mandatory", "recovery", "constrained"}
 _CONTROL_VALUES = {
     "verification_intensity": {"passive", "normal", "high", "strict"},
     "exploration_budget": {"disabled", "low", "normal", "bounded"},
@@ -290,11 +291,14 @@ class CFWBehaviorAdapter:
             if target != "mode" or raw_value not in _MODES:
                 raise ValueError("CFW mode directive is unsupported")
         elif operation == "set_framework":
-            if (target.lower() not in {"owl", "anchor", "fuse", "ward", "flow", "sispis", "dox"}
-                    or raw_value not in _FRAMEWORK_MODES):
+            component_id = target.lower()
+            if (component_id not in COMPONENT_IDS
+                    or raw_value not in COMPONENT_ALLOWED_MODES[component_id]):
                 raise ValueError("CFW framework directive is unsupported")
-            if target.lower() == "ward" and raw_value != "mandatory":
-                raise PermissionError("DigitalPsychology cannot lower the WARD hard floor")
+            if (component_id in COMPONENT_HARD_FLOOR_MODES
+                    and raw_value != COMPONENT_HARD_FLOOR_MODES[component_id]):
+                raise PermissionError(
+                    f"DigitalPsychology cannot lower the {component_id.upper()} hard floor")
         elif operation == "set_control":
             if target == "recovery_level":
                 try:
