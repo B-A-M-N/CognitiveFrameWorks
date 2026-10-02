@@ -9,7 +9,10 @@ from typing import Any, Mapping
 from .pipeline import load_pipeline_document
 
 
-_PIPELINE_PATH = Path(__file__).resolve().parents[2] / "shared" / "pipeline.yaml"
+_SOURCE_PIPELINE_PATH = Path(__file__).resolve().parents[2] / "shared" / "pipeline.yaml"
+_PACKAGE_PIPELINE_PATH = Path(__file__).with_name("pipeline.yaml")
+_PIPELINE_PATH = (_SOURCE_PIPELINE_PATH if _SOURCE_PIPELINE_PATH.is_file()
+                  else _PACKAGE_PIPELINE_PATH)
 _COMPONENT_CATALOG = load_pipeline_document(_PIPELINE_PATH)["components"]
 if not isinstance(_COMPONENT_CATALOG, Mapping) or not _COMPONENT_CATALOG:
     raise RuntimeError("CFW component catalog is missing or malformed")

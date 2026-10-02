@@ -63,6 +63,15 @@ The sibling projects are optional integrations, not CFW dependencies. See the si
 
 CFW resolves StateWork capabilities through the `cognitiveframeworks.statework_providers` entry-point contract. CFW-only tasks use an empty provider and never load CSW. In a combined install, CSW registers its adapter as an optional provider and supplies its compiled registry, flow selector, and packet store without CFW importing CSW implementation modules.
 
+For the sibling source checkouts, install CSW into the same Python environment
+that runs CFW so its provider entry point is discoverable:
+
+```bash
+python3 -m pip install -e ../CognitiveStateWork
+```
+
+This provider install is optional; CFW remains standalone when it is absent.
+
 | Deployment | CFW role | Other-system requirement |
 | --- | --- | --- |
 | **CFW alone** | Components, task policy, evidence handling, and action gates | None |

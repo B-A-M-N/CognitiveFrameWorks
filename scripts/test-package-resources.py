@@ -14,11 +14,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def wheel_files(project: Path) -> set[str]:
+    if project.resolve() == ROOT.resolve():
+        source_manifest = project / "shared" / "pipeline.yaml"
+        package_manifest = project / "scripts" / "runtime_contract" / "pipeline.yaml"
+        if source_manifest.read_bytes() != package_manifest.read_bytes():
+            raise RuntimeError("packaged CFW pipeline differs from shared/pipeline.yaml")
     with tempfile.TemporaryDirectory(prefix="wheel-resource-") as raw:
         out = Path(raw)
         staged = out / project.name
-        shutil.copytree(project, staged,
-                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(
+            project,
+            staged,
+            ignore=shutil.ignore_patterns(
+                ".git", "__pycache__", "*.pyc", "*.egg-info", ".pytest_cache",
+                ".venv", "venv", "build", "dist",
+            ),
+        )
         env = dict(os.environ)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         result = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps",
@@ -32,12 +43,10 @@ def wheel_files(project: Path) -> set[str]:
         with zipfile.ZipFile(wheel) as archive:
             names = set(archive.namelist())
             assert not any(name.endswith(".pyc") or "/__pycache__/" in name for name in names)
-        venv = out / "venv"
-        subprocess.run([sys.executable, "-m", "venv", "--system-site-packages", str(venv)],
+        install_root = out / "installed-wheel"
+        subprocess.run([sys.executable, "-m", "pip", "install", "--no-index",
+                        "--no-deps", "--target", str(install_root), str(wheel)],
                        check=True, capture_output=True, text=True)
-        venv_python = venv / "bin" / "python"
-        subprocess.run([str(venv_python), "-m", "pip", "install", "--no-index",
-                        "--no-deps", str(wheel)], check=True, capture_output=True, text=True)
         checks = {
             "DigitalPsychology": (
                 "from digital_psychology.routing_profiles import _schema; "
@@ -54,12 +63,16 @@ def wheel_files(project: Path) -> set[str]:
             ),
             "CognitiveFrameWorks": (
                 "from runtime_contract.routing import _profile_schema_text; "
-                "assert 'behavioral-routing-profile' in _profile_schema_text()"
+                "assert 'behavioral-routing-profile' in _profile_schema_text(); "
+                "from runtime_contract.component_control import COMPONENT_IDS; "
+                "assert {'owl', 'anchor', 'fuse', 'ward', 'flow', 'sispis', 'dox'} == set(COMPONENT_IDS)"
             ),
         }
         import_result = subprocess.run(
-            [str(venv_python), "-I", "-c", checks[project.name]],
-            cwd=venv, check=False, capture_output=True, text=True)
+            [sys.executable, "-I", "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); " + checks[project.name],
+             str(install_root)],
+            cwd=out, check=False, capture_output=True, text=True)
         if import_result.returncode:
             raise RuntimeError(import_result.stdout + import_result.stderr)
         return names
@@ -78,6 +91,7 @@ def main() -> int:
     assert "cognitive_statework/flow_selectors.py" in csw
     assert "runtime_contract/contracts/behavioral-routing-profile.schema.json" in cfw
     assert "runtime_contract/contracts/routing-experiment-plan.schema.json" in cfw
+    assert "runtime_contract/pipeline.yaml" in cfw
     print("PACKAGE_RESOURCE_TEST=PASS")
     return 0
 
