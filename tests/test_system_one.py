@@ -191,9 +191,21 @@ def test_shadow_judgment_is_bounded_telemetry_and_cannot_change_action_gate():
     session = runtime.start(bundle, behavioral_judge=judge,
                             telemetry_sink=lambda event: events.append(dict(event)),
                             session_nonce="system-one-shadow")
+    startup_event_count = len(events)
     action = {"tool_binding_id": "read", "arguments": {
         "path": "src/main.py", "credential": "raw-secret-marker"},
         "subject_ref": "component:target"}
+    preflight = session.preflight_action(action)
+    assert preflight.decision == runtime.GateDecision.ALLOW
+    assert len(preflight.action_digest) == 64
+    assert judge.frames == []
+    assert len(events) == startup_event_count
+    blocked = session.preflight_action(
+        {"tool_binding_id": "shell", "arguments": {},
+         "subject_ref": "component:target"})
+    assert blocked.decision == runtime.GateDecision.BLOCK
+    assert judge.frames == []
+    assert len(events) == startup_event_count
     prepared = session.prepare_action(action)
     assert prepared.decision == runtime.GateDecision.ALLOW
     assert len(judge.frames) == 1

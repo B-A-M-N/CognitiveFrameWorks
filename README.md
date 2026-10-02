@@ -336,8 +336,12 @@ the result against host and CSW evidence. CFW's `CFWBehaviorAdapter` is an
 explicit capability returned by `RuntimeTaskHandle.digital_psychology_adapter()`.
 The adapter uses CFW's declared prepare/apply/synchronize/rollback APIs and
 revision checks; CFW keeps its session lifecycle and validates every action
-through its own authority gate. CSW selection and transition calls use its
-separate revisioned workflow API.
+through its own authority gate. The host can run a side-effect-free
+`preflight_action()` before DP evaluates a sanitized candidate, then call
+`prepare_action()` as the final CFW gate after DP actuation. The final result
+includes an action request ID for correlating the eventual host result. CFW's
+preflight does not execute tools or consume confirmation grants. CSW selection
+and transition calls use its separate revisioned workflow API.
 
 Host handles live in a bounded, expiring session registry. The registry pins
 each handle to its immutable execution identity, closes telemetry resources on

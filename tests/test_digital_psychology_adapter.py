@@ -74,6 +74,15 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
     assert "FUSE-constrained" in strategy["reason"]
     assert "FUSE is constrained" in adapter._session._action_strategy_hint()
 
+    host_action = {"tool_binding_id": "read", "arguments": {"path": "src/view.py"},
+                   "subject_ref": adapter._session.bundle.policy.subject_ref}
+    preflight = adapter.preflight_action(host_action)
+    authorized = adapter.authorize_action(host_action)
+    assert preflight["decision"] == "allow"
+    assert authorized["decision"] == "allow"
+    assert authorized["action_digest"] == preflight["action_digest"]
+    assert authorized["action_request_id"].startswith("action-request-")
+
     malformed = dict(behavior_state)
     malformed["revision"] = 2
     malformed["focus_criteria"] = ["one", "two", "three", "four"]

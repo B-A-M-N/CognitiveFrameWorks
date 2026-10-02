@@ -76,6 +76,14 @@ class CognitiveRuntime:
     def before_tool(self, session: RuntimeSession, action: Mapping[str, Any]) -> GateDecision:
         return session.before_action(dict(action))
 
+    def preflight_tool(self, session: RuntimeSession, action: Mapping[str, Any]):
+        """Check CFW hard action authority before external semantic control."""
+        return session.preflight_action(dict(action))
+
+    def prepare_tool(self, session: RuntimeSession, action: Mapping[str, Any]):
+        """Apply CFW's final local action gate and return its result correlation."""
+        return session.prepare_action(dict(action))
+
     def before_retry(self, session: RuntimeSession,
                      request: Mapping[str, Any]) -> GateDecision:
         return session.before_retry(dict(request))
@@ -243,4 +251,3 @@ class CognitiveRuntime:
     def finish_task(self, session: RuntimeSession, output: Optional[dict[str, Any]] = None,
                     **kwargs: Any) -> dict[str, Any]:
         return session.finish_task(output, **kwargs)
-

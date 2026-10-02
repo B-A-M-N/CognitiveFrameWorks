@@ -143,6 +143,14 @@ class HostSessionHandle:
     def after_tool(self, **kwargs: Any) -> str:
         return self._host_api().after_tool(self._session(), **kwargs)
 
+    def preflight_tool(self, action: Mapping[str, Any]):
+        """Check the CFW hard gate before an external DP pre-action tick."""
+        return self._host_api().preflight_tool(self._session(), action)
+
+    def prepare_tool(self, action: Mapping[str, Any]):
+        """Run the final CFW gate and return the action result correlation ID."""
+        return self._host_api().prepare_tool(self._session(), action)
+
     def complete_action(self) -> None:
         self._session()._host_ingress().complete_action()
 

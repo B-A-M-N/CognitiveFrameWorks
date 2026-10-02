@@ -204,12 +204,21 @@ class GateDecision(Enum):
 
 
 @dataclass(frozen=True)
+class ActionPreflightResult:
+    """Side-effect-light CFW hard-gate result for a proposed host action."""
+
+    action_digest: str
+    decision: GateDecision
+
+
+@dataclass(frozen=True)
 class ActionPreparation:
     """One host authorization result and its unique request correlation ID."""
 
     action_request_id: str
     decision: GateDecision
     descriptor: ActionDescriptor
+    action_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -2821,6 +2830,24 @@ class RuntimeSession:
         """Compatibility gate for adapters that do not need result correlation."""
         return self.prepare_action(action).decision
 
+    def preflight_action(self, action: Dict[str, Any] | AgentActionRequest
+                         ) -> ActionPreflightResult:
+        """Run CFW's local authority gate before DP evaluates action semantics.
+
+        This does not create an action request, consume a confirmation grant,
+        invoke tool hooks, or record the action as executed. The normal
+        ``prepare_action`` call remains the final gate after DP actuation.
+        """
+        request = self._request(action)
+        if (request.subject_ref == self.bundle.policy.subject_ref
+                and not self._authoritative_state_ready()):
+            decision = GateDecision.BLOCK
+        elif not self._revocation_current() or not self._membership_current():
+            decision = GateDecision.BLOCK
+        else:
+            decision = self._decision(request)
+        return ActionPreflightResult(request.digest, decision)
+
     def prepare_action(self, action: Dict[str, Any] | AgentActionRequest) -> ActionPreparation:
         """Authorize an action and return its unique request ID for its eventual result."""
         return self._prepare_action(action)
@@ -2843,10 +2870,10 @@ class RuntimeSession:
         action_request_id = f"action-request-{uuid.uuid4()}"
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
-                                     self._descriptor(request))
+                                     self._descriptor(request), request.digest)
         if not self._revocation_current() or not self._membership_current():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
-                                     self._descriptor(request))
+                                     self._descriptor(request), request.digest)
         descriptor = self._descriptor(request)
         decision = self._decision(request)
         strategy = self._action_strategy()
@@ -2983,7 +3010,7 @@ class RuntimeSession:
             self._journal("confirmation_consumed", grant_id=confirmation.grant_id)
         if decision != GateDecision.ALLOW:
             self._pending_action_requests.pop(action_request_id, None)
-        return ActionPreparation(action_request_id, decision, descriptor)
+        return ActionPreparation(action_request_id, decision, descriptor, request.digest)
 
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
         """Dispatch retry-specific structural handlers at the host boundary."""

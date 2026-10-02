@@ -48,8 +48,10 @@ class CFWBehaviorAdapter:
                 or not callable(getattr(session, "synchronize_external_behavior_state", None))
                 or not callable(getattr(session, "rollback_external_behavior_state", None))
                 or not callable(getattr(session, "restore_external_behavior_startup", None))
+                or not callable(getattr(session, "preflight_action", None))
+                or not callable(getattr(session, "prepare_action", None))
                 or not callable(getattr(session, "available_component_ids", None))):
-            raise TypeError("CFW runtime lacks the explicit DP behavior authority API")
+            raise TypeError("CFW runtime lacks the explicit DP behavior and action-gate APIs")
         if not callable(getattr(agent_handle, "before_model_call", None)) or not callable(
                 getattr(agent_handle, "before_tool_planning", None)):
             raise TypeError("CFW behavior adapter requires an agent context handle")
@@ -116,6 +118,19 @@ class CFWBehaviorAdapter:
                 "evidence_refs": list(envelope.get("evidence_refs") or ()),
             })
         return tuple(result)
+
+    def preflight_action(self, action: Mapping[str, Any]) -> Mapping[str, str]:
+        """Apply CFW's hard gate before DP evaluates a sanitized candidate."""
+        result = self._session.preflight_action(dict(action))
+        return {"action_digest": result.action_digest,
+                "decision": result.decision.value}
+
+    def authorize_action(self, action: Mapping[str, Any]) -> Mapping[str, str]:
+        """Run CFW's final gate after DP directives have been materialized."""
+        result = self._session.prepare_action(dict(action))
+        return {"action_digest": result.action_digest,
+                "action_request_id": result.action_request_id,
+                "decision": result.decision.value}
 
     def expire_local_behavior_leases(self, action_index: int) -> bool:
         """Drop DP overlays locally when the DP control process is unavailable."""
