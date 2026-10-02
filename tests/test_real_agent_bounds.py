@@ -67,7 +67,7 @@ print(os.getpid(), flush=True)
             return False
         try:
             fields = stat_path.read_text().split()
-        except ProcessLookupError:
+        except (FileNotFoundError, ProcessLookupError):
             return False
         return len(fields) > 2 and fields[2] != "Z"
     while time.monotonic() < deadline and descendant_is_live():
