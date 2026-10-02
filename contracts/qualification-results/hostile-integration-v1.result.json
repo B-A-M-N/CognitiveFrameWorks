@@ -1,8 +1,61 @@
 {
-  "command_results": [],
-  "completed_at": null,
+  "command_results": [
+    {
+      "command": "scripts/acceptance-adversarial-concurrency.py",
+      "evidence": {
+        "agents": 16,
+        "events_per_agent": 200,
+        "total_events": 3400,
+        "origins": 17,
+        "ordinary_forward_progress_seconds": 1.504,
+        "elapsed_seconds": 6.915,
+        "crash_replay": "pass",
+        "malformed_observation_rejected": true,
+        "unsigned_sharing_promotion_rejected": true,
+        "tampered_sharing_promotion_rejected": true
+      },
+      "status": "pass"
+    },
+    {
+      "command": "scripts/acceptance-concurrent-agent-isolation.py",
+      "evidence": {
+        "rounds": 3,
+        "scenarios_per_round": [
+          "independent_private_state",
+          "shared_state_race",
+          "crash_recovery",
+          "controlled_sharing_isolation",
+          "origin_scoped_evidence"
+        ]
+      },
+      "status": "pass"
+    },
+    {
+      "command": "pytest -q tests/test_routing_identity.py::test_advice_transaction_rejects_stale_or_mismatched_response",
+      "status": "pass",
+      "tests_passed": 1
+    },
+    {
+      "command": "pytest -q tests/test_telemetry_exporter.py tests/test_real_agent_bounds.py",
+      "evidence": {
+        "durable_cursor_and_replay": "pass",
+        "partial_line_recovery": "pass",
+        "bounded_delivery_memory": "pass",
+        "subprocess_group_cleanup": "pass",
+        "call_token_cost_and_time_limits": "pass"
+      },
+      "status": "pass",
+      "tests_passed": 9,
+      "duration_seconds": 28.67
+    }
+  ],
+  "completed_at": "2026-10-02T10:38:19Z",
   "evidence_class": "hostile_integration",
   "qualification_id": "hostile-integration-v1",
-  "source_commits": {},
-  "status": "not_run"
+  "source_commits": {
+    "CognitiveFrameWorks": "a6bfe636fc05d5e6e056d020d0896501a027ec5f",
+    "CognitiveStateWork": "ca9ea0a6ecdab94115750168d1f643953c6fc67d",
+    "DigitalPsychology": "7584d03374487c2a86e2191b2111ea835e92b9ba"
+  },
+  "status": "pass"
 }
