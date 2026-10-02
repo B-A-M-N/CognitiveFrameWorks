@@ -61,6 +61,8 @@ The example resolves an `implement` task, shows the host action gate decision, a
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
+CFW resolves StateWork capabilities through a provider boundary. CFW-only tasks use an empty provider without importing CSW; when a registry is present, the CSW adapter validates the compiled registry and provides its flow selector and packet store to CFW's composition logic.
+
 | Deployment | CFW role | Other-system requirement |
 | --- | --- | --- |
 | **CFW alone** | Components, task policy, evidence handling, and action gates | None |

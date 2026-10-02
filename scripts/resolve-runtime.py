@@ -30,12 +30,10 @@ from __future__ import annotations
 
 import hashlib
 import fcntl
-import importlib.util
 import json
 import os
 import re
 import sys
-import types
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -47,10 +45,6 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCAL_CONTRACT_ROOT = ROOT / "contracts"
 if not LOCAL_CONTRACT_ROOT.exists():
     LOCAL_CONTRACT_ROOT = Path(__file__).resolve().parent / "contracts"
-_bundled_cow = ROOT / "statework"
-_sibling_cow = ROOT.parent / "CognitiveStateWork"
-COW_ROOT = Path(os.environ.get("COGNITIVE_STATEWORK_ROOT",
-                               _bundled_cow if _bundled_cow.exists() else _sibling_cow))
 if str(ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -75,6 +69,11 @@ from runtime_contract.routing import (
     load_routing_profiles, validate_adaptive_adjustment,
     validate_experiment_plan,
 )
+from runtime_contract.statework_provider import (
+    DEFAULT_STATEWORK_ROOT, StateWorkProviderError, statework_provider,
+)
+
+COW_ROOT = DEFAULT_STATEWORK_ROOT
 
 
 def dp_trusted_guard_pack_path() -> Path:
@@ -90,8 +89,6 @@ BANNED_SISPIS_DIMENSIONS = [
     "option_multiplicity", "tradeoff_density", "ambiguity_of_framing",
     "comparative_intent", "downstream_impact",
 ]
-_CSW_CONTROL_MODULES: Dict[str, Any] = {}
-_CSW_COMPILED_REGISTRIES: Dict[str, Dict[str, Any]] = {}
 
 
 class PacketDependencyCycle(ValueError):
@@ -158,15 +155,10 @@ def _tree_runtime_hash(paths: Iterable[Path], *, relative_to: Optional[Path] = N
 
 def cow_runtime_hash(cow_root: Path = COW_ROOT) -> str:
     """Hash the executable StateWork engine and its policy schemas."""
-    if not (cow_root / "registry.yaml").is_file():
+    provider = statework_provider(cow_root)
+    paths = provider.runtime_hash_paths()
+    if paths is None:
         return hashlib.sha256(b"statework-capability:absent\0" + str(cow_root).encode()).hexdigest()
-    paths = [cow_root / "scripts" / "control_plane.py",
-             cow_root / "scripts" / "workflow_engines.py",
-             cow_root / "scripts" / "flow_selectors.py",
-             cow_root / "compiled-registry.json",
-             cow_root / "registry.yaml"]
-    paths.extend((cow_root / "schemas").glob("*.json"))
-    paths.extend((cow_root / "schemas").glob("*.yaml"))
     return _tree_runtime_hash(paths, relative_to=cow_root)
 
 
@@ -194,10 +186,7 @@ def runtime_behavior_hash(cow_root: Path = COW_ROOT) -> str:
              ROOT / "SISPIS" / "runtime" / "calibrate.py",
              cow_root / "scripts" / "validate-repository-truth.py"]
     paths.extend(sorted((ROOT / "scripts" / "runtime_contract").glob("*.py")))
-    if (cow_root / "registry.yaml").is_file():
-        paths.append(cow_root / "scripts" / "control_plane.py")
-        paths.append(cow_root / "scripts" / "workflow_engines.py")
-        paths.append(cow_root / "scripts" / "flow_selectors.py")
+    paths.extend(statework_provider(cow_root).behavior_hash_paths())
     return _tree_runtime_hash(paths, relative_to=ROOT)
 
 
@@ -293,147 +282,42 @@ def order_kernel(active: Iterable[str], stages: Dict[str, Any]) -> List[str]:
 
 # -------------------------------------------------------- StateWork registry
 
-def _load_csw_control(cow_root: Path) -> Any:
-    root = Path(cow_root).resolve()
-    key = str(root)
-    if key in _CSW_CONTROL_MODULES:
-        return _CSW_CONTROL_MODULES[key]
-    module_path = root / "scripts" / "control_plane.py"
-    if not module_path.exists():
-        raise PacketDependencyError("CognitiveStateWork control_plane.py is missing")
-    module_name = "cfw_cow_" + hashlib.sha256(key.encode()).hexdigest()[:12]
-    package = types.ModuleType(module_name)
-    package.__path__ = [str(module_path.parent)]
-    sys.modules[module_name] = package
-    spec = importlib.util.spec_from_file_location(
-        module_name + ".control_plane", module_path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name + ".control_plane"] = module
-    spec.loader.exec_module(module)
-    _CSW_CONTROL_MODULES[key] = module
-    return module
-
-
-def _load_compiled_csw_registry(cow_root: Path = COW_ROOT) -> Dict[str, Any]:
-    key = str(Path(cow_root).resolve())
-    if key not in _CSW_COMPILED_REGISTRIES:
-        control = _load_csw_control(Path(key))
-        try:
-            _CSW_COMPILED_REGISTRIES[key] = control.load_compiled_registry(Path(key))
-        except Exception as exc:
-            raise PacketDependencyError(f"compiled StateWork registry is invalid: {exc}") from exc
-    return _CSW_COMPILED_REGISTRIES[key]
-
-
-def _flow_selector(cow_root: Path = COW_ROOT) -> Any:
-    return _load_csw_control(Path(cow_root)).FlowSelector
-
-
 def _statework_root(cow_root: Path, statework: Any) -> Path:
-    if isinstance(statework, Mapping) and statework.get("_bundle_root"):
-        return Path(str(statework["_bundle_root"]))
-    statework_id = (str(statework.get("id") or "") if isinstance(statework, Mapping)
-                    else str(statework))
-    entry = next((item for item in _load_compiled_csw_registry(cow_root).get("stateworks", ())
-                  if item.get("id") == statework_id), None)
-    if entry is None:
-        raise PacketDependencyError(f"compiled StateWork {statework_id!r} is unavailable")
-    return Path(str(entry["bundle_root"]))
+    try:
+        return statework_provider(cow_root).bundle_root(statework)
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
 
 
 def load_stateworks(cow_root: Path = COW_ROOT) -> List[Dict[str, Any]]:
-    if not (Path(cow_root) / "registry.yaml").exists():
-        return []
-    compiled = _load_compiled_csw_registry(cow_root)
-    out = []
-    for entry in compiled.get("stateworks") or ():
-        data = dict(entry.get("manifest") or {})
-        owner = Path(str(entry.get("bundle_root") or ""))
-        if not owner.is_dir():
-            raise PacketDependencyError(f"compiled StateWork {entry.get('id')!r} source root is missing")
-        data["_manifest_path"] = owner / "manifest.yaml"
-        data["_bundle_root"] = str(owner)
-        data["_bundle_hash"] = entry.get("bundle_hash")
-        data["_compiled_engine"] = dict(entry.get("engine") or {})
-        data["_runtime_capsule"] = str(entry.get("runtime_capsule") or "")
-        data["_runtime_capsule_hash"] = str(entry.get("runtime_capsule_hash") or "")
-        out.append(data)
-    for item in out:
-        _validate_statework_flow_contracts(cow_root, str(item.get("id") or ""),
-                                           owner_root=Path(item["_bundle_root"]))
-    return out
+    try:
+        return statework_provider(cow_root).load_stateworks()
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
 
 
 def _validate_statework_flow_contracts(cow_root: Path, statework_id: str, *,
                                        owner_root: Optional[Path] = None) -> None:
-    """Validate every source selector against the compiled bundle policy."""
-    import yaml
-    flows_dir = (owner_root or _statework_root(cow_root, statework_id)) / "flows"
-    paths = sorted(flows_dir.glob("*/flow.md")) if flows_dir.is_dir() else []
-    if not paths:
-        return
-    entry = next((item for item in _load_compiled_csw_registry(cow_root).get("stateworks", ())
-                  if item.get("id") == statework_id), None)
-    if entry is None:
-        raise PacketDependencyError(f"compiled StateWork {statework_id!r} is unavailable")
-    policy = dict((entry.get("manifest") or {}).get("flow_selection") or {})
-    selector = _flow_selector(cow_root)
-    fallbacks = []
-    for path in paths:
-        name = path.parent.name
-        pieces = path.read_text(encoding="utf-8").split("---", 2)
-        if len(pieces) != 3 or pieces[0].strip():
-            raise PacketDependencyError(
-                f"StateWork {statework_id!r} flow {name!r} lacks machine-readable frontmatter")
-        try:
-            meta = yaml.safe_load(pieces[1]) or {}
-        except Exception as exc:
-            raise PacketDependencyError(
-                f"StateWork {statework_id!r} flow {name!r} has invalid frontmatter") from exc
-        if not isinstance(meta, Mapping) or meta.get("flow") != name:
-            raise PacketDependencyError(
-                f"StateWork {statework_id!r} flow {name!r} metadata is invalid")
-        if "when" in meta:
-            try:
-                selector.validate_predicate(meta["when"])
-            except Exception as exc:
-                raise PacketDependencyError(
-                    f"StateWork {statework_id!r} flow {name!r} selector is invalid") from exc
-        elif meta.get("fallback") is not True:
-            raise PacketDependencyError(
-                f"StateWork {statework_id!r} flow {name!r} needs when or fallback=true")
-        if meta.get("fallback") is True:
-            fallbacks.append(name)
-    fallback_policy = str(policy.get("fallback") or "")
-    if ((fallback_policy == "required" and len(fallbacks) != 1)
-            or (fallback_policy == "optional" and len(fallbacks) > 1)
-            or (fallback_policy == "forbidden" and fallbacks)):
-        raise PacketDependencyError(
-            f"StateWork {statework_id!r} fallback policy {fallback_policy!r} "
-            f"does not match declared flows {fallbacks}")
+    try:
+        statework_provider(cow_root).validate_flow_contracts(
+            statework_id, owner_root=owner_root)
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
 
 
 def _statework_flow_metadata(sw: Mapping[str, Any], cow_root: Path
                              ) -> Dict[str, Dict[str, Any]]:
-    import yaml
-    sid = str(sw.get("id") or "")
-    owner_root = _statework_root(cow_root, sw)
-    _validate_statework_flow_contracts(cow_root, sid, owner_root=owner_root)
-    flows_dir = owner_root / "flows"
-    result: Dict[str, Dict[str, Any]] = {}
-    for path in sorted(flows_dir.glob("*/flow.md")) if flows_dir.is_dir() else ():
-        name = path.parent.name
-        try:
-            pieces = path.read_text(encoding="utf-8").split("---", 2)
-            meta = yaml.safe_load(pieces[1]) or {}
-        except Exception as exc:
-            raise PacketDependencyError(
-                f"StateWork {sid!r} flow {name!r} has invalid frontmatter") from exc
-        if not isinstance(meta, Mapping) or meta.get("flow") != name:
-            raise PacketDependencyError(
-                f"StateWork {sid!r} flow {name!r} metadata is invalid")
-        result[name] = dict(meta)
-    return result
+    try:
+        return statework_provider(cow_root).flow_metadata(sw)
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
+
+
+def _flow_selector(cow_root: Path) -> Any:
+    try:
+        return statework_provider(cow_root).flow_selector()
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
 
 
 def _norm(text: str) -> str:
@@ -526,16 +410,10 @@ def match_stateworks(stateworks: List[Dict[str, Any]], domains: Iterable[str],
 # ------------------------------------------------- packet-prerequisite chain
 
 def parse_packet_registry(cow_root: Path = COW_ROOT) -> Dict[str, Any]:
-    # A CFW-only task has no StateWorks to compose and must not load CSW's
-    # control plane as an implicit runtime dependency. A present CSW registry
-    # still goes through the compiled-registry validation below.
-    if not (Path(cow_root) / "registry.yaml").is_file():
-        return {}
     try:
-        data = _load_compiled_csw_registry(cow_root).get("packet_registry") or {}
-    except PacketDependencyError:
-        raise
-    return dict(data) if isinstance(data, Mapping) else {"packets": {}}
+        return statework_provider(cow_root).packet_registry()
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
 
 
 def _consumed_inputs(sw: Dict[str, Any]) -> Tuple[List[str], List[str]]:
@@ -556,12 +434,11 @@ def _consumed_inputs(sw: Dict[str, Any]) -> Tuple[List[str], List[str]]:
 
 def _load_cow_packet_store(packets: Optional[Iterable[Dict[str, Any]]],
                            cow_root: Path = COW_ROOT):
-    """Load CognitiveStateWork's validated PacketStore without importing DP."""
-    module = _load_csw_control(cow_root)
-    compiled = _load_compiled_csw_registry(cow_root)
-    return module.PacketStore(
-        packets, packet_registry_data=compiled.get("packet_registry") or {},
-        packet_schemas=compiled.get("packet_schemas") or {})
+    """Build the provider-validated packet store through the host boundary."""
+    try:
+        return statework_provider(cow_root).packet_store(packets)
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
 
 
 def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
@@ -600,6 +477,14 @@ def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
     resolved: Set[str] = set()
     visiting: Set[str] = set()
 
+    def current_required_packet(statework_id: Any, packet_type: str) -> Optional[Dict[str, Any]]:
+        expected_subject = (statework_subject_refs or {}).get(str(statework_id), subject_ref)
+        if not expected_subject:
+            return None
+        return _current_packet(
+            store, packet_type, task_id=task_id or "task-unspecified",
+            subject_ref=expected_subject, observation_context=observation_context)
+
     def resolve(sw: Dict[str, Any]) -> None:
         sid = sw.get("id")
         if sid in resolved:
@@ -611,6 +496,13 @@ def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
         visiting.add(sid)
         composition = sw.get("composition") or {}
         for dependency_id in sorted(set(composition.get("requires") or ())):
+            required, _optional = _consumed_inputs(sw)
+            dependency_packets = [packet for packet in required
+                                  if (producers.get(packet) or {}).get("producer") == dependency_id]
+            if dependency_packets and all(
+                    current_required_packet(sid, packet) is not None
+                    for packet in dependency_packets):
+                continue
             dependency = by_id.get(dependency_id)
             if dependency is None:
                 raise PacketDependencyError(
@@ -626,18 +518,11 @@ def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
                 raise PacketDependencyError(
                     f"required packet {packet!r} consumed by {sid!r} is not "
                     f"registered in packet-registry.yaml")
-            packet_task = task_id or "task-unspecified"
             # Subject identity is part of the packet contract.  A task id is
             # not a substitute for the branch/repository/entity being
             # observed; accepting that fallback would permit cross-subject
             # truth to satisfy a prerequisite.
-            expected_subject = (statework_subject_refs or {}).get(str(sid), subject_ref)
-            if not expected_subject:
-                current = None
-            else:
-                current = _current_packet(
-                    store, packet, task_id=packet_task, subject_ref=expected_subject,
-                    observation_context=observation_context)
+            current = current_required_packet(sid, packet)
             if current is not None:
                 continue  # validated typed packet satisfies prerequisite
             producer_id = meta.get("producer")
@@ -2262,9 +2147,10 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
 
     # Guard pack (schema-validated artifact)
     pack = routing_pack_for_context
-    statework_registry = ({"version": "1.0.0", "stateworks": []}
-                          if not statework_available else
-                          _load_document(cow_root / "registry.yaml", load_yaml))
+    try:
+        statework_registry = statework_provider(cow_root).registry_document()
+    except StateWorkProviderError as exc:
+        raise PacketDependencyError(str(exc)) from exc
     behavior_contract_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
     behavior_contract = _load_document(behavior_contract_path, _load_json)
     behavior_contract_version = str(

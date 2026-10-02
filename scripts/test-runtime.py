@@ -192,7 +192,7 @@ def main() -> int:
         {"id": "sw_c", "inputs": {"required": ["p_c"], "optional": []}},
     ]
     try:
-        resolve.plan_statework_chain(fakes[0], fakes, fake_reg, {})
+        resolve.plan_statework_chain(fakes[0], fakes, fake_reg, packet_store={})
         check("cycle detection", False, "cycle not raised")
     except resolve.PacketDependencyCycle:
         check("cycle detection", True)
@@ -201,7 +201,8 @@ def main() -> int:
     try:
         resolve.plan_statework_chain({"id": "sw_x", "inputs": {"required": ["ghost"], "optional": []}},
                                      [{"id": "sw_x", "inputs": {"required": ["ghost"], "optional": []}}],
-                                     {"packets": {}}, {}, allow_missing_required=False)
+                                     {"packets": {}}, packet_store={},
+                                     allow_missing_required=False)
         check("unknown required packet raises", False, "not raised")
     except resolve.PacketDependencyError:
         check("unknown required packet raises", True)
@@ -462,7 +463,14 @@ def main() -> int:
                             phase="mutation", operation="merge", trigger="mutation",
                             observation_context={}),
         allow_missing_required=True)
-    segment_session = runtime.start(segment_bundle, telemetry_disabled=True)
+    segment_state_tmp = tempfile.TemporaryDirectory(prefix="cfw-segment-state-")
+    segment_state_dir = Path(segment_state_tmp.name)
+    segment_authority = runtime.CSWStateAuthority(
+        COW, state_path=segment_state_dir / "subjects.json",
+        evidence_path=segment_state_dir / "evidence.json")
+    segment_session = runtime.start(
+        segment_bundle, telemetry_disabled=True,
+        state_authority=segment_authority)
     first_context = runtime.context_for(segment_session)
     check("execution segment exposes only first StateWork",
           "GITTER" in first_context and "GETTER" not in first_context and
@@ -520,7 +528,10 @@ def main() -> int:
     for signals in (None, shadow_signals, advisory_signals):
         decisions.append(runtime.MetacognitiveController().evaluate(
             qualification_state, support_actions_since_progress=5,
-            support_action_limit=5, recovery_epochs_since_progress=0,
+            support_action_limit=5,
+            total_actions_since_progress=(
+                qualification_state.committed_actions_since_goal_progress),
+            total_action_limit=10, recovery_epochs_since_progress=0,
             max_recovery_epochs=3, same_approach_retries=0,
             max_same_approach_retries=2, semantic=signals))
     check("A/B/C hold support saturation constant across provider modes",
@@ -529,7 +540,10 @@ def main() -> int:
           and qualification_state.criteria[0].evidence_status == "none")
     exhausted = [runtime.MetacognitiveController().evaluate(
         qualification_state, support_actions_since_progress=0,
-        support_action_limit=5, recovery_epochs_since_progress=3,
+        support_action_limit=5,
+        total_actions_since_progress=(
+            qualification_state.committed_actions_since_goal_progress),
+        total_action_limit=10, recovery_epochs_since_progress=3,
         max_recovery_epochs=3, same_approach_retries=0,
         max_same_approach_retries=2, semantic=signals).mode
         for signals in (None, shadow_signals, advisory_signals)]
@@ -547,7 +561,14 @@ def main() -> int:
         resolve.TaskRequest(task_id="transition-runtime", application_id="cfw-test", subject_ref="ui:tuid",
                             shape="implement", domain_tags=("terminal interface",)),
         requested_flows={"tuid": "debug"})
-    transition_session = runtime.start(b_transition, telemetry_disabled=True)
+    transition_state_tmp = tempfile.TemporaryDirectory(prefix="cfw-transition-state-")
+    transition_state_dir = Path(transition_state_tmp.name)
+    transition_authority = runtime.CSWStateAuthority(
+        COW, state_path=transition_state_dir / "subjects.json",
+        evidence_path=transition_state_dir / "evidence.json")
+    transition_session = runtime.start(
+        b_transition, telemetry_disabled=True,
+        state_authority=transition_authority)
     rendered_evidence = transition_session._host_ingress().record_observation(
         "rendered_observation", subject_ref="ui:tuid")
     check("legal StateWork transition allowed",
@@ -589,12 +610,11 @@ def main() -> int:
     workflow_fact = next(item for item in transition_session.metacognitive_state.workflows
                          if item.statework_id == "tuid")
     check("CSW semantics reach provider-independent workflow state",
-          workflow_fact.edge_id == "tuid.exercisable.validate.validated"
+          workflow_fact.step_id == "tuid.exercisable.validate.validated"
           and workflow_fact.work_class == "validation"
           and workflow_fact.domain_effect == "validate_terminal_behavior"
-          and workflow_fact.domain == "terminal_interface_state"
-          and workflow_fact.purpose
-          and workflow_fact.revision == 6,
+          and workflow_fact.progress_class == "TERMINAL"
+          and workflow_fact.workflow_revision == 7,
           str(workflow_fact.to_dict()))
     blocker_evidence = transition_session._host_ingress().record_observation(
         "blocker_observed", subject_ref="ui:tuid")
@@ -608,6 +628,7 @@ def main() -> int:
           transition_session.metacognitive_controller.evaluate(
               transition_session.metacognitive_state,
               support_actions_since_progress=0, support_action_limit=5,
+              total_actions_since_progress=0, total_action_limit=10,
               recovery_epochs_since_progress=0, max_recovery_epochs=3,
               same_approach_retries=0, max_same_approach_retries=2).mode == "DIAGNOSE")
     resolution_evidence = transition_session._host_ingress().record_observation(

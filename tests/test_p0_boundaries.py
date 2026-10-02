@@ -33,10 +33,38 @@ def test_advisor_cannot_bypass_mandatory_stage():
 
 def test_cfw_only_uses_empty_statework_capability(tmp_path):
     resolve = _resolver()
+    before = {name for name in sys.modules if name.startswith("CognitiveStateWork")}
     bundle = resolve.resolve(resolve.TaskRequest(task_id="standalone", application_id="app", shape="quick"),
                              cow_root=tmp_path / "absent")
     assert bundle.stateworks == ()
     assert bundle.kernel == ("sispis",)
+    after = {name for name in sys.modules if name.startswith("CognitiveStateWork")}
+    assert after == before
+
+
+def test_statework_provider_contract_and_fail_closed_configured_root(tmp_path):
+    resolve = _resolver()
+    provider = resolve.statework_provider(tmp_path / "absent")
+    assert provider.load_stateworks() == []
+    assert provider.packet_registry() == {}
+    for method in ("packet_store", "bundle_root", "validate_flow_contracts",
+                   "flow_metadata", "flow_selector"):
+        assert callable(getattr(provider, method))
+
+    invalid = tmp_path / "invalid-csw"
+    invalid.mkdir()
+    (invalid / "registry.yaml").write_text("version: 1.0.0\n", encoding="utf-8")
+    with pytest.raises(resolve.PacketDependencyError, match="compiled StateWork registry is invalid"):
+        resolve.load_stateworks(invalid)
+
+
+def test_resolver_does_not_own_csw_loading_primitives():
+    source = (SCRIPTS / "resolve-runtime.py").read_text(encoding="utf-8")
+    assert "_load_compiled_csw_registry" not in source
+    assert "_CSW_CONTROL_MODULES" not in source
+    assert "_CSW_COMPILED_REGISTRIES" not in source
+    assert "control.FlowSelector" not in source
+    assert "module.PacketStore" not in source
 
 
 def test_explicit_ineligible_flow_is_rejected():
