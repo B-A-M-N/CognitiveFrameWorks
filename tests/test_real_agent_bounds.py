@@ -101,17 +101,26 @@ def test_persistent_agent_close_terminates_descendant_process_group() -> None:
     code = f'''import os, time
 child = os.fork()
 if child == 0:
-    open({str(marker)!r}, "w").write(str(os.getpid()))
+    staging = {str(marker)!r} + ".partial"
+    with open(staging, "w") as handle:
+        handle.write(str(os.getpid()))
+    os.replace(staging, {str(marker)!r})
     while True: time.sleep(1)
 print(os.getpid(), flush=True)
 '''
     agent = module.PersistentAgent([sys.executable, "-c", code])
     parent_pid = agent.process.pid
     deadline = time.monotonic() + 2
-    while not marker.exists() and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        if marker.exists():
+            try:
+                child_pid = int(marker.read_text().strip())
+                break
+            except (ValueError, OSError):
+                pass
         time.sleep(0.01)
-    assert marker.exists()
-    child_pid = int(marker.read_text())
+    else:
+        raise AssertionError("forked descendant never published its pid")
     agent.close()
     deadline = time.monotonic() + 2
     def descendant_is_live() -> bool:
