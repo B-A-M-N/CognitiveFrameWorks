@@ -99,7 +99,15 @@ def check_installed_runtime(runtime_dst: Path, label: str,
         "bundle = resolve_runtime.resolve('doctor-probe', 'quick', ()); "
         "session = runtime.start(bundle, telemetry_disabled=True); "
         "assert session.before_model_call(); "
-        "assert session.current_segment.index == 0"
+        "assert session.current_segment.index == 0; "
+        "from cognitive_runtime import CognitiveRuntime; "
+        "from digital_psychology_adapter import CFWBehaviorAdapter; "
+        "runtime_host = CognitiveRuntime(telemetry_disabled=True); "
+        "host = runtime_host.host_handle(session); "
+        "assert host.session_id == session.session_id; "
+        "adapter = CFWBehaviorAdapter(session, runtime_host.agent_handle(session)); "
+        "assert adapter.available_component_ids(); "
+        "host.close()"
     ) % (str(scripts), str(scripts / "resolve-runtime.py"))
     with tempfile.TemporaryDirectory(prefix="cfw-doctor-") as runtime_dir:
         env = dict(os.environ)
@@ -135,6 +143,10 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
         runtime_dst / "scripts" / "runtime.py",
         runtime_dst / "scripts" / "resolve-runtime.py",
         runtime_dst / "scripts" / "cognitive_runtime.py",
+        runtime_dst / "scripts" / "digital_psychology_adapter.py",
+        runtime_dst / "scripts" / "runtime_host" / "__init__.py",
+        runtime_dst / "scripts" / "runtime_host" / "session_registry.py",
+        runtime_dst / "scripts" / "runtime_host" / "handles.py",
         runtime_dst / "scripts" / "runtime_contract" / "actions.py",
         runtime_dst / "host-interceptor.json",
         runtime_dst / "SISPIS" / "runtime" / "calibrate.py",
@@ -142,6 +154,12 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
     has_bundled_statework = (runtime_dst / "statework" / "registry.yaml").is_file()
     if has_bundled_statework:
         runtime_files.extend([runtime_dst / "statework" / "scripts" / "control_plane.py",
+                              runtime_dst / "statework" / "scripts" / "errors.py",
+                              runtime_dst / "statework" / "scripts" / "resources.py",
+                              runtime_dst / "statework" / "scripts" / "evidence.py",
+                              runtime_dst / "statework" / "scripts" / "registry.py",
+                              runtime_dst / "statework" / "scripts" / "bundles.py",
+                              runtime_dst / "statework" / "scripts" / "contracts.py",
                               runtime_dst / "statework" / "schemas" / "packet-registry.yaml"])
     for required in runtime_files:
         if not required.exists():

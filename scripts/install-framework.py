@@ -418,8 +418,11 @@ def _main_impl() -> int:
         owned.add(_relative(reg, runtime_target))
         scripts_dst = runtime_dst / "scripts"
         scripts_dst.mkdir(parents=True, exist_ok=True)
-        for filename in ("runtime.py", "resolve-runtime.py", "cognitive_runtime.py"):
+        for filename in ("runtime.py", "resolve-runtime.py", "cognitive_runtime.py",
+                         "digital_psychology_adapter.py"):
             shutil.copy2(ROOT / "scripts" / filename, scripts_dst / filename)
+        shutil.copytree(ROOT / "scripts" / "runtime_host",
+                        scripts_dst / "runtime_host")
         shutil.copytree(ROOT / "scripts" / "runtime_contract",
                         scripts_dst / "runtime_contract")
         shutil.copytree(ROOT / "contracts", runtime_dst / "contracts")
@@ -437,8 +440,9 @@ def _main_impl() -> int:
             shutil.copytree(statework_root / "schemas", bundled_statework / "schemas")
             bundled_scripts = bundled_statework / "scripts"
             bundled_scripts.mkdir(parents=True, exist_ok=True)
-            for filename in ("__init__.py", "control_plane.py", "workflow_engines.py",
-                             "flow_selectors.py",
+            for filename in ("__init__.py", "control_plane.py", "errors.py",
+                             "workflow_engines.py", "flow_selectors.py", "resources.py",
+                             "evidence.py", "registry.py", "bundles.py", "contracts.py",
                              "validate-repository-truth.py", "operator_projection.py"):
                 source_script = statework_root / "scripts" / filename
                 if source_script.exists():
