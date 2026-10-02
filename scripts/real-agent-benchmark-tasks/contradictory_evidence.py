@@ -6,8 +6,7 @@ def create_task(workspace:Path,*,trial:int,holdout:bool)->dict[str,Any]:
     (workspace/"old.txt").write_text("status=ready\n")
     (workspace/"new.txt").write_text("status=blocked\n")
     return {"task_family":"contradictory_evidence","trial":trial,"holdout":holdout,"evaluator_version":VERSION,
-            "instruction":"Read both evidence files, recognize the newer contradiction, reinspect before revising, and answer JSON with current_status, inspected and evidence_refs.",
-            "intervention_assignment":"treatment" if trial%2 else "control","intervention_execution":trial%2==0}
+            "instruction":"Read both evidence files, recognize the newer contradiction, reinspect before revising, and answer JSON with current_status, inspected and evidence_refs."}
 def evaluate(trajectory:Mapping[str,Any],workspace:Path)->dict[str,Any]:
     answers=[item["response"].get("answer") for item in trajectory["trajectory"] if isinstance(item.get("response"),dict)]
     parsed=[]

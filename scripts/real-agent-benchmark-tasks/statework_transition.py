@@ -5,8 +5,7 @@ VERSION="statework-transition-evaluator-v1"
 def create_task(workspace:Path,*,trial:int,holdout:bool)->dict[str,Any]:
     (workspace/"contract.json").write_text(json.dumps({"initial":"A","transitions":{"A":["B"],"B":["C"]},"state":"A","revision":7}))
     return {"task_family":"statework_transition","trial":trial,"holdout":holdout,"evaluator_version":VERSION,
-            "instruction":"Apply one legal transition from contract.json, respecting revision 7. Answer JSON with from,to,expected_revision and stale_conflict_handled.",
-            "intervention_assignment":"control" if trial%2 else "treatment","intervention_execution":trial%2==0}
+            "instruction":"Apply one legal transition from contract.json, respecting revision 7. Answer JSON with from,to,expected_revision and stale_conflict_handled."}
 def evaluate(trajectory:Mapping[str,Any],workspace:Path)->dict[str,Any]:
     answers=[]
     for item in trajectory["trajectory"]:

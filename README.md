@@ -486,6 +486,11 @@ These projects are released under the [MIT License](LICENSE). Contributions are 
 Structural public-beta checks, hostile integration, real-agent behavioral
 qualification, and operational performance are separate evidence classes.
 See `contracts/qualifications/`; unexecuted results remain `not_run`.
+`scripts/acceptance-real-agent-benchmark.py` measures task outcomes only. Its
+report is explicitly ineligible as intervention evidence because it does not
+assign system cohorts or verify host-applied controls. Real-agent qualification
+must include host receipts and independent outcome attribution before it can
+pass.
 The final release gate requires every qualification marked
 `mandatory_for_release` to have a `pass` result; `not_run`, `fail`, and
 `blocked` results stop release.

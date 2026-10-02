@@ -7,9 +7,7 @@ def create_task(workspace: Path, *, trial: int, holdout: bool) -> dict[str, Any]
     (workspace / "broken.py").write_text("def add(a, b):\n    return a - b\n")
     return {"task_family": "code_repair", "trial": trial, "holdout": holdout,
             "evaluator_version": VERSION,
-            "instruction": "Repair broken.py so add returns the sum. Write fixed.py; do not modify other files.",
-            "intervention_assignment": "treatment" if trial % 2 else "control",
-            "intervention_execution": trial % 2 == 0}
+            "instruction": "Repair broken.py so add returns the sum. Write fixed.py; do not modify other files."}
 
 def evaluate(trajectory: Mapping[str, Any], workspace: Path) -> dict[str, Any]:
     fixed = workspace / "fixed.py"

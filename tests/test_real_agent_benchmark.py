@@ -53,6 +53,9 @@ print(json.dumps({"answer":json.dumps(answer),"complete":True,"usage":{"input_to
     contract = benchmark.load_json(benchmark.CONTRACT_PATH)
     report = benchmark.execute_benchmark(
         contract, [sys.executable, str(fake_agent)], trials_per_cell=2, holdout_fraction=0.5)
+    assert report["evidence_scope"] == "task_outcome_only"
+    assert report["qualification_eligible"] is False
+    assert report["qualification_blockers"]
     assert len(report["results"]) == 14
     assert all(item["completion_success"] for item in report["results"])
     assert sum(bool(item["holdout"]) for item in report["results"]) == 7
@@ -60,6 +63,21 @@ print(json.dumps({"answer":json.dumps(answer),"complete":True,"usage":{"input_to
     assert all(item["evaluator_version"] for item in report["results"])
     assert all(item["latency_seconds"] >= 0 for item in report["results"])
     assert all(item["token_overhead"] == 5 for item in report["results"])
+    assert all("intervention_assignment" not in item for item in report["results"])
+    assert all("intervention_execution" not in item for item in report["results"])
+
+
+def test_agent_task_view_hides_holdout_and_exposure_metadata() -> None:
+    task = {
+        "task_family": "code_repair", "instruction": "repair it",
+        "trial": 3, "holdout": True, "evaluator_version": "secret-evaluator",
+        "intervention_assignment": "treatment", "intervention_execution": True,
+        "cohort": "DP+Laya", "cohort_receipt": {"applied": True},
+        "workspace": "/tmp/task",
+    }
+    view = benchmark.agent_task_view(task)
+    assert view == {"task_family": "code_repair", "instruction": "repair it",
+                    "workspace": "/tmp/task"}
 
 
 def test_run_agent_enforces_model_call_budget(tmp_path: Path) -> None:

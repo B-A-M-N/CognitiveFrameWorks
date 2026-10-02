@@ -5,8 +5,7 @@ VERSION="long-running-recovery-evaluator-v1"
 def create_task(workspace:Path,*,trial:int,holdout:bool)->dict[str,Any]:
     (workspace/"journal.ndjson").write_text('{"op":"charge","id":"x","state":"committed"}\n{"op":"notify","id":"n","state":"pending"}\n')
     return {"task_family":"long_running_recovery","trial":trial,"holdout":holdout,"evaluator_version":VERSION,
-            "instruction":"Recover after restart from journal.ndjson. Do not repeat charge x. Answer JSON with recovered_operation, repeat_side_effects and pending.",
-            "intervention_assignment":"treatment" if trial%2 else "control","intervention_execution":trial%2==0}
+            "instruction":"Recover after restart from journal.ndjson. Do not repeat charge x. Answer JSON with recovered_operation, repeat_side_effects and pending."}
 def evaluate(trajectory:Mapping[str,Any],workspace:Path)->dict[str,Any]:
     answers=[]
     for item in trajectory["trajectory"]:

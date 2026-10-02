@@ -25,6 +25,7 @@ from typing import Any, Callable, Mapping
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "contracts" / "real-agent-benchmark-v1.json"
 TASK_ROOT = Path(__file__).resolve().parent / "real-agent-benchmark-tasks"
+AGENT_VISIBLE_TASK_FIELDS = frozenset({"task_family", "instruction", "workspace"})
 
 
 class BenchmarkBudgetExceeded(RuntimeError):
@@ -69,6 +70,11 @@ def validate_contract(contract: Mapping[str, Any]) -> None:
             raise ValueError(f"task module is missing: {family.get('task_file')}")
 
 
+def agent_task_view(task: Mapping[str, Any]) -> dict[str, Any]:
+    """Return task content without evaluation or treatment metadata."""
+    return {key: task[key] for key in AGENT_VISIBLE_TASK_FIELDS if key in task}
+
+
 def run_agent(command: list[str], task: Mapping[str, Any], *, timeout: float,
               max_model_calls: int, max_tokens: int, max_cost: float,
               max_elapsed_seconds: float) -> tuple[list[dict[str, Any]], dict[str, int | float]]:
@@ -89,7 +95,8 @@ def run_agent(command: list[str], task: Mapping[str, Any], *, timeout: float,
                 raise BenchmarkBudgetExceeded("model-call limit reached")
             if time.monotonic() - started > min(timeout, max_elapsed_seconds):
                 raise BenchmarkBudgetExceeded("elapsed-time limit reached")
-            process.stdin.write(json.dumps({"task": task, "turn": turn, "previous": trajectory}) + "\n")
+            process.stdin.write(json.dumps({"task": agent_task_view(task),
+                                            "turn": turn, "previous": trajectory}) + "\n")
             process.stdin.flush()
             remaining = min(timeout, max_elapsed_seconds) - (time.monotonic() - started)
             if remaining <= 0 or not selector.select(max(0, remaining)):
@@ -171,8 +178,6 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                     "task_family": family_id,
                     "trial": trial,
                     "holdout": task["holdout"],
-                    "intervention_assignment": task.get("intervention_assignment"),
-                    "intervention_execution": task.get("intervention_execution"),
                     "evaluator_version": task["evaluator_version"],
                     "latency_seconds": round(time.monotonic() - started, 3),
                     "token_overhead": usage["external_tokens"],
@@ -180,6 +185,13 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                 })
     return {
         "benchmark_id": contract["benchmark_id"],
+        "evidence_scope": "task_outcome_only",
+        "qualification_eligible": False,
+        "qualification_blockers": [
+            "no host-assigned system cohort",
+            "no verified host-applied intervention receipts",
+            "no independent intervention outcome attribution",
+        ],
         "contract_hash": hashlib.sha256(json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
         "trials_per_cell": trials_per_cell,
         "holdout_fraction": holdout_fraction,

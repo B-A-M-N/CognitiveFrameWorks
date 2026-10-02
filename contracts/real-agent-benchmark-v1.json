@@ -55,13 +55,14 @@
     "max_monetary_cost_per_trial": 10.0
   },
   "report_fields": [
+    "evidence_scope",
+    "qualification_eligible",
+    "qualification_blockers",
     "completion_success",
     "evidence_quality",
     "regression_rate",
     "token_overhead",
     "latency_seconds",
-    "intervention_assignment",
-    "intervention_execution",
     "evaluator_version",
     "failure_category"
   ]
