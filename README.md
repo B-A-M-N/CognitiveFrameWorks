@@ -328,6 +328,12 @@ revision checks; CFW keeps its session lifecycle and validates every action
 through its own authority gate. CSW selection and transition calls use its
 separate revisioned workflow API.
 
+Host handles live in a bounded, expiring session registry. The registry pins
+each handle to its immutable execution identity, closes telemetry resources on
+explicit close or eviction, and rejects a handle if its owner identity changes.
+DigitalPsychology adapter rebinding compares stable CFW authority identity
+instead of relying on Python object identity.
+
 Validated long-run findings can later become one of two things:
 
 ### Structural behavioral guards
