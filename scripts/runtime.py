@@ -3096,7 +3096,9 @@ class RuntimeSession:
                         "subject": request.subject_ref,
                         "payload": {"summary": violation, "result_class": "blocked"}})
             if (goal.get("work_mode") == "delivery" and self.convergence is not None
-                    and host_relation not in {"advances_primary_goal", "removes_concrete_blocker"}
+                    and host_relation not in {
+                        "advances_primary_goal", "removes_concrete_blocker",
+                        "required_verification"}
                     and self.convergence.needs_goal_reanchor(
                         cause_id="primary-objective",
                         support_limit=int(verification.get(
@@ -6034,7 +6036,8 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
             f"No primary-deliverable progress in {convergence_state.total_actions_since_goal_progress} committed actions; "
             f"{convergence_state.support_actions_since_goal_progress} were host-classified support. "
             f"Primary outcome: {goal.get('objective', '')}\n"
-            "Next action must advance a required criterion or establish a concrete blocker.")
+            "Next action must advance a required criterion, establish a concrete blocker, "
+            "or verify criterion-linked work already performed.")
     criterion_claims = {str(item.get("criterion_id")): str(item.get("claim") or "")
                         for item in goal.get("acceptance_criteria", ())}
     directive = ("" if session.external_behavior_authority else

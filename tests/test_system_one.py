@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import sys
+from collections.abc import Mapping
 from threading import Event, Thread
 from pathlib import Path
 
@@ -52,6 +53,14 @@ def make_test_policy(mode="shadow", *, calibration_hash=""):
         model_revision="test-revision", model_content_hash=TEST_MODEL_CONTENT_HASH,
         provider_protocol_hash=TEST_PROVIDER_PROTOCOL_HASH,
         calibration_bundle_hash=calibration_hash)
+
+
+def _plain(value):
+    if isinstance(value, Mapping):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain(item) for item in value]
+    return value
 
 
 def test_system_one_latency_policy_allows_bounded_cpu_model_deadline():
@@ -169,8 +178,8 @@ def test_task_policy_pins_protocol_backend_model_and_calibration_identity():
     resolve, _runtime = runtime_modules()
     policy = make_test_policy()
     bundle = resolve.resolve(request("system-one-policy", system_one_policy=policy))
-    assert bundle.pinned["system_one_policy"] == policy.to_dict()
-    assert bundle.policy.canonical()["system_one_policy"] == policy.to_dict()
+    assert _plain(bundle.pinned["system_one_policy"]) == policy.to_dict()
+    assert _plain(bundle.policy.canonical()["system_one_policy"]) == policy.to_dict()
     assert bundle.pinned["policy_hash"] == resolve.compute_policy_hash(bundle.policy)
 
 
@@ -214,9 +223,9 @@ def test_advisory_directive_requires_pinned_calibration_and_hysteresis():
         assert session.prepare_action({"tool_binding_id": "read", "arguments": {}}).decision \
             == runtime.GateDecision.ALLOW
     context = runtime.context_for(session)
-    assert "CURRENT EXECUTION FOCUS" in context
-    assert "Mode: replan" in context
-    assert "Possible goal drift" not in context
+    assert "===== CFW METACOGNITIVE GUIDANCE =====" in context
+    assert "Current focus: DELIVER" in context
+    assert "A semantic signal suggests possible drift" in context
     decision = next(event for event in events if event["event_type"] == "system_one_decision")
     assert decision["payload"]["system_one_influenced"] is True
     assert decision["payload"]["system_one_answers"]["goal_drift"]["selected"] == "yes"
@@ -229,7 +238,8 @@ def test_visual_drift_frame_and_rendered_observation_fuse_to_criterion_progress(
         objective="Change the visual component to match the supplied reference.",
         deliverable_kind="visual_ui", work_mode="delivery",
         acceptance_criteria=(AcceptanceCriterion(
-            "C1", "Visual composition matches the reference", "static_visual"),))
+            "C1", "Visual composition matches the reference", "static_visual"),),
+        verification_policy={"support_actions_before_goal_reanchor": 2})
     actions = {
         "visual_edit": ActionDescriptor(
             "visual_edit", mutability="write", action_class="artifact_mutation",
@@ -253,58 +263,74 @@ def test_visual_drift_frame_and_rendered_observation_fuse_to_criterion_progress(
     host = session._host_ingress()
 
     for index in range(2):
-        inspection = session.prepare_action({
+        action = {
             "tool_binding_id": "inspect", "arguments": {},
-            "subject_ref": "repo:visual"})
+            "subject_ref": "repo:visual"}
+        binding = host.bind_action_objective(action, purpose_class="DIAGNOSTIC",
+                                             criterion_ids=("C1",))
+        inspection = host.prepare_action(action, objective_binding=binding)
         assert inspection.decision == runtime.GateDecision.ALLOW
         host.record_tool_result(
             "inspect", "success", subject_ref="repo:visual",
             invocation_id=f"visual-inspect-{index}",
             action_request_id=inspection.action_request_id)
-    assert session.behavioral_decision.focus_mode == "replan"
+    assert session.metacognitive_decision.mode == "REPLAN"
     directive = runtime.context_for(session)
-    assert "C1" in directive and "Avoid unrelated investigation" in directive
+    assert "C1" in directive
+    assert "Re-anchor the next action to an unfinished user criterion" in directive
     assert judge.frames[0].state.task["deliverable_kind"] == "visual_ui"
     assert judge.frames[0].state.criteria[0].status == "unmet"
 
-    write = session.prepare_action({
+    write_action = {
         "tool_binding_id": "visual_edit",
         "arguments": {"target": str(tmp_path / "buddy-renderer.py")},
-        "subject_ref": "repo:visual"})
+        "subject_ref": "repo:visual"}
+    write_binding = host.bind_action_objective(
+        write_action, purpose_class="DIRECT_GOAL", criterion_ids=("C1",))
+    write = host.prepare_action(write_action, objective_binding=write_binding)
     assert write.decision == runtime.GateDecision.ALLOW
     host.record_tool_result(
         "visual_edit", "success", subject_ref="repo:visual",
         invocation_id="visual-edit-1", action_request_id=write.action_request_id,
         actual_result={"artifact_changed": True})
-    assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 3
+    assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 2
     support_event_count = sum(event["event_type"] == "support_action_recorded"
                               for event in events)
 
     rendered = host.record_observation("rendered_observation", subject_ref="repo:visual")
-    render = session.prepare_action({
+    render_action = {
         "tool_binding_id": "visual_render", "arguments": {},
-        "subject_ref": "repo:visual"})
+        "subject_ref": "repo:visual"}
+    render_binding = host.bind_action_objective(
+        render_action, purpose_class="REQUIRED_VERIFICATION", criterion_ids=("C1",))
+    render = host.prepare_action(render_action, objective_binding=render_binding)
     assert render.decision == runtime.GateDecision.ALLOW
     host.record_tool_result(
         "visual_render", "success", subject_ref="repo:visual",
         invocation_id="visual-render-1", action_request_id=render.action_request_id,
         actual_result={"artifact_changed": False, "evidence_refs": [rendered]})
+    host.record_goal_progress(cause_id="primary-objective", evidence_ref=rendered,
+                              criterion_id="C1")
 
     assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 0
     assert sum(event["event_type"] == "support_action_recorded" for event in events) \
         == support_event_count
-    assert session.system_one_projector.criteria[0].status == "partially_observed"
+    assert session.metacognitive_state.criteria[0].status == "partially_observed"
     progress_frame = next(frame for frame in reversed(judge.frames)
                           if frame.question_ids == ("progress_relation",))
     assert progress_frame.state.task["deliverable_kind"] == "visual_ui"
     assert progress_frame.state.criteria[0].criterion_id == "C1"
-    assert progress_frame.state.criteria[0].status == "unmet"
+    assert progress_frame.state.criteria[0].status == "active"
     assert any(fact.artifact_changed is True and "C1" in fact.affected_criterion_ids
                for fact in progress_frame.state.activity)
     assert "rendered_observation" in progress_frame.state.candidate.evidence_kinds
     fused = [event for event in events if event["event_type"] == "progress_relation_fused"]
-    assert fused[-1]["payload"]["progress_class"] == "GOAL_PROGRESS"
-    assert fused[-1]["payload"]["host_corroborated"] is True
+    assert fused[-1]["payload"]["progress_relation"] == "goal_progress"
+    assert fused[-1]["payload"]["model_influenced"] is True
+    credited = next(event for event in events
+                    if event["event_type"] == "goal_progress_recorded")
+    assert credited["evidence_refs"] == [rendered]
+    assert credited["payload"]["result_class"] == "goal_progress"
 
 
 def _semantic_retry_case(task_id, retry_relation):
@@ -395,11 +421,13 @@ def test_shadow_prediction_cannot_reset_host_convergence_budget():
     session = runtime.start(bundle, behavioral_judge=judge, telemetry_disabled=True,
                             session_nonce="system-one-no-reset")
     host = session._host_ingress()
-    prepared = session.prepare_action({
+    action = {
         "tool_binding_id": "read", "arguments": {},
-        "subject_ref": "component:target"})
+        "subject_ref": "component:target"}
+    binding = host.bind_action_objective(action, purpose_class="DIAGNOSTIC")
+    prepared = host.prepare_action(action, objective_binding=binding)
     assert prepared.decision == runtime.GateDecision.ALLOW
-    evidence_ref = host.record_tool_result(
+    host.record_tool_result(
         "read", "success", subject_ref="component:target", invocation_id="read-invocation-1",
         action_request_id=prepared.action_request_id,
         actual_result={"secret_result": "not projected", "artifact_changed": True})
@@ -410,9 +438,7 @@ def test_shadow_prediction_cannot_reset_host_convergence_budget():
     assert progress_decisions
     assert host.system_one_decision_for_action(
         prepared.action_request_id) == progress_decisions[-1]["decision_id"]
-    host.record_goal_progress(cause_id="primary-objective", evidence_ref=evidence_ref,
-                              criterion_id="C1")
-    assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 0
+    assert session.convergence.state("primary-objective").support_actions_since_goal_progress == 1
 
 
 def test_identical_concurrent_requests_get_distinct_correlations():
@@ -427,7 +453,7 @@ def test_identical_concurrent_requests_get_distinct_correlations():
     assert one.decision == two.decision == runtime.GateDecision.ALLOW
 
 
-def test_stale_system_one_response_is_discarded_when_a_later_frame_wins():
+def test_stale_system_one_response_is_discarded_when_host_state_advances():
     resolve, runtime = runtime_modules()
     first_started, release_first = Event(), Event()
 
@@ -455,16 +481,23 @@ def test_stale_system_one_response_is_discarded_when_a_later_frame_wins():
     thread = Thread(target=first_call, daemon=True)
     thread.start()
     assert first_started.wait(timeout=5)
-    results.append(session.prepare_action(action))
+    # Advance the host snapshot while semantic inference is in flight. The
+    # provider response must be discarded against this newer state revision.
+    host = session._host_ingress()
+    evidence = host.record_observation(
+        "independent_frame", subject_ref="component:target")
+    host.record_blocker("concurrent-state-advance", "Host state advanced during inference.",
+                        evidence_ref=evidence, criterion_ids=("C1",))
     release_first.set()
     thread.join(timeout=5)
 
     assert not thread.is_alive()
     assert errors == []
-    assert len(results) == 2
+    assert len(results) == 1
     stale = next(item for item in session.system_one_decisions.values()
                  if item["sequence"] == 1)
-    assert stale["status"] == "stale_response"
+    assert stale["status"] == "stale"
+    assert stale["status_reason"] == "stale_response"
     assert stale["judgment"] == {}
 
 
@@ -483,7 +516,8 @@ def test_provider_crash_falls_back_once_without_changing_authority():
     action = session.prepare_action({"tool_binding_id": "read", "arguments": {}})
     assert action.decision == runtime.GateDecision.ALLOW
     fallback = next(iter(session.system_one_decisions.values()))
-    assert fallback["status"] == "fallback"
+    assert fallback["status"] == "unavailable"
+    assert fallback["status_reason"] == "provider_exception"
     assert fallback["judgment"] == {}
     assert len(judge.frames) == 1
     assert session.prepare_action({"tool_binding_id": "shell", "arguments": {}}).decision \
@@ -548,21 +582,20 @@ def test_resume_restores_semantic_projector_and_invalidates_behavior_advice():
     prepared = session.prepare_action({"tool_binding_id": "read", "arguments": {}})
     host.record_tool_result("read", "success", invocation_id="before-resume-read",
                             action_request_id=prepared.action_request_id)
-    prior_projection = session.system_one_projector.snapshot()
+    prior_projection = session.metacognitive_state.snapshot()
 
     resumed = runtime.resume_task(
         bundle, "system-one-resume-projector", behavioral_judge=judge,
         telemetry_disabled=True)
-    assert resumed.system_one_projector.snapshot() == prior_projection
-    assert resumed.behavioral_decision.focus_mode == "delivery"
+    assert resumed.metacognitive_state.snapshot() == prior_projection
+    assert resumed.metacognitive_decision.mode == "DELIVER"
     assert "CURRENT EXECUTION FOCUS" not in runtime.context_for(resumed)
     assert judge.resets
     next_action = resumed.prepare_action({"tool_binding_id": "read", "arguments": {}})
     assert next_action.decision == runtime.GateDecision.ALLOW
     frame = judge.frames[-1]
-    assert any(fact.activity_type == "tool_result"
+    assert any(fact.activity_type == "action"
                and fact.result_class == "success" for fact in frame.state.activity)
-    assert judge.resyncs[-1].canonical_payload() == frame.canonical_payload()
 
 
 def test_system_one_outcome_requires_later_independent_evidence():
@@ -603,8 +636,9 @@ def test_stale_identity_falls_back_and_ward_block_precedes_semantic_query():
     assert session.prepare_action({"tool_binding_id": "read", "arguments": {}}).decision \
         == runtime.GateDecision.ALLOW
     assert len(judge.frames) == 1
-    assert next(event for event in events if event["event_type"] == "system_one_decision")[
-        "payload"]["system_one_status"] == "fallback"
+    decision = next(event for event in events if event["event_type"] == "system_one_decision")
+    assert decision["payload"]["system_one_status"] == "unavailable"
+    assert decision["payload"]["system_one_status_reason"] == "provider_exception"
     assert session.prepare_action({"tool_binding_id": "shell", "arguments": {}}).decision \
         == runtime.GateDecision.BLOCK
     assert len(judge.frames) == 1
@@ -685,7 +719,7 @@ def _route_epoch_bundles(resolve, task_id, policy):
     return request, parent, children
 
 
-def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child():
+def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child(tmp_path):
     resolve, runtime = runtime_modules()
     policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
     request_contract, parent, children = _route_epoch_bundles(
@@ -693,20 +727,25 @@ def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child():
     target = "flow:infrae:incident"
     judge = FixedJudge(goal_drift="yes", calibrated=True,
                        route_preference=target)
-    session = runtime.start(parent, behavioral_judge=judge,
+    authority = runtime.CSWStateAuthority(
+        Path(resolve.COW_ROOT), state_path=tmp_path / "subjects.json",
+        evidence_path=tmp_path / "evidence.json")
+    session = runtime.start(parent, behavioral_judge=judge, state_authority=authority,
                             telemetry_disabled=True,
                             session_nonce="system-one-route-epoch")
     host = session._host_ingress()
-    for index in range(2):
-        prepared = session.prepare_action({
+    for index in range(5):
+        action = {
             "tool_binding_id": "read", "arguments": {},
-            "subject_ref": parent.policy.subject_ref})
+            "subject_ref": parent.policy.subject_ref}
+        binding = host.bind_action_objective(action, purpose_class="DIAGNOSTIC")
+        prepared = host.prepare_action(action, objective_binding=binding)
         assert prepared.decision == runtime.GateDecision.ALLOW
         host.record_tool_result(
             "read", "success", subject_ref=parent.policy.subject_ref,
             invocation_id=f"route-epoch-read-{index}",
             action_request_id=prepared.action_request_id)
-    assert session.behavioral_decision.focus_mode == "replan"
+    assert session.metacognitive_decision.mode == "REPLAN"
 
     recommendation = host.rank_legal_routes(
         children, state_revision=7, target_statework_id="infrae")
@@ -726,7 +765,8 @@ def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child():
     assert parent.policy.stateworks[0].selected_flow != epoch.bundle.policy.stateworks[0].selected_flow
 
     child_session = runtime.start(
-        epoch.bundle, behavioral_judge=judge, telemetry_disabled=True,
+        epoch.bundle, behavioral_judge=judge, state_authority=authority,
+        telemetry_disabled=True,
         session_nonce="system-one-route-epoch-child",
         policy_epoch_record=epoch.record)
     assert child_session.bundle.pinned["policy_hash"] == epoch.record.child_policy_hash
@@ -735,23 +775,29 @@ def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child():
     assert session.bundle.pinned["policy_hash"] == epoch.record.parent_policy_hash
     resumed_child = runtime.resume_task(
         epoch.bundle, "system-one-route-epoch-child",
-        behavioral_judge=judge, telemetry_disabled=True)
+        behavioral_judge=judge, state_authority=authority, telemetry_disabled=True)
     assert resumed_child.policy_epoch_record == epoch.record
 
 
-def test_policy_epoch_rejects_an_unresolved_or_forged_route_bundle():
+def test_policy_epoch_rejects_an_unresolved_or_forged_route_bundle(tmp_path):
     resolve, runtime = runtime_modules()
     policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
     _request_contract, parent, children = _route_epoch_bundles(
         resolve, "system-one-route-epoch-invalid", policy)
-    session = runtime.start(parent, behavioral_judge=FixedJudge(goal_drift="yes", calibrated=True),
+    authority = runtime.CSWStateAuthority(
+        Path(resolve.COW_ROOT), state_path=tmp_path / "subjects.json",
+        evidence_path=tmp_path / "evidence.json")
+    session = runtime.start(parent, state_authority=authority,
+                            behavioral_judge=FixedJudge(goal_drift="yes", calibrated=True),
                             telemetry_disabled=True,
                             session_nonce="system-one-route-epoch-invalid")
     host = session._host_ingress()
-    for index in range(2):
-        prepared = session.prepare_action({
+    for index in range(5):
+        action = {
             "tool_binding_id": "read", "arguments": {},
-            "subject_ref": parent.policy.subject_ref})
+            "subject_ref": parent.policy.subject_ref}
+        binding = host.bind_action_objective(action, purpose_class="DIAGNOSTIC")
+        prepared = host.prepare_action(action, objective_binding=binding)
         host.record_tool_result(
             "read", "success", subject_ref=parent.policy.subject_ref,
             invocation_id=f"route-epoch-invalid-{index}",

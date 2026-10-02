@@ -24,7 +24,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "2.6.0"
+      "const": "2.7.0"
     },
     "event_id": {
       "type": "string",
@@ -298,6 +298,30 @@
         "summary": {
           "type": "string",
           "maxLength": 512
+        },
+        "binding_digest": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "host_relation": {
+          "enum": [
+            "advances_primary_goal",
+            "removes_concrete_blocker",
+            "required_verification",
+            "diagnostic_support",
+            "unrelated",
+            "ambiguous"
+          ]
+        },
+        "semantic_relation": {
+          "enum": [
+            "advances_primary_goal",
+            "removes_concrete_blocker",
+            "required_verification",
+            "diagnostic_support",
+            "unrelated",
+            "ambiguous"
+          ]
         },
         "blocker_id": {
           "type": "string",

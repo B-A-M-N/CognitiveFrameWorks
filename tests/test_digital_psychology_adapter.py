@@ -63,9 +63,10 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
         "dir-dp-test", "dir-dp-fuse-test")
     assert adapter._session.external_behavior_state["framework_modes"]["fuse"] == "constrained"
     context = adapter.before_model_call("DP behavior projection", tool_capable=True)
-    assert "APPLIED DIGITAL PSYCHOLOGY CONTROLS" in context
-    assert "set_framework owl=off" in context
-    assert "set_framework fuse=constrained" in context
+    # Directive receipts and control-plane operation details stay host-only.
+    assert "APPLIED DIGITAL PSYCHOLOGY CONTROLS" not in context
+    assert "set_framework owl=off" not in context
+    assert "set_framework fuse=constrained" not in context
     assert "DP behavior projection" in context
     assert "ACTIVE PIPELINE: owl" not in context
     assert "===== OWL =====" not in context
