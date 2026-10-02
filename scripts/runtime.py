@@ -60,7 +60,9 @@ from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
 from runtime_contract.convergence import (AttemptDescriptor, ConvergenceController,
                                            ConvergenceIdentity, SharedBranchLedger,
                                            TERMINAL_DISPOSITIONS)
-from runtime_contract.component_control import (COMPONENT_IDS, ComponentOverlay,
+from runtime_contract.component_control import (COMPONENT_IDS,
+                                                COMPONENT_MODEL_VISIBILITY,
+                                                ComponentOverlay,
                                                 PreparedComponentOverlay)
 from runtime_contract.telemetry import DurableTelemetryExporter, behavior_schema_contract
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
@@ -5856,8 +5858,8 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
             + criteria_label + ("; ".join(
                 f"{item.get('criterion_id')}: {item.get('claim')}" for item in required
             ) or "none specified") + "\n"
-            "Support work is subordinate to these criteria.\n"
-            f"Contract hash: {session.bundle.pinned.get('goal_contract_hash', '')}")
+            + "Support work is subordinate to these criteria.\n"
+            )
         non_goals = list(goal.get("non_goals") or ())
         if non_goals:
             parts.append("Non-goals: " + "; ".join(str(item) for item in non_goals))
@@ -5895,9 +5897,16 @@ def context_for(session: RuntimeSession, *, behavior_context: str = "",
     if not active_stages and not (session.external_behavior_authority
                                   and session.external_behavior_state):
         active_stages = list(session.bundle.kernel[:1])
-    parts.append("ACTIVE PIPELINE: " + (" -> ".join(active_stages) or "none"))
+    if not session.external_behavior_authority:
+        parts.append("ACTIVE PIPELINE: " + (" -> ".join(active_stages) or "none"))
+    visible_stages = [
+        stage for stage in active_stages
+        if COMPONENT_MODEL_VISIBILITY.get(
+            str(session.lifecycle.specs.get(stage, {}).get("owner") or stage).lower(),
+            "none") == "guidance"
+    ]
     seen_capsules: set[tuple[str, str]] = set()
-    for stage_id in active_stages:
+    for stage_id in visible_stages:
         capsule = session.injected.get(stage_id)
         if capsule:
             owner = stage_id.split("_")[0]

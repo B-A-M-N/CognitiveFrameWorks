@@ -354,6 +354,10 @@ directive IDs, causes, or lease bookkeeping in model context. When DP is
 unavailable, DP-owned local overlays expire at host action boundaries and CFW
 continues enforcing its own component and action contracts. CFW remains usable
 without DP, and its optional CSW provider remains absent in standalone mode.
+The component catalog assigns each component a `model_visibility` policy:
+`guidance` may enter context, while `consequence_only` and `none` stay outside
+the prompt. DP-controlled prompts omit pipeline labels and internal contract
+hashes; host-side gates still enforce the underlying behavior.
 
 Validated long-run findings can later become one of two things:
 

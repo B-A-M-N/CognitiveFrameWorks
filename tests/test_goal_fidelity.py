@@ -137,7 +137,7 @@ def test_goal_contract_survives_resume():
     runtime.start(bundle, session_nonce="goal-resume", telemetry_disabled=True)
     resumed = runtime.resume_task(bundle, "goal-resume", telemetry_disabled=True)
     context = runtime.context_for(resumed)
-    assert goal.contract_hash in context
+    assert goal.contract_hash not in context
     assert "Visual composition changed" in context
 
 

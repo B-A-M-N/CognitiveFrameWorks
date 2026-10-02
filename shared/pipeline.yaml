@@ -1,4 +1,4 @@
-version: 1.3.0
+version: 1.4.0
 # Standalone CFW startup presets and component catalog. Combined runtimes may
 # enable or suppress dynamically controllable components through the declared
 # host contract; this manifest does not define a universal cross-system loop.
@@ -38,6 +38,7 @@ components:
     deactivation_predicates: [task.trivial, task.closed]
     runtime_cost_class: low
     context_cost_class: low
+    model_visibility: guidance
   anchor:
     owner: anchor
     requires: [owl]
@@ -51,6 +52,7 @@ components:
     deactivation_predicates: [task.closed, task.stateless]
     runtime_cost_class: low
     context_cost_class: low
+    model_visibility: guidance
   fuse:
     owner: fuse
     requires: []
@@ -64,6 +66,7 @@ components:
     deactivation_predicates: [action.closed]
     runtime_cost_class: low
     context_cost_class: low
+    model_visibility: consequence_only
   ward:
     owner: ward
     requires: [fuse]
@@ -78,6 +81,7 @@ components:
     deactivation_predicates: []
     runtime_cost_class: low
     context_cost_class: low
+    model_visibility: none
   flow:
     owner: flow
     requires: []
@@ -91,6 +95,7 @@ components:
     deactivation_predicates: [artifact.closed, artifact.no_flow_trigger]
     runtime_cost_class: medium
     context_cost_class: medium
+    model_visibility: none
   sispis:
     owner: sispis
     requires: []
@@ -104,6 +109,7 @@ components:
     deactivation_predicates: [response.emitted]
     runtime_cost_class: low
     context_cost_class: low
+    model_visibility: guidance
   dox:
     owner: dox
     requires: []
@@ -117,6 +123,7 @@ components:
     deactivation_predicates: [edit.no_dox_contract, edit.closed]
     runtime_cost_class: low
     context_cost_class: medium
+    model_visibility: guidance
 
 stages:
   - id: owl

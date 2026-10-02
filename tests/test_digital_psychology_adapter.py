@@ -69,7 +69,11 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
     assert "set_framework fuse=constrained" not in context
     assert "DP behavior projection" in context
     assert "ACTIVE PIPELINE: owl" not in context
+    assert "ACTIVE PIPELINE:" not in context
+    assert "Contract hash:" not in context
     assert "===== OWL =====" not in context
+    assert "===== FUSE =====" not in context
+    assert "===== WARD =====" not in context
     strategy = adapter._session._action_strategy()
     assert "FUSE-constrained" in strategy["reason"]
     assert "FUSE is constrained" in adapter._session._action_strategy_hint()
@@ -145,8 +149,8 @@ def test_dp_component_overlay_changes_actual_flow_lifecycle_activation():
     assert runtime_session.lifecycle.counts.get("flow", 0) == 1
     elevated_context = task.before_model_call()
     assert "flow" in runtime_session.lifecycle.active
-    assert "===== FLOW =====" in elevated_context
-    assert adapter._session.injected["flow"] in elevated_context
+    assert "===== FLOW =====" not in elevated_context
+    assert adapter._session.injected["flow"] not in elevated_context
 
     runtime_session.rollback_external_behavior_state(
         state(1, "off"), expected_current_revision=2)

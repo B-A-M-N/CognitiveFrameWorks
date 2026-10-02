@@ -16,7 +16,15 @@ _PIPELINE_PATH = (_SOURCE_PIPELINE_PATH if _SOURCE_PIPELINE_PATH.is_file()
 _COMPONENT_CATALOG = load_pipeline_document(_PIPELINE_PATH)["components"]
 if not isinstance(_COMPONENT_CATALOG, Mapping) or not _COMPONENT_CATALOG:
     raise RuntimeError("CFW component catalog is missing or malformed")
+_MODEL_VISIBILITY = frozenset({"none", "consequence_only", "guidance"})
+if any(component.get("model_visibility") not in _MODEL_VISIBILITY
+       for component in _COMPONENT_CATALOG.values()):
+    raise RuntimeError("CFW component catalog has missing or invalid model visibility")
 COMPONENT_IDS = frozenset(str(item).lower() for item in _COMPONENT_CATALOG)
+COMPONENT_MODEL_VISIBILITY = {
+    str(component_id).lower(): str(component["model_visibility"])
+    for component_id, component in _COMPONENT_CATALOG.items()
+}
 COMPONENT_ALLOWED_MODES = {
     str(component_id).lower(): frozenset(component.get("allowed_modes") or ())
     for component_id, component in _COMPONENT_CATALOG.items()
@@ -188,5 +196,6 @@ class PreparedComponentOverlay:
 
 __all__ = ["COMPONENT_IDS", "COMPONENT_MODES", "COMPONENT_ALLOWED_MODES",
            "COMPONENT_DYNAMIC_CONTROL", "COMPONENT_HARD_FLOOR_MODES",
+           "COMPONENT_MODEL_VISIBILITY",
            "ComponentControl", "ComponentOverlay",
            "PreparedComponentOverlay"]

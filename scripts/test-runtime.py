@@ -410,11 +410,11 @@ def main() -> int:
           "===== WARD =====" not in initial_lifecycle_context)
     planning_context = lifecycle_session.before_tool_planning({
         "tool_binding_id": "write", "arguments": {"target": "task-output"}})
-    check("lifecycle activates planning-time FUSE/WARD before model action",
+    check("planning-time FUSE/WARD enforce without exposing control capsules",
           "fuse" in lifecycle_session.active_lifecycle and
           "ward" in lifecycle_session.active_lifecycle and
-          "===== FUSE =====" in planning_context and
-          "===== WARD =====" in planning_context)
+          "===== FUSE =====" not in planning_context and
+          "===== WARD =====" not in planning_context)
     lifecycle_session.before_action({"tool_type": "read"})
     check("lifecycle controller activates per-action fuse",
           "fuse" in lifecycle_session.active_lifecycle)
