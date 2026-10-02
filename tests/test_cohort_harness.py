@@ -139,26 +139,31 @@ def test_every_task_family_has_a_field_map_entry():
 
 
 def test_field_specs_name_the_fields_evaluators_actually_read():
-    """Each spec must mention at least one identifier its evaluator checks.
+    """Each family spec must name every field its evaluator dereferences.
 
-    The evaluators are the scoring authority; a spec that shares no field name
-    with its evaluator means correct work cannot score.
+    The evaluators are the scoring authority. A spec that omits a field the
+    evaluator reads means a correct answer parses to {} and scores zero, which
+    is exactly how three families reported 0.00 in every cohort. This walks the
+    evaluator source and requires every checked field to appear in the adapter's
+    spec for that family, so the omission fails here instead of silently.
     """
-    adapter = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
+    adapter_module = _load(
+        "cohort_adapter_fields", ROOT / "scripts" / "cohort" / "agent_codex.py")
     tasks_root = ROOT / "scripts" / "real-agent-benchmark-tasks"
     contract = json.loads(
         (ROOT / "contracts" / "real-agent-benchmark-v1.json").read_text(encoding="utf-8"))
+
     for family in contract["task_families"]:
         family_id = str(family["id"])
-        module = _load(f"fields_{family_id}", tasks_root / str(family["task_file"]))
-        source = Path(module.__file__).read_text(encoding="utf-8")
-        # Identifiers the evaluator dereferences off the parsed answer.
-        checked = set(re.findall(r'a\.get\(\s*[\'"]([a-z_]+)[\'"]', source))
-        checked |= set(re.findall(r'parsed\[-1\]\.get\(\s*[\'"]([a-z_]+)[\'"]', source))
+        evaluator = _load(f"fields_{family_id}", tasks_root / str(family["task_file"]))
+        source = Path(evaluator.__file__).read_text(encoding="utf-8")
+        checked = set(re.findall(r"\.get\(\s*['\"]([a-z_]+)['\"]", source))
+        # Envelope keys belong to the harness protocol, not the answer payload.
+        checked -= {"answer", "response", "trajectory", "task"}
+        spec = adapter_module._fields_for({"task_family": family_id})
         if not checked:
             continue
-        line = next((ln for ln in adapter.splitlines()
-                     if f'"{family_id}"' in ln), "")
-        assert any(field in adapter[adapter.index(line):adapter.index(line) + 900]
-                   for field in checked), \
-            f"{family_id} spec does not name any evaluated field {sorted(checked)}"
+        missing = sorted(field for field in checked if field not in spec)
+        assert not missing, (
+            f"{family_id} spec omits fields its evaluator reads: {missing}. "
+            f"spec={spec!r}")

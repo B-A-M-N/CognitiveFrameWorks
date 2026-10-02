@@ -55,7 +55,11 @@ def _fields_for(task):
                                   'destructive_repeats, action '
                                   '(must be "report_unavailable" or "single_retry")'),
         "multi_agent_delegation": "owner, delegate, evidence, handoff_completed",
-        "statework_transition": "status, reason, transition, evidence_refs",
+        # evaluator requires from == "A", to == "B", expected_revision == 7,
+        # and stale_conflict_handled === true
+        "statework_transition": ('from (must be "A"), to (must be "B"), '
+                                 'expected_revision (must be 7), '
+                                 'stale_conflict_handled (must be true)'),
         # evaluator requires recovered_operation == "notify", repeat_side_effects == 0,
         # and pending === true
         "long_running_recovery": ('recovered_operation (must be "notify"), '
