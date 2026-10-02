@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -120,3 +121,44 @@ def test_agent_adapter_satisfies_the_benchmark_line_protocol():
     assert default.get("answer") == "", "answer defaults to empty, never a fake success"
     # The answer is serialized to a string, not left as a nested object.
     assert "isinstance(answer, str) else json.dumps(answer)" in source
+
+
+def test_every_task_family_has_a_field_map_entry():
+    """A family with no adapter field map silently scores zero.
+
+    The benchmark contract declares the families; the adapter must name a field
+    spec for each so no trial is scored against an unnamed schema.
+    """
+    cohort = _load("cohort_adapter", ROOT / "scripts" / "cohort" / "agent_codex.py")
+    contract = json.loads(
+        (ROOT / "contracts" / "real-agent-benchmark-v1.json").read_text(encoding="utf-8"))
+    families = [str(f["id"]) for f in contract["task_families"]]
+    for family in families:
+        spec = cohort._fields_for({"task_family": family})
+        assert spec and spec != cohort.COMMON_FIELDS, f"{family} has no field spec"
+
+
+def test_field_specs_name_the_fields_evaluators_actually_read():
+    """Each spec must mention at least one identifier its evaluator checks.
+
+    The evaluators are the scoring authority; a spec that shares no field name
+    with its evaluator means correct work cannot score.
+    """
+    adapter = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
+    tasks_root = ROOT / "scripts" / "real-agent-benchmark-tasks"
+    contract = json.loads(
+        (ROOT / "contracts" / "real-agent-benchmark-v1.json").read_text(encoding="utf-8"))
+    for family in contract["task_families"]:
+        family_id = str(family["id"])
+        module = _load(f"fields_{family_id}", tasks_root / str(family["task_file"]))
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        # Identifiers the evaluator dereferences off the parsed answer.
+        checked = set(re.findall(r'a\.get\(\s*[\'"]([a-z_]+)[\'"]', source))
+        checked |= set(re.findall(r'parsed\[-1\]\.get\(\s*[\'"]([a-z_]+)[\'"]', source))
+        if not checked:
+            continue
+        line = next((ln for ln in adapter.splitlines()
+                     if f'"{family_id}"' in ln), "")
+        assert any(field in adapter[adapter.index(line):adapter.index(line) + 900]
+                   for field in checked), \
+            f"{family_id} spec does not name any evaluated field {sorted(checked)}"
