@@ -336,6 +336,12 @@ explicit close or eviction, and rejects a handle if its owner identity changes.
 DigitalPsychology adapter rebinding compares stable CFW authority identity
 instead of relying on Python object identity.
 
+The DP projection is replaceable semantic guidance. CFW does not place DP
+directive IDs, causes, or lease bookkeeping in model context. When DP is
+unavailable, DP-owned local overlays expire at host action boundaries and CFW
+continues enforcing its own component and action contracts. CFW remains usable
+without DP, and its optional CSW provider remains absent in standalone mode.
+
 Validated long-run findings can later become one of two things:
 
 ### Structural behavioral guards

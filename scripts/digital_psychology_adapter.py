@@ -117,6 +117,20 @@ class CFWBehaviorAdapter:
             })
         return tuple(result)
 
+    def expire_local_behavior_leases(self, action_index: int) -> bool:
+        """Drop DP overlays locally when the DP control process is unavailable."""
+        if type(action_index) is not int or action_index < 0:
+            raise ValueError("local CFW lease expiry requires a non-negative action index")
+        self._current_action_index = max(self._current_action_index, action_index)
+        expired = any(self._current_action_index > int(
+            item["expires_after_action_index"]) for item in self._controls.values())
+        if not expired:
+            return False
+        self._session.restore_external_behavior_startup()
+        self._controls.clear()
+        self._behavior_state = None
+        return True
+
     def prepare_behavior_directives(
             self, directives: Sequence[Mapping[str, Any]]) -> PreparedBehaviorDirectiveBatch:
         if len(directives) > 32:
@@ -189,19 +203,9 @@ class CFWBehaviorAdapter:
                                 active_statework_ids: Sequence[str] = ()) -> str:
         if not isinstance(context, str) or len(context) > 16_384:
             raise ValueError("DP behavior projection must be bounded text")
-        control_lines = [
-            "===== APPLIED DIGITAL PSYCHOLOGY CONTROLS =====",
-            "The CFW lifecycle activates the selected components; local hard guards and WARD remain authoritative.",
-        ]
-        for directive in sorted(self._controls.values(),
-                                key=lambda item: (item["target"], item["directive_id"])):
-            control_lines.append(
-                f"- {directive['operation']} {directive['target']}={directive['value']} "
-                f"(cause: {directive['cause']}; expires after action "
-                f"{directive['expires_after_action_index']})")
         return context_for(
             self._session,
-            behavior_context="\n".join(control_lines) + "\n" + context,
+            behavior_context=self._replace_guidance_slot(context),
             active_statework_ids=active_statework_ids)
 
     def before_model_call(self, context: str, *, tool_capable: bool = False,
@@ -222,17 +226,28 @@ class CFWBehaviorAdapter:
     def _behavior_context(self, context: str) -> str:
         if not isinstance(context, str) or len(context) > 16_384:
             raise ValueError("DP behavior projection must be bounded text")
-        control_lines = [
-            "===== APPLIED DIGITAL PSYCHOLOGY CONTROLS =====",
-            "These controls shape component guidance; CFW guards and WARD remain authoritative.",
-        ]
-        for directive in sorted(self._controls.values(),
-                                key=lambda item: (item["target"], item["directive_id"])):
-            control_lines.append(
-                f"- {directive['operation']} {directive['target']}={directive['value']} "
-                f"(cause: {directive['cause']}; expires after action "
-                f"{directive['expires_after_action_index']})")
-        return "\n".join(control_lines) + "\n" + context
+        return self._replace_guidance_slot(context)
+
+    @staticmethod
+    def _replace_guidance_slot(context: str) -> str:
+        opening = "===== CURRENT BEHAVIOR GUIDANCE ====="
+        closing = "===== END CURRENT BEHAVIOR GUIDANCE ====="
+        starts = []
+        cursor = 0
+        while (index := context.find(opening, cursor)) >= 0:
+            starts.append(index)
+            cursor = index + len(opening)
+        if not starts:
+            return context
+        first, last = starts[0], starts[-1]
+        last_end = context.find(closing, last)
+        if last_end < 0:
+            raise ValueError("DP model guidance slot is missing its closing marker")
+        if len(starts) == 1:
+            return context
+        block = context[last:last_end + len(closing)]
+        suffix = context[last_end + len(closing):]
+        return (context[:first].rstrip() + "\n\n" + block + suffix).strip()
 
     @staticmethod
     def _validate_directive_state(directives: Sequence[Mapping[str, Any]],
