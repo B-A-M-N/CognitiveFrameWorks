@@ -6,6 +6,7 @@ CFW's explicit runtime and component-overlay APIs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 from typing import Any, Mapping, Sequence
@@ -61,6 +62,41 @@ class CFWBehaviorAdapter:
     def available_component_ids(self) -> tuple[str, ...]:
         return tuple(self._session.available_component_ids())
 
+    @property
+    def lifecycle_revision(self) -> int:
+        return self._session.external_behavior_revision
+
+    def authority_identity(self) -> Mapping[str, str]:
+        """Stable identity for a CFW execution and its immutable component set."""
+        execution = getattr(self._session, "execution_identity", None)
+        if execution is not None and callable(getattr(execution, "to_dict", None)):
+            identity = execution.to_dict()
+        else:
+            identity = {
+                "session_id": str(getattr(self._session, "session_id", "")),
+                "agent_instance_id": str(getattr(
+                    self._session, "agent_instance_id", "")),
+                "attempt_id": str(getattr(self._session, "attempt_id", "")),
+                "task_id": str(getattr(self._session.bundle, "task_id", "")),
+            }
+        identity = {key: value for key, value in identity.items() if value is not None}
+        if any(not isinstance(value, str) or not value for value in identity.values()):
+            raise ValueError("CFW execution identity is incomplete")
+        scope_hash = hashlib.sha256(json.dumps(
+            identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        components = tuple(sorted(self.available_component_ids()))
+        capability_hash = hashlib.sha256(json.dumps(
+            components, separators=(",", ":")).encode()).hexdigest()
+        return {"adapter_kind": "cfw-component-runtime",
+                "authority_id": "cfw-execution:" + scope_hash,
+                "protocol_version": "1.0.0", "scope": scope_hash,
+                "scope_hash": scope_hash, "capability_hash": capability_hash}
+
+    @property
+    def applied_behavior_state(self) -> Mapping[str, Any] | None:
+        state = self._session.external_behavior_state
+        return dict(state) if state else None
+
     def collect_behavior_signals(self, observation: Any) -> tuple[dict[str, Any], ...]:
         self._current_action_index = int(observation.action_index)
         self._controls = {
@@ -79,15 +115,6 @@ class CFWBehaviorAdapter:
                 "evidence_refs": list(envelope.get("evidence_refs") or ()),
             })
         return tuple(result)
-
-    def available_statework_ids(self) -> tuple[str, ...]:
-        values = tuple(sorted(str(item.get("id") or "")
-                              for item in self._session.bundle.stateworks))
-        if len(values) > 32 or any(not item or len(item) > 128 for item in values):
-            raise ValueError("CFW bundle StateWork IDs exceed the component-port contract")
-        if len(values) != len(set(values)):
-            raise ValueError("CFW bundle has duplicate StateWork IDs")
-        return values
 
     def prepare_behavior_directives(
             self, directives: Sequence[Mapping[str, Any]]) -> PreparedBehaviorDirectiveBatch:
@@ -145,6 +172,17 @@ class CFWBehaviorAdapter:
             self._behavior_state = dict(prepared.prior_behavior_state)
         self._controls = {key: dict(value)
                           for key, value in prepared.prior_controls.items()}
+
+    def restore_behavior_state(self, behavior_state: Mapping[str, Any], *,
+                               expected_current_revision: int) -> None:
+        """Restore DP's last committed projection after host restart recovery."""
+        self._session.rollback_external_behavior_state(
+            behavior_state,
+            expected_current_revision=expected_current_revision,
+        )
+        self._controls = {}
+        self._behavior_state = json.loads(
+            json.dumps(dict(behavior_state), sort_keys=True))
 
     def render_behavior_context(self, context: str, *,
                                 active_statework_ids: Sequence[str] = ()) -> str:

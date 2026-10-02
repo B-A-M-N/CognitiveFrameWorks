@@ -56,8 +56,8 @@ The example resolves an `implement` task, shows the host action gate decision, a
 
 - **CFW alone:** required for the example above. No CSW or DP installation is loaded.
 - **CFW + CSW:** point `--statework-root` at a CognitiveStateWorks checkout. CSW owns workflow selection, state, evidence, and legal transitions; CFW supplies compatible component context and action gates.
-- **CFW + CSW + DP:** CFW and CSW keep those same authorities; DP uses their declared ports to coordinate bounded behavioral interventions and measures outcomes using host evidence.
-- **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, `RuntimeTaskHandle.digital_psychology_adapter()` exposes bounded CFW signals, reversible directives, and context projection to DP's runtime host. CFW still enforces permissions and mandatory stages.
+- **CFW + CSW + DP:** CFW and CSW keep those same authorities; the trusted DP host uses their declared ports to coordinate bounded behavioral interventions and measures outcomes using host evidence.
+- **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, the trusted host passes `RuntimeTaskHandle.digital_psychology_adapter()` to DP's `HostControlBridge`; the host launches DP's private MCP process and applies its prepared directives through CFW's lifecycle overlay. The bridge is not part of `AgentSessionHandle`, and CFW keeps its hard permission gates active.
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
@@ -65,6 +65,8 @@ The sibling projects are optional integrations, not CFW dependencies. See the si
 | --- | --- | --- |
 | **CFW alone** | Components, task policy, evidence handling, and action gates | None |
 | **CSW alone** | Not loaded | CSW runs through its standalone host interface |
+| **CFW + DP** | Supplies signals and validates/applies component directives | DP decision service is an optional private host process |
+| **CSW + DP** | Not loaded | CSW remains the authority for eligible StateWork selection and legal transitions |
 | **CFW + CSW** | Task-local components and action enforcement | CSW independently owns workflow state, evidence, and legal transitions |
 | **CFW + CSW + DP** | Supplies bounded signals and validates/applies component directives | DP coordinates adaptation; CSW continues to authorize workflow operations |
 
