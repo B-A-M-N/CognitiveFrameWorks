@@ -30,6 +30,14 @@ benchmark = _util.module_from_spec(_spec)
 sys.modules[_spec.name] = benchmark
 _spec.loader.exec_module(benchmark)
 
+# Load the sibling preflight module by path; this file is itself loaded by
+# path in tests, so a plain sibling import is not reliable here.
+_preflight_spec = _util.spec_from_file_location(
+    "cohort_preflight", Path(__file__).resolve().parent / "preflight.py")
+cohort_preflight = _util.module_from_spec(_preflight_spec)
+sys.modules[_preflight_spec.name] = cohort_preflight
+_preflight_spec.loader.exec_module(cohort_preflight)
+
 # Ordered weakest-to-strongest composition. Each entry names the subsystems the
 # host actually wires for that cell.
 CONFIGURATIONS = (
@@ -97,6 +105,8 @@ def main() -> int:
     parser.add_argument("--trials-per-cell", type=int, default=3)
     parser.add_argument("--holdout-fraction", type=float, default=0.34)
     parser.add_argument("--report-out", type=Path)
+    parser.add_argument("--skip-canaries", action="store_true",
+                        help="bypass harness preflight; for debugging only")
     parser.add_argument("--label-out", type=Path,
                         help="write the blinded cohort labels for host-side assignment")
     args = parser.parse_args()
@@ -110,6 +120,14 @@ def main() -> int:
     unknown = [c for c in wanted if c not in dict(CONFIGURATIONS)]
     if unknown:
         raise SystemExit(f"unknown configuration(s): {unknown}")
+
+    # Prove the harness before spending inference on the matrix. Three full
+    # runs were previously discarded after the fact because the adapter scored
+    # correct work as zero; canaries make that fail here instead.
+    if not args.skip_canaries:
+        canaries = cohort_preflight.run_canaries(
+            agent_command=command, families=contract["task_families"])
+        print(json.dumps({"canaries": canaries}, indent=2), flush=True)
 
     cohorts: dict[str, dict] = {}
     labels = []
@@ -131,6 +149,7 @@ def main() -> int:
             finally:
                 os.environ.clear(); os.environ.update(saved)
         cohorts[configuration] = {
+            "_raw_results": report["results"],
             "blinded_label": label,
             "subsystems": list(subsystems),
             "per_family": _aggregate(report["results"]),
@@ -140,6 +159,14 @@ def main() -> int:
         }
         labels.append({"blinded_label": label, "configuration": configuration,
                        "subsystems": list(subsystems)})
+
+    # Post-matrix tripwires: infrastructure failures abort rather than report.
+    raw_results: list[dict] = []
+    for configuration in wanted:
+        raw_results.extend(cohorts[configuration].get("_raw_results", []))
+    if raw_results:
+        cohort_preflight.check_hard_zero(raw_results)
+        cohort_preflight.check_full_budget_burn(raw_results)
 
     out = {
         "cohort_id": "real-agent-behavioral-cohort-v1",
@@ -153,6 +180,8 @@ def main() -> int:
         ],
         "cohorts": cohorts,
     }
+    for entry in out["cohorts"].values():
+        entry.pop("_raw_results", None)
     text = json.dumps(out, indent=2, sort_keys=True)
     if args.report_out:
         args.report_out.parent.mkdir(parents=True, exist_ok=True)
