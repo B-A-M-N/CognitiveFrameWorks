@@ -78,18 +78,16 @@ def test_action_preference_orders_but_does_not_authorize():
 
     combined = runtime.start(bundle, telemetry_disabled=True)
     combined.enable_external_behavior_authority()
-    combined.apply_external_behavior_state({
-        "revision": 1, "cognitive_mode": "DELIVER",
+    combined.apply_external_behavior_projection({
+        "protocol_version": "2.0.0", "behavior_revision": 1,
+        "host_action_index": 0, "cognitive_mode": "DELIVER",
         "framework_modes": {"owl": "normal", "anchor": "passive",
                              "fuse": "normal", "ward": "mandatory",
                              "flow": "off", "sispis": "normal", "dox": "off"},
-        "active_stateworks": [], "focus_criteria": [],
-        "attention_lease": None, "attention_last_seen": {},
-        "mode_lease": None,
-        "verification_intensity": "normal", "exploration_budget": "normal",
-        "retry_policy": "normal", "recovery_level": 0,
-        "context_strategy": "standard", "response_strategy": "direct",
-        "active_interventions": [], "intervention_history": [],
+        "focus_criteria": [], "verification_intensity": "normal",
+        "exploration_budget": "normal", "retry_policy": "normal",
+        "recovery_level": 0, "context_strategy": "standard",
+        "response_strategy": "direct", "target_leases": [],
     })
     assert combined._action_strategy()["priorities"] == {}
 

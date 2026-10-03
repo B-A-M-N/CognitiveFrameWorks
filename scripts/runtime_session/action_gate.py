@@ -28,7 +28,7 @@ class ActionGateMethods:
         preferences: list[str] = []
         constrained = (self.lifecycle is not None
                        and self.lifecycle.component_mode("fuse") == "constrained")
-        effective_state = self.effective_external_behavior_state()
+        effective_state = self.effective_external_behavior_projection()
         focus = set(effective_state.get("focus_criteria") or ())
         if constrained:
             objective_routes = []

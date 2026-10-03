@@ -47,6 +47,7 @@ COMPONENT_HARD_FLOOR_MODES = {
 COMPONENT_MODES = frozenset(mode for modes in COMPONENT_ALLOWED_MODES.values()
                             for mode in modes)
 _DP_SCOPE = re.compile(r"^dp-runtime-[0-9a-f]{64}$")
+MAX_EXTERNAL_TARGET_LEASES = 16 * 12
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,7 @@ class ComponentControl:
 class AppliedControlLease:
     """Target-scoped DP control layer owned by the CFW runtime overlay."""
 
-    directive_id: str
+    lease_id: str
     intervention_id: str
     target: str
     applied_value: str
@@ -95,7 +96,7 @@ class AppliedControlLease:
     behavior_revision: int
 
     def __post_init__(self) -> None:
-        for name in ("directive_id", "intervention_id", "target",
+        for name in ("lease_id", "intervention_id", "target",
                      "applied_value", "previous_value"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value or len(value) > 2048:
@@ -119,6 +120,8 @@ class AppliedControlLease:
                          or self.previous_value != COMPONENT_HARD_FLOOR_MODES[component_id])):
                 raise PermissionError("applied behavior lease cannot lower a hard floor")
         else:
+            if not self.target.startswith("control:"):
+                raise ValueError("applied behavior lease target is not canonical")
             target = self.target.removeprefix("control:")
             choices = {
                 "verification_intensity": {"passive", "normal", "high", "strict"},
@@ -151,6 +154,145 @@ class AppliedControlLease:
 
 
 @dataclass(frozen=True)
+class ExternalBehaviorProjection:
+    """Narrow DP actuation state accepted by the CFW runtime boundary."""
+
+    protocol_version: str
+    behavior_revision: int
+    host_action_index: int
+    cognitive_mode: str
+    framework_modes: Mapping[str, str]
+    focus_criteria: tuple[str, ...]
+    verification_intensity: str
+    exploration_budget: str
+    retry_policy: str
+    recovery_level: int
+    context_strategy: str
+    response_strategy: str
+    target_leases: tuple[AppliedControlLease, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.protocol_version != "2.0.0":
+            raise ValueError("unsupported CFW behavior projection version")
+        if type(self.behavior_revision) is not int or self.behavior_revision < 0:
+            raise ValueError("external behavior revision is invalid")
+        if type(self.host_action_index) is not int or self.host_action_index < 0:
+            raise ValueError("external behavior action index is invalid")
+        if self.cognitive_mode not in {
+                "RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
+                "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}:
+            raise ValueError("external cognitive mode is unsupported")
+        if not isinstance(self.framework_modes, Mapping):
+            raise ValueError("external framework modes are malformed")
+        modes = {str(key).lower(): value for key, value in self.framework_modes.items()}
+        if set(modes) != COMPONENT_IDS:
+            raise ValueError("external projection must declare every CFW component mode")
+        for component_id, mode in modes.items():
+            if mode not in COMPONENT_ALLOWED_MODES[component_id]:
+                raise ValueError(f"external mode for {component_id!r} is unsupported")
+        if any(modes.get(key) != mode
+               for key, mode in COMPONENT_HARD_FLOOR_MODES.items()):
+            raise PermissionError("external projection lowers a CFW hard floor")
+        focus = tuple(self.focus_criteria)
+        if (len(focus) > 8 or len(focus) != len(set(focus))
+                or any(not isinstance(item, str) or not item or len(item) > 128
+                       for item in focus)):
+            raise ValueError("external focus criteria are malformed")
+        choices = {
+            "verification_intensity": {"passive", "normal", "high", "strict"},
+            "exploration_budget": {"disabled", "low", "normal", "bounded"},
+            "retry_policy": {"normal", "materially_different_only", "no_retry"},
+            "context_strategy": {"standard", "compact", "criterion_focused"},
+            "response_strategy": {"direct", "detailed", "structured"},
+        }
+        for name, allowed in choices.items():
+            value = getattr(self, name)
+            if value not in allowed:
+                raise ValueError(f"external {name} is unsupported")
+        if type(self.recovery_level) is not int or not 0 <= self.recovery_level <= 3:
+            raise ValueError("external recovery level is unsupported")
+        leases = tuple(self.target_leases)
+        if (len(leases) > MAX_EXTERNAL_TARGET_LEASES
+                or any(not isinstance(item, AppliedControlLease) for item in leases)
+                or len({item.lease_id for item in leases}) != len(leases)):
+            raise ValueError("external target leases are malformed or exceed their bound")
+        if any(item.behavior_revision > self.behavior_revision for item in leases):
+            raise ValueError("external target lease comes from a future behavior revision")
+        object.__setattr__(self, "framework_modes", MappingProxyType(modes))
+        object.__setattr__(self, "focus_criteria", focus)
+        object.__setattr__(self, "target_leases", leases)
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ExternalBehaviorProjection":
+        expected = {
+            "protocol_version", "behavior_revision", "host_action_index",
+            "cognitive_mode", "framework_modes", "focus_criteria",
+            "verification_intensity", "exploration_budget", "retry_policy",
+            "recovery_level", "context_strategy", "response_strategy",
+            "target_leases",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("CFW behavior projection does not match the v2 contract")
+        raw_leases = value["target_leases"]
+        if not isinstance(raw_leases, (tuple, list)) or len(raw_leases) > MAX_EXTERNAL_TARGET_LEASES:
+            raise ValueError("CFW target lease collection exceeds its bound")
+        lease_fields = {"lease_id", "intervention_id", "target", "previous_value",
+                        "applied_value", "expires_at_action", "source_revision"}
+        if any(not isinstance(item, Mapping) or set(item) != lease_fields
+               for item in raw_leases):
+            raise ValueError("CFW target lease does not match the v2 contract")
+        leases = tuple(AppliedControlLease(
+            lease_id=str(item["lease_id"]),
+            intervention_id=str(item["intervention_id"]),
+            target=str(item["target"]),
+            applied_value=str(item["applied_value"]),
+            previous_value=str(item["previous_value"]),
+            expires_at_action=item["expires_at_action"],
+            behavior_revision=item["source_revision"],
+        ) for item in raw_leases)
+        return cls(
+            protocol_version=value["protocol_version"],
+            behavior_revision=value["behavior_revision"],
+            host_action_index=value["host_action_index"],
+            cognitive_mode=value["cognitive_mode"],
+            framework_modes=value["framework_modes"],
+            focus_criteria=tuple(value["focus_criteria"]),
+            verification_intensity=value["verification_intensity"],
+            exploration_budget=value["exploration_budget"],
+            retry_policy=value["retry_policy"],
+            recovery_level=value["recovery_level"],
+            context_strategy=value["context_strategy"],
+            response_strategy=value["response_strategy"],
+            target_leases=leases,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol_version": self.protocol_version,
+            "behavior_revision": self.behavior_revision,
+            "host_action_index": self.host_action_index,
+            "cognitive_mode": self.cognitive_mode,
+            "framework_modes": dict(self.framework_modes),
+            "focus_criteria": list(self.focus_criteria),
+            "verification_intensity": self.verification_intensity,
+            "exploration_budget": self.exploration_budget,
+            "retry_policy": self.retry_policy,
+            "recovery_level": self.recovery_level,
+            "context_strategy": self.context_strategy,
+            "response_strategy": self.response_strategy,
+            "target_leases": [{
+                "lease_id": item.lease_id,
+                "intervention_id": item.intervention_id,
+                "target": item.target,
+                "previous_value": item.previous_value,
+                "applied_value": item.applied_value,
+                "expires_at_action": item.expires_at_action,
+                "source_revision": item.behavior_revision,
+            } for item in self.target_leases],
+        }
+
+
+@dataclass(frozen=True)
 class ComponentOverlay:
     behavior_revision: int
     behavior_mode: str
@@ -167,7 +309,7 @@ class ComponentOverlay:
         if not isinstance(self.controls, tuple) or len(self.controls) > len(COMPONENT_IDS):
             raise ValueError("component overlay exceeds the supported component bound")
         if (not isinstance(self.target_leases, tuple)
-                or len(self.target_leases) > 16 * 12
+                or len(self.target_leases) > MAX_EXTERNAL_TARGET_LEASES
                 or any(not isinstance(item, AppliedControlLease)
                        for item in self.target_leases)):
             raise ValueError("component overlay target leases exceed their bound")
@@ -185,7 +327,26 @@ class ComponentOverlay:
                     f"component overlay cannot lower the {component_id.upper()} hard floor")
 
     @classmethod
-    def from_behavior_state(cls, value: Mapping[str, Any]) -> "ComponentOverlay":
+    def from_projection(cls, value: Mapping[str, Any] | ExternalBehaviorProjection
+                        ) -> "ComponentOverlay":
+        projection = (value if isinstance(value, ExternalBehaviorProjection)
+                      else ExternalBehaviorProjection.from_mapping(value))
+        controls = tuple(ComponentControl(
+            component_id=component_id,
+            mode=projection.framework_modes[component_id],
+            scope=None,
+            expires_at_action=None,
+            source_revision=projection.behavior_revision,
+        ) for component_id in sorted(COMPONENT_IDS))
+        return cls(
+            behavior_revision=projection.behavior_revision,
+            behavior_mode=projection.cognitive_mode,
+            controls=controls,
+            target_leases=projection.target_leases,
+        )
+
+    @classmethod
+    def from_legacy_behavior_state(cls, value: Mapping[str, Any]) -> "ComponentOverlay":
         if not isinstance(value, Mapping):
             raise TypeError("DP behavior state must be a mapping")
         revision = value.get("revision")
@@ -216,8 +377,13 @@ class ComponentOverlay:
                     or not isinstance(intervention_id, str) or not intervention_id
                     or type(behavior_revision) is not int or behavior_revision < 0):
                 raise ValueError("DP intervention target lease metadata is malformed")
-            # The stored index is the last action covered by this lease.
-            expiry = baseline + duration - 1
+            # Compatibility for old persisted whole-state sessions. Current
+            # projection v2 always carries the already-computed absolute value.
+            expiry = intervention.get("expires_at_action")
+            if expiry is None:
+                expiry = baseline + duration - 1
+            if type(expiry) is not int or expiry < 0:
+                raise ValueError("legacy DP absolute intervention expiry is malformed")
             for target in intervention.get("targets", ()):
                 if not isinstance(target, Mapping):
                     continue
@@ -227,10 +393,10 @@ class ComponentOverlay:
                 if (not isinstance(name, str) or not name
                         or not isinstance(previous, str) or not isinstance(applied, str)):
                     raise ValueError("DP intervention target lease is malformed")
-                directive_id = "lease-" + hashlib.sha256(
+                lease_id = "lease-" + hashlib.sha256(
                     f"{intervention_id}\0{name}".encode()).hexdigest()[:32]
                 target_leases.append(AppliedControlLease(
-                    directive_id=directive_id,
+                    lease_id=lease_id,
                     intervention_id=intervention_id,
                     target=name,
                     applied_value=applied,
@@ -262,7 +428,7 @@ class ComponentOverlay:
                 "source_revision": item.source_revision,
             } for item in self.controls],
             "target_leases": [{
-                "directive_id": item.directive_id,
+                "lease_id": item.lease_id,
                 "intervention_id": item.intervention_id,
                 "target": item.target,
                 "applied_value": item.applied_value,
@@ -282,9 +448,9 @@ class ComponentOverlay:
         active = [item for item in leases if action_index <= item.expires_at_action]
         if active:
             return max(active, key=lambda item: (
-                item.behavior_revision, item.directive_id)).applied_value
+                item.behavior_revision, item.lease_id)).applied_value
         return min(leases, key=lambda item: (
-            item.behavior_revision, item.directive_id)).previous_value
+            item.behavior_revision, item.lease_id)).previous_value
 
     def has_expired_target_leases(self, action_index: int) -> bool:
         return any(action_index > item.expires_at_action
@@ -320,6 +486,6 @@ class PreparedComponentOverlay:
 __all__ = ["COMPONENT_IDS", "COMPONENT_MODES", "COMPONENT_ALLOWED_MODES",
            "COMPONENT_BASELINE_MODES",
            "COMPONENT_DYNAMIC_CONTROL", "COMPONENT_HARD_FLOOR_MODES",
-           "COMPONENT_MODEL_VISIBILITY",
+           "COMPONENT_MODEL_VISIBILITY", "MAX_EXTERNAL_TARGET_LEASES",
            "AppliedControlLease", "ComponentControl", "ComponentOverlay",
-           "PreparedComponentOverlay"]
+           "ExternalBehaviorProjection", "PreparedComponentOverlay"]

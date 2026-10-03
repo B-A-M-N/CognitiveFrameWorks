@@ -41,7 +41,7 @@ class StandaloneBehaviorMethods:
     def _evaluate_metacognition(self, *,
                                  semantic: Optional[SemanticSignals] = None) -> MetaDecision:
         if self.external_behavior_authority:
-            state = self.effective_external_behavior_state()
+            state = self.effective_external_behavior_projection()
             return MetaDecision(
                 str(state.get("cognitive_mode") or "DELIVER"),
                 "behavior policy is owned by DigitalPsychology")

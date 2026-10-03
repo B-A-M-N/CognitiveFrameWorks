@@ -19,6 +19,22 @@ def _load_resolver():
     return module
 
 
+def _projection(revision, *, cognitive_mode="DELIVER", flow_mode="off",
+                owl_mode="normal", fuse_mode="normal", focus=(), leases=(),
+                action_index=0):
+    return {
+        "protocol_version": "2.0.0", "behavior_revision": revision,
+        "host_action_index": action_index, "cognitive_mode": cognitive_mode,
+        "framework_modes": {"owl": owl_mode, "anchor": "passive",
+                             "fuse": fuse_mode, "ward": "mandatory",
+                             "flow": flow_mode, "sispis": "normal", "dox": "off"},
+        "focus_criteria": list(focus), "verification_intensity": "normal",
+        "exploration_budget": "normal", "retry_policy": "normal",
+        "recovery_level": 0, "context_strategy": "standard",
+        "response_strategy": "direct", "target_leases": list(leases),
+    }
+
+
 def test_task_handle_exposes_explicit_reversible_dp_component_port():
     resolve = _load_resolver()
     from cognitive_runtime import CognitiveRuntime
@@ -40,6 +56,7 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
         "target": "owl", "value": "off", "cause": "equivalent_retry",
         "expected_effect": "Suppress the stale reasoning component for one bounded attempt.",
         "scope": "dp-runtime-" + "a" * 64, "expires_after_actions": 3,
+        "expires_at_action": 3,
         "intervention_id": "intv-dp-test",
     }
     fuse_directive = {
@@ -49,24 +66,21 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
         "value": "constrained",
     }
     prepared = adapter.prepare_behavior_directives((directive, fuse_directive))
-    behavior_state = {
-        "revision": 1,
-        "cognitive_mode": "RECOVER",
-        "framework_modes": {"owl": "off", "anchor": "passive", "fuse": "constrained",
-                             "ward": "mandatory", "flow": "off", "sispis": "normal",
-                             "dox": "off"},
-        "active_stateworks": [], "focus_criteria": [],
-        "attention_lease": None, "attention_last_seen": {},
-        "mode_lease": None,
-        "verification_intensity": "normal", "exploration_budget": "normal",
-        "retry_policy": "normal", "recovery_level": 0,
-        "context_strategy": "standard", "response_strategy": "direct",
-        "active_interventions": [], "intervention_history": [],
-    }
+    behavior_projection = _projection(
+        1, cognitive_mode="RECOVER", owl_mode="off", fuse_mode="constrained",
+        leases=({"lease_id": "lease-owl", "intervention_id": "intv-dp-test",
+                 "target": "framework:owl", "previous_value": "normal",
+                 "applied_value": "off", "expires_at_action": 3,
+                 "source_revision": 1},
+                {"lease_id": "lease-fuse", "intervention_id": "intv-dp-test",
+                 "target": "framework:fuse", "previous_value": "normal",
+                 "applied_value": "constrained", "expires_at_action": 3,
+                 "source_revision": 1}))
 
-    assert adapter.apply_behavior_directives(prepared, behavior_state) == (
+    assert adapter.apply_behavior_projection(prepared, behavior_projection) == (
         "dir-dp-test", "dir-dp-fuse-test")
-    assert adapter._session.external_behavior_state["framework_modes"]["fuse"] == "constrained"
+    assert adapter._session.external_behavior_projection[
+        "framework_modes"]["fuse"] == "constrained"
     context = adapter.before_model_call("DP behavior projection", tool_capable=True)
     # Directive receipts and control-plane operation details stay host-only.
     assert "APPLIED DIGITAL PSYCHOLOGY CONTROLS" not in context
@@ -92,18 +106,15 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
     assert authorized["action_digest"] == preflight["action_digest"]
     assert authorized["action_request_id"].startswith("action-request-")
 
-    malformed = dict(behavior_state)
-    malformed["revision"] = 2
-    malformed["focus_criteria"] = ["one", "two", "three", "four"]
-    malformed["attention_lease"] = {
-        "lease_id": "attn-test", "criterion_ids": malformed["focus_criteria"],
-        "issued_revision": 2, "goal_set_revision": 1, "start_action": 1,
-        "max_actions": 3, "reason": "test",
-    }
+    malformed = _projection(2, focus=("one",), leases=(
+        {"lease_id": "lease-malformed", "intervention_id": "intv-dp-test",
+         "target": "control:verification_intensity", "applied_value": "high",
+         "expires_at_action": 4, "source_revision": 2},))
     try:
-        adapter._session.apply_external_behavior_state(malformed)
+        adapter.apply_behavior_projection(
+            adapter.prepare_behavior_directives(()), malformed)
     except ValueError as exc:
-        assert "attention lease" in str(exc)
+        assert "target lease" in str(exc)
     else:
         raise AssertionError("CFW accepted an attention lease wider than three criteria")
 
@@ -127,30 +138,17 @@ def test_dp_component_overlay_changes_actual_flow_lifecycle_activation():
     assert "flow" in adapter.available_component_ids()
 
     def state(revision: int, flow_mode: str) -> dict[str, object]:
-        return {
-            "revision": revision,
-            "cognitive_mode": "DELIVER",
-            "framework_modes": {"owl": "normal", "anchor": "passive",
-                                 "fuse": "normal", "ward": "mandatory",
-                                 "flow": flow_mode, "sispis": "normal", "dox": "off"},
-            "active_stateworks": [], "focus_criteria": [],
-            "attention_lease": None, "attention_last_seen": {},
-        "mode_lease": None,
-            "verification_intensity": "normal", "exploration_budget": "normal",
-            "retry_policy": "normal", "recovery_level": 0,
-            "context_strategy": "standard", "response_strategy": "direct",
-            "active_interventions": [], "intervention_history": [],
-        }
+        return _projection(revision, flow_mode=flow_mode)
 
     runtime_session = adapter._session
-    runtime_session.apply_external_behavior_state(state(1, "off"))
+    runtime_session.apply_external_behavior_projection(state(1, "off"))
     runtime_session.on_artifact(flow_triggered=True)
     off_context = task.before_model_call()
     assert "flow" not in runtime_session.lifecycle.active
     assert runtime_session.lifecycle.counts.get("flow", 0) == 0
     assert "===== FLOW =====" not in off_context
 
-    runtime_session.apply_external_behavior_state(state(2, "elevated"))
+    runtime_session.apply_external_behavior_projection(state(2, "elevated"))
     runtime_session.on_artifact(flow_triggered=False)
     assert runtime_session.lifecycle.counts.get("flow", 0) == 1
     elevated_context = task.before_model_call()
@@ -158,12 +156,12 @@ def test_dp_component_overlay_changes_actual_flow_lifecycle_activation():
     assert "===== FLOW =====" not in elevated_context
     assert adapter._session.injected["flow"] not in elevated_context
 
-    runtime_session.rollback_external_behavior_state(
+    runtime_session.rollback_external_behavior_projection(
         state(1, "off"), expected_current_revision=2)
     assert runtime_session.lifecycle.component_mode("flow") == "off"
     assert "flow" not in runtime_session.lifecycle.active
 
-    runtime_session.synchronize_external_behavior_state(state(3, "elevated"))
+    runtime_session.synchronize_external_behavior_projection(state(3, "elevated"))
     runtime_session.on_artifact(flow_triggered=False)
     assert runtime_session.lifecycle.counts.get("flow", 0) == 1
     task.close()
@@ -181,33 +179,13 @@ def test_dp_temporary_component_control_expires_without_a_dp_tick():
     )
     adapter = task.digital_psychology_adapter()
     runtime_session = adapter._session
-    state = {
-        "revision": 1,
-        "cognitive_mode": "DELIVER",
-        "framework_modes": {"owl": "normal", "anchor": "passive",
-                             "fuse": "normal", "ward": "mandatory",
-                             "flow": "off", "sispis": "normal", "dox": "off"},
-        "active_stateworks": [], "focus_criteria": [],
-        "attention_lease": None, "attention_last_seen": {},
-        "mode_lease": None,
-        "verification_intensity": "normal", "exploration_budget": "normal",
-        "retry_policy": "normal", "recovery_level": 0,
-        "context_strategy": "standard", "response_strategy": "direct",
-        "active_interventions": [{
-            "intervention_id": "intv-flow-local-expiry", "cause": "goal_drift",
-            "expected_effect": "Temporarily suppress FLOW for one completed action.",
-            "start_revision": 1, "scope": "dp-runtime-" + "a" * 64,
-            "expires_after_actions": 1, "evaluation_horizon_actions": 1,
-            "actions_elapsed": 0,
-            "targets": [{"target": "framework:flow", "previous_value": "normal",
-                         "applied_value": "off"}],
-            "target_criteria": [], "baseline_criterion_status": {},
-            "baseline_action_index": 0, "concurrent_intervention_ids": [],
-        }],
-        "intervention_history": [],
-    }
+    state = _projection(1, leases=({
+        "lease_id": "lease-flow", "intervention_id": "intv-flow-local-expiry",
+        "target": "framework:flow", "previous_value": "normal",
+        "applied_value": "off", "expires_at_action": 0,
+        "source_revision": 1},))
 
-    runtime_session.apply_external_behavior_state(state)
+    runtime_session.apply_external_behavior_projection(state)
     runtime_session.on_artifact(flow_triggered=True)
     assert runtime_session.lifecycle.component_mode("flow") == "off"
     assert "flow" not in runtime_session.lifecycle.active
@@ -234,25 +212,12 @@ def test_dp_reset_mode_reexecutes_the_selected_component_stage():
     adapter = task.digital_psychology_adapter()
 
     def state(revision: int, owl_mode: str) -> dict[str, object]:
-        return {
-            "revision": revision,
-            "cognitive_mode": "RECOVER",
-            "framework_modes": {"owl": owl_mode, "anchor": "normal",
-                                 "fuse": "normal", "ward": "mandatory",
-                                 "flow": "off", "sispis": "normal", "dox": "off"},
-            "active_stateworks": [], "focus_criteria": [],
-            "attention_lease": None, "attention_last_seen": {},
-        "mode_lease": None,
-            "verification_intensity": "normal", "exploration_budget": "normal",
-            "retry_policy": "normal", "recovery_level": 0,
-            "context_strategy": "standard", "response_strategy": "direct",
-            "active_interventions": [], "intervention_history": [],
-        }
+        return _projection(revision, cognitive_mode="RECOVER", owl_mode=owl_mode)
 
     runtime_session = adapter._session
-    runtime_session.apply_external_behavior_state(state(1, "off"))
+    runtime_session.apply_external_behavior_projection(state(1, "off"))
     assert "owl" not in runtime_session.lifecycle.active
-    runtime_session.apply_external_behavior_state(state(2, "reset"))
+    runtime_session.apply_external_behavior_projection(state(2, "reset"))
     assert "owl" in runtime_session.lifecycle.active
     assert runtime_session.lifecycle.counts.get("owl") == 1
     task.close()

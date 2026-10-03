@@ -46,41 +46,10 @@ def _dp_behavior_state():
     """Import DP's real behavior module from the current checkout."""
     if str(DP) not in sys.path:
         sys.path.insert(0, str(DP))
-    from lib.behavior_state import (AttentionLease, BehaviorState, ModeLease)
-    return BehaviorState, AttentionLease, ModeLease
-
-
-def _external_host():
-    if str(ROOT / "scripts") not in sys.path:
-        sys.path.insert(0, str(ROOT / "scripts"))
-    from runtime_session.external_behavior import (ExternalBehaviorAuthority,
-                                                  ExternalBehaviorMethods)
-    from runtime_contract.component_control import COMPONENT_IDS
-
-    class _Host(ExternalBehaviorMethods):
-        """Exercises CFW's real external-behavior mixin with a bound authority."""
-
-        def __init__(self) -> None:
-            self.external_behavior_state = {}
-            self.lifecycle = None
-            self.behavior_authority = None
-            self.behavior_mode = None
-            self.system_one_sequence = []
-            self.route_decisions = []
-            self._pending_action_requests = []
-            self.attempt_descriptors = []
-            self.active_lifecycle = []
-            # Bind DP as the behavior authority exactly as the runtime does.
-            self.behavior_authority = ExternalBehaviorAuthority()
-
-        @property
-        def external_behavior_authority(self):
-            return self.behavior_authority
-
-        def available_component_ids(self):
-            return tuple(COMPONENT_IDS)
-
-    return _Host()
+    from lib.behavior_state import (BehaviorIntervention, BehaviorState,
+                                    InterventionTarget)
+    from lib.runtime.cfw_projection import build_cfw_behavior_projection
+    return BehaviorIntervention, BehaviorState, InterventionTarget, build_cfw_behavior_projection
 
 
 def _cfw_component_control():
@@ -118,57 +87,59 @@ def _real_session(tmp_path, monkeypatch):
     return session
 
 
-def test_current_dp_state_crosses_a_real_cfw_runtime_session(tmp_path, monkeypatch):
-    """End to end: DP's real serializer -> real CFW session -> real overlay.
-
-    Before the hotfix this raised
-    "DP behavior state does not match the versioned CFW port".
-    """
-    BehaviorState, AttentionLease, ModeLease = _dp_behavior_state()
+def test_current_dp_projection_crosses_a_real_cfw_runtime_session(tmp_path, monkeypatch):
+    """End to end: DP's projection v2 serializer -> CFW lifecycle overlay."""
+    BehaviorIntervention, BehaviorState, InterventionTarget, build_projection = (
+        _dp_behavior_state())
     session = _real_session(tmp_path, monkeypatch)
-
-    lease = AttentionLease(
-        lease_id="lease-live", criterion_ids=("criterion-a",),
-        issued_revision=0, goal_set_revision=1, start_action=0,
-        max_actions=4, reason="bounded focus",
-        material_progress_revisions={"criterion-a": 1},
-        continuous_attention_leases={"criterion-a": 1})
-    mode_lease = ModeLease(
-        mode="VERIFY", entered_action=0, minimum_actions=1, max_actions=4,
-        cause="verification requested", exit_condition="verification_result",
-        baseline_approach_epoch="epoch-1")
+    intervention = BehaviorIntervention(
+        intervention_id="intervention-mode", cause="verification requested",
+        expected_effect="Use verification mode for the bounded action window.",
+        start_revision=1, scope="wire-scope", expires_after_actions=2,
+        actions_elapsed=0,
+        targets=(InterventionTarget("mode", "DELIVER", "VERIFY"),),
+        baseline_action_index=1, expires_at_action=2)
     state = BehaviorState(
-        cognitive_mode="VERIFY", focus_criteria=("criterion-a",),
-        attention_lease=lease, mode_lease=mode_lease).to_dict()
+        revision=1, cognitive_mode="VERIFY", active_interventions=(intervention,))
+    projection = build_projection(state, host_action_index=2).to_dict()
 
-    session.apply_external_behavior_state(state)
+    session.apply_external_behavior_projection(projection)
 
-    effective = session.effective_external_behavior_state()
+    effective = session.effective_external_behavior_projection()
     assert effective["cognitive_mode"] == "VERIFY"
-    assert effective["focus_criteria"] == ["criterion-a"]
-    assert effective["mode_lease"]["cause"] == "verification requested"
+    assert effective["target_leases"][0]["intervention_id"] == "intervention-mode"
+    assert effective["protocol_version"] == "2.0.0"
 
 
 def test_current_dp_state_still_rejected_when_it_drifted(tmp_path, monkeypatch):
-    """The port must stay closed to states CFW cannot understand."""
-    BehaviorState, _, _ = _dp_behavior_state()
+    """The versioned projection port rejects fields from an unnegotiated schema."""
+    _, BehaviorState, _, build_projection = _dp_behavior_state()
     session = _real_session(tmp_path, monkeypatch)
 
-    drifted = BehaviorState().to_dict()
+    drifted = build_projection(BehaviorState(), host_action_index=0).to_dict()
     drifted["a_field_cfw_does_not_know"] = 1
-    with pytest.raises(ValueError, match="versioned CFW port"):
-        session.apply_external_behavior_state(drifted)
+    with pytest.raises(ValueError, match="projection does not match the v2 contract"):
+        session.apply_external_behavior_projection(drifted)
 
 
 def test_cfw_focus_criteria_lease_round_trips_through_a_real_session(
         tmp_path, monkeypatch):
     """P0-5 end to end: the focus lease path needs json to be importable."""
-    BehaviorState, _, _ = _dp_behavior_state()
+    BehaviorIntervention, BehaviorState, InterventionTarget, build_projection = (
+        _dp_behavior_state())
     session = _real_session(tmp_path, monkeypatch)
 
-    state = BehaviorState(focus_criteria=("criterion-a",)).to_dict()
-    session.apply_external_behavior_state(state)
-    assert session.effective_external_behavior_state()["focus_criteria"] == [
+    intervention = BehaviorIntervention(
+        intervention_id="intervention-focus", cause="focus update",
+        expected_effect="Use the selected focus criteria.", start_revision=1,
+        scope="wire-scope", expires_after_actions=2, actions_elapsed=0,
+        targets=(InterventionTarget("focus_criteria", "[]", '["criterion-a"]'),),
+        baseline_action_index=1, expires_at_action=2)
+    state = BehaviorState(revision=1, focus_criteria=("criterion-a",),
+                          active_interventions=(intervention,))
+    session.apply_external_behavior_projection(
+        build_projection(state, host_action_index=2).to_dict())
+    assert session.effective_external_behavior_projection()["focus_criteria"] == [
         "criterion-a"]
 
 
@@ -352,7 +323,7 @@ def test_projection_round_trips_and_rejects_an_unknown_version():
     from lib.runtime.cfw_projection import (CFWBehaviorProjection,
                                             build_cfw_behavior_projection)
 
-    projection = build_cfw_behavior_projection(BehaviorState())
+    projection = build_cfw_behavior_projection(BehaviorState(), host_action_index=0)
     assert CFWBehaviorProjection.from_dict(projection.to_dict()) == projection
 
     drifted = projection.to_dict()
@@ -365,29 +336,42 @@ def test_projection_rejects_a_lease_without_its_previous_value():
     """An unowned change is not a lease; refuse rather than invent a baseline."""
     if str(DP) not in sys.path:
         sys.path.insert(0, str(DP))
-    from lib.behavior_state import BehaviorState
-    from lib.runtime.cfw_projection import build_cfw_behavior_projection
+    from lib.behavior_state import (BehaviorIntervention, BehaviorState,
+                                    InterventionTarget)
+    from lib.runtime.cfw_projection import (CFWBehaviorProjection,
+                                            build_cfw_behavior_projection)
 
-    with pytest.raises(ValueError, match="previous value"):
-        build_cfw_behavior_projection(
-            BehaviorState(),
-            directives=({"directive_id": "d1", "operation": "set_mode",
-                         "target": "mode", "value": "VERIFY"},),
-            host_action_index=0)
+    intervention = BehaviorIntervention(
+        intervention_id="intervention-1", cause="verify", expected_effect="verify",
+        start_revision=1, scope="scope", expires_after_actions=3, actions_elapsed=0,
+        targets=(InterventionTarget("mode", "DELIVER", "VERIFY"),),
+        baseline_action_index=0, expires_at_action=3)
+    payload = build_cfw_behavior_projection(
+        BehaviorState(revision=1, cognitive_mode="VERIFY",
+                      active_interventions=(intervention,)),
+        host_action_index=0).to_dict()
+    payload["target_leases"][0]["previous_value"] = ""
+
+    with pytest.raises(ValueError, match="previous_value"):
+        CFWBehaviorProjection.from_dict(payload)
 
 
 def test_projection_lease_expiry_uses_the_shared_action_boundary():
     """P1-12: expiry is computed from one action boundary for all systems."""
     if str(DP) not in sys.path:
         sys.path.insert(0, str(DP))
-    from lib.behavior_state import BehaviorState
+    from lib.behavior_state import (BehaviorIntervention, BehaviorState,
+                                    InterventionTarget)
     from lib.runtime.cfw_projection import build_cfw_behavior_projection
 
+    intervention = BehaviorIntervention(
+        intervention_id="intervention-1", cause="verify", expected_effect="verify",
+        start_revision=3, scope="scope", expires_after_actions=3, actions_elapsed=0,
+        targets=(InterventionTarget("mode", "DELIVER", "VERIFY"),),
+        baseline_action_index=5, expires_at_action=8)
     projection = build_cfw_behavior_projection(
-        BehaviorState(),
-        directives=({"directive_id": "d1", "operation": "set_mode",
-                     "target": "mode", "previous_value": "DELIVER",
-                     "value": "VERIFY", "expires_after_actions": 3},),
+        BehaviorState(revision=3, cognitive_mode="VERIFY",
+                      active_interventions=(intervention,)),
         host_action_index=5)
     lease = projection.target_leases[0]
     # Baseline 5 + duration 3, stated once so CFW and CSW cannot disagree by one.

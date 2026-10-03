@@ -7,11 +7,7 @@ Covers the review's test list for the framework side:
   dox_closeout after flow/ward; flow after anchor_open
 - StateWork namespaced integration requirements merge into the kernel without
   changing canonical lifecycle order
-- missing required packet routes the producer first; packet_store presence
-  skips the producer; optional inputs never recurse
-- dependency cycles are detected (PacketDependencyCycle)
-- unknown required packet raises PacketDependencyError (never silently
-  skipped)
+- CSW owns missing-packet routing, dependency cycles, and unknown-packet rejection
 - guard pack schema-validated; semantic hash recomputed; fail-closed scope
 - resolve() is a pure library; snapshots write out-of-tree content-addressed
   and never overwrite
@@ -184,29 +180,6 @@ def main() -> int:
           "fuse" in quick_infra.kernel and "ward" in quick_infra.kernel,
           str(quick_infra.kernel))
 
-    # dependency cycle detection
-    fake_reg = {"packets": {"p_a": {"producer": "sw_b"}, "p_b": {"producer": "sw_c"}, "p_c": {"producer": "sw_a"}}}
-    fakes = [
-        {"id": "sw_a", "inputs": {"required": ["p_a"], "optional": []}},
-        {"id": "sw_b", "inputs": {"required": ["p_b"], "optional": []}},
-        {"id": "sw_c", "inputs": {"required": ["p_c"], "optional": []}},
-    ]
-    try:
-        resolve.plan_statework_chain(fakes[0], fakes, fake_reg, packet_store={})
-        check("cycle detection", False, "cycle not raised")
-    except resolve.PacketDependencyCycle:
-        check("cycle detection", True)
-
-    # unknown required packet raises
-    try:
-        resolve.plan_statework_chain({"id": "sw_x", "inputs": {"required": ["ghost"], "optional": []}},
-                                     [{"id": "sw_x", "inputs": {"required": ["ghost"], "optional": []}}],
-                                     {"packets": {}}, packet_store={},
-                                     allow_missing_required=False)
-        check("unknown required packet raises", False, "not raised")
-    except resolve.PacketDependencyError:
-        check("unknown required packet raises", True)
-
     # StateWork namespaced integration requirements (getter requires ward)
     merged = resolve.requires_closure(resolve.expand(profiles["implement"], aliases), stage_by_id)
     for sw in chain:
@@ -223,14 +196,6 @@ def main() -> int:
     check("getter integration requirement (ward) merged", "ward" in kernel, str(kernel))
     check("core additions don't reorder base kernel",
           kernel.index("anchor_closeout") > kernel.index("fuse") > kernel.index("anchor_open") > kernel.index("owl"), str(kernel))
-
-    # ambiguous match does not first-match
-    fake = [
-        {"id": "aa", "name": "Alpha", "version": "1.0.0", "triggers": ["widget state"]},
-        {"id": "bb", "name": "Beta", "version": "1.0.0", "triggers": ["widget state"]},
-    ]
-    hit, amb = resolve.match_statework(fake, ["widget state"])
-    check("tied StateWork match reports ambiguity", hit is None and len(amb) == 2, str(amb))
 
     # guard pack validity + semantic hash stability
     pack = resolve.load_guard_pack()

@@ -31,7 +31,7 @@ def context_for(session: Any, *, behavior_context: str = "",
         required = [item for item in criteria if item.get("required", True)]
         required_count = len(required)
         if session.external_behavior_authority:
-            effective_state = session.effective_external_behavior_state()
+            effective_state = session.effective_external_behavior_projection()
             focus = set(effective_state.get("focus_criteria") or ())
             visible = [item for item in required
                        if str(item.get("criterion_id") or "") in focus]
@@ -95,7 +95,7 @@ def context_for(session: Any, *, behavior_context: str = "",
     active_stages = [stage for stage in session.bundle.kernel
                      if stage in session.active_lifecycle]
     if not active_stages and not (session.external_behavior_authority
-                                  and session.external_behavior_state):
+                                  and session.external_behavior_projection):
         active_stages = list(session.bundle.kernel[:1])
     visible_stages = [
         stage for stage in active_stages

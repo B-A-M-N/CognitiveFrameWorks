@@ -198,6 +198,7 @@ def test_partial_component_lease_expiry_preserves_other_live_targets():
                 "intervention_id": "owl-lease", "start_revision": 2,
                 "scope": scope, "baseline_action_index": 0,
                 "expires_after_actions": 1,
+                "expires_at_action": 0,
                 "targets": [{"target": "framework:owl",
                              "previous_value": "normal", "applied_value": "off"}],
             },
@@ -205,12 +206,13 @@ def test_partial_component_lease_expiry_preserves_other_live_targets():
                 "intervention_id": "flow-lease", "start_revision": 3,
                 "scope": scope, "baseline_action_index": 0,
                 "expires_after_actions": 3,
+                "expires_at_action": 2,
                 "targets": [{"target": "framework:flow",
                              "previous_value": "normal", "applied_value": "off"}],
             },
         ],
     }
-    overlay = ComponentOverlay.from_behavior_state(state)
+    overlay = ComponentOverlay.from_legacy_behavior_state(state)
     lifecycle = LifecycleController(SimpleNamespace(kernel_instructions=()))
     prepared = lifecycle.prepare_component_overlay(overlay)
     lifecycle.apply_component_overlay(prepared, startup_active=set())

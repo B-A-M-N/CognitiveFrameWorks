@@ -12,7 +12,7 @@ from .validators import VALIDATOR_REGISTRY, evaluate_validator, validator_regist
 from .handlers import SUPPORTED_HANDLERS, enforcement_for_guard, validate_enforcement
 from .stateworks import ExecutionSegment, SegmentStatus
 from .component_control import (AppliedControlLease, ComponentControl, ComponentOverlay,
-                                PreparedComponentOverlay)
+                                ExternalBehaviorProjection, PreparedComponentOverlay)
 from .task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
                   VerificationPolicy, SystemOnePolicy)
 
@@ -25,7 +25,7 @@ __all__ = [
     "ExecutionSegment",
     "SegmentStatus",
     "AppliedControlLease", "ComponentControl", "ComponentOverlay",
-    "PreparedComponentOverlay",
+    "ExternalBehaviorProjection", "PreparedComponentOverlay",
     "TaskRequest",
     "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy", "SystemOnePolicy",
 ]

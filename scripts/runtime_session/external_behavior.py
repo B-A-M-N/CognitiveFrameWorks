@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Mapping
 
-from runtime_contract.component_control import ComponentOverlay
+from runtime_contract.component_control import (
+    ComponentOverlay, ExternalBehaviorProjection,
+)
 from runtime_session.behavior_authority import ExternalBehaviorAuthority
 
 
@@ -41,13 +43,105 @@ class ExternalBehaviorMethods:
         return self.available_component_ids()
     @property
     def external_behavior_revision(self) -> int:
-        return int(self.external_behavior_state.get("revision", -1))
-    def apply_external_behavior_state(self, value: Mapping[str, Any]) -> None:
+        if self.external_behavior_projection:
+            return int(self.external_behavior_projection.get("behavior_revision", -1))
+        return int(self.legacy_external_behavior_state.get("revision", -1))
+
+    def apply_external_behavior_projection(self, value: Mapping[str, Any]) -> None:
+        self._materialize_external_behavior_projection(value, allow_rollback=False)
+
+    def effective_external_behavior_projection(self) -> Dict[str, Any]:
+        projection = json.loads(json.dumps(self.external_behavior_projection, sort_keys=True))
+        if not projection or self.lifecycle is None:
+            return projection
+        for target, raw_value in self.lifecycle.effective_behavior_target_values().items():
+            if target == "mode":
+                projection["cognitive_mode"] = raw_value
+            elif target.startswith("framework:"):
+                component_id = target.split(":", 1)[1].lower()
+                projection["framework_modes"][component_id] = raw_value
+            else:
+                key = target.removeprefix("control:")
+                if key == "focus_criteria":
+                    try:
+                        projection[key] = json.loads(raw_value)
+                    except (TypeError, ValueError):
+                        continue
+                elif key == "recovery_level":
+                    try:
+                        projection[key] = int(raw_value)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    projection[key] = raw_value
+        return projection
+
+    def synchronize_external_behavior_projection(self, value: Mapping[str, Any]) -> None:
+        self._materialize_external_behavior_projection(
+            value, allow_rollback=False, synchronize=True)
+
+    def rollback_external_behavior_projection(
+            self, value: Mapping[str, Any], *, expected_current_revision: int) -> None:
+        if expected_current_revision != self.external_behavior_revision:
+            raise RuntimeError("CFW projection rollback revision changed; re-inspect required")
+        transition = self._last_component_overlay_transition
+        prior_overlay = (ComponentOverlay.from_projection(value)
+                         if isinstance(value, Mapping) and value else None)
+        if (transition is not None and self.lifecycle is not None
+                and transition.previous_overlay == prior_overlay
+                and transition.overlay.behavior_revision == expected_current_revision):
+            prior_lifecycle = set(self.active_lifecycle)
+            active = self.lifecycle.rollback_component_overlay(
+                transition, expected_current_revision=expected_current_revision)
+            object.__setattr__(self, "external_behavior_projection",
+                               json.loads(json.dumps(dict(value), sort_keys=True)))
+            object.__setattr__(self, "active_lifecycle", set(active))
+            object.__setattr__(self, "_last_component_overlay_transition", None)
+            self._emit_lifecycle_activations(prior_lifecycle)
+            return
+        self._materialize_external_behavior_projection(value, allow_rollback=True)
+
+    def _materialize_external_behavior_projection(
+            self, value: Mapping[str, Any], *, allow_rollback: bool,
+            synchronize: bool = False) -> None:
+        if not self.external_behavior_authority:
+            raise RuntimeError("external behavior authority has not been bound")
+        projection = ExternalBehaviorProjection.from_mapping(value)
+        canonical = projection.to_dict()
+        prior_revision = self.external_behavior_revision
+        if not allow_rollback and projection.behavior_revision < prior_revision:
+            raise ValueError("CFW rejects a stale DP behavior projection")
+        if (not allow_rollback
+                and projection.behavior_revision == prior_revision
+                and self.external_behavior_projection
+                and canonical != self.external_behavior_projection):
+            raise ValueError("same DP behavior revision cannot carry different projections")
+        overlay = ComponentOverlay.from_projection(projection)
+        if self.lifecycle is None:
+            raise RuntimeError("CFW lifecycle controller is unavailable for a DP projection")
+        self.lifecycle.synchronize_action_index(projection.host_action_index)
+        prior_lifecycle = set(self.active_lifecycle)
+        prepared_overlay = self.lifecycle.prepare_component_overlay(
+            overlay, allow_rollback=allow_rollback)
+        if synchronize and not allow_rollback:
+            active = self.lifecycle.synchronize_component_overlay(
+                overlay, startup_active=set(self._external_startup_lifecycle),
+                prepared=prepared_overlay)
+        else:
+            active = self.lifecycle.apply_component_overlay(
+                prepared_overlay, startup_active=set(self._external_startup_lifecycle),
+                allow_rollback=allow_rollback)
+        object.__setattr__(self, "external_behavior_projection", canonical)
+        object.__setattr__(self, "active_lifecycle", set(active))
+        object.__setattr__(self, "_last_component_overlay_transition", prepared_overlay)
+        self._emit_lifecycle_activations(prior_lifecycle)
+
+    def apply_legacy_external_behavior_state(self, value: Mapping[str, Any]) -> None:
         """Materialize a DP-owned behavior state through CFW's declared API."""
-        self._materialize_external_behavior_state(value, allow_rollback=False)
-    def effective_external_behavior_state(self) -> Dict[str, Any]:
+        self._materialize_legacy_external_behavior_state(value, allow_rollback=False)
+    def effective_legacy_external_behavior_state(self) -> Dict[str, Any]:
         """Project live target leases over the canonical last DP policy state."""
-        state = json.loads(json.dumps(self.external_behavior_state, sort_keys=True))
+        state = json.loads(json.dumps(self.legacy_external_behavior_state, sort_keys=True))
         if not state or self.lifecycle is None:
             return state
         for target, raw_value in self.lifecycle.effective_behavior_target_values().items():
@@ -79,17 +173,17 @@ class ExternalBehaviorMethods:
         if expired:
             object.__setattr__(self, "active_lifecycle", set(self.lifecycle.active))
         return expired
-    def synchronize_external_behavior_state(self, value: Mapping[str, Any]) -> None:
+    def synchronize_legacy_external_behavior_state(self, value: Mapping[str, Any]) -> None:
         """Reconstruct CFW component activation from persisted DP state."""
-        self._materialize_external_behavior_state(
+        self._materialize_legacy_external_behavior_state(
             value, allow_rollback=False, synchronize=True)
-    def rollback_external_behavior_state(
+    def rollback_legacy_external_behavior_state(
             self, value: Mapping[str, Any], *, expected_current_revision: int) -> None:
         """Restore a prepared prior overlay with an exact revision guard."""
         if expected_current_revision != self.external_behavior_revision:
             raise RuntimeError("CFW behavior rollback revision changed; re-inspect required")
         transition = self._last_component_overlay_transition
-        prior_overlay = (ComponentOverlay.from_behavior_state(value)
+        prior_overlay = (ComponentOverlay.from_legacy_behavior_state(value)
                          if isinstance(value, Mapping) and value else None)
         if (transition is not None and self.lifecycle is not None
                 and transition.previous_overlay == prior_overlay
@@ -97,14 +191,14 @@ class ExternalBehaviorMethods:
             prior_lifecycle = set(self.active_lifecycle)
             active = self.lifecycle.rollback_component_overlay(
                 transition, expected_current_revision=expected_current_revision)
-            object.__setattr__(self, "external_behavior_state",
+            object.__setattr__(self, "legacy_external_behavior_state",
                                json.loads(json.dumps(dict(value), sort_keys=True)))
             object.__setattr__(self, "active_lifecycle", set(active))
             object.__setattr__(self, "_last_component_overlay_transition", None)
             self._emit_lifecycle_activations(prior_lifecycle)
             return
-        self._materialize_external_behavior_state(value, allow_rollback=True)
-    def _materialize_external_behavior_state(
+        self._materialize_legacy_external_behavior_state(value, allow_rollback=True)
+    def _materialize_legacy_external_behavior_state(
             self, value: Mapping[str, Any], *, allow_rollback: bool,
             synchronize: bool = False) -> None:
         if not self.external_behavior_authority:
@@ -128,7 +222,7 @@ class ExternalBehaviorMethods:
         if not allow_rollback and revision < prior_revision:
             raise ValueError("CFW rejects a stale DP behavior revision")
         if (not allow_rollback and revision == prior_revision
-                and dict(value) != self.external_behavior_state):
+                and dict(value) != self.legacy_external_behavior_state):
             raise ValueError("same DP behavior revision cannot carry different state")
         mode = value.get("cognitive_mode")
         behavior_modes = {"RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
@@ -276,7 +370,7 @@ class ExternalBehaviorMethods:
                 raise ValueError("DP intervention lease bounds are malformed")
             intervention_action_index = max(intervention_action_index, baseline)
 
-        overlay = ComponentOverlay.from_behavior_state(value)
+        overlay = ComponentOverlay.from_legacy_behavior_state(value)
         if self.lifecycle is None:
             raise RuntimeError("CFW lifecycle controller is unavailable for a DP overlay")
         self.lifecycle.synchronize_action_index(intervention_action_index)
@@ -294,7 +388,7 @@ class ExternalBehaviorMethods:
 
         # The validated overlay changes actual lifecycle activation. The
         # behavior context below only describes the applied runtime state.
-        object.__setattr__(self, "external_behavior_state",
+        object.__setattr__(self, "legacy_external_behavior_state",
                            json.loads(json.dumps(dict(value), sort_keys=True)))
         object.__setattr__(self, "active_lifecycle", set(active))
         object.__setattr__(self, "_last_component_overlay_transition", prepared_overlay)
@@ -303,7 +397,8 @@ class ExternalBehaviorMethods:
         """Restore the immutable CFW startup preset after a failed DP apply."""
         if not self.external_behavior_authority:
             raise RuntimeError("external behavior authority has not been bound")
-        object.__setattr__(self, "external_behavior_state", {})
+        object.__setattr__(self, "external_behavior_projection", {})
+        object.__setattr__(self, "legacy_external_behavior_state", {})
         object.__setattr__(self, "_last_component_overlay_transition", None)
         if self.lifecycle is not None:
             if self._external_startup_lifecycle_state is None:

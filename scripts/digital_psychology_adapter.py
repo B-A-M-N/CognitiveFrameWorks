@@ -32,13 +32,14 @@ _CONTROL_VALUES = {
 @dataclass(frozen=True)
 class PreparedBehaviorDirectiveBatch:
     directives: tuple[dict[str, Any], ...]
-    prior_behavior_state: Mapping[str, Any] | None
+    prior_behavior_projection: Mapping[str, Any] | None
 
 
 # CFW's supported actuation-projection contract. DP reports its own version in
 # the projection payload; an unknown version is rejected at the boundary rather
 # than discovered during the first behavioral intervention.
 CFW_BEHAVIOR_PROJECTION_VERSION = "2.0.0"
+CFW_ADAPTER_PROTOCOL_VERSION = "1.0.0"
 
 
 class CFWBehaviorAdapter:
@@ -53,9 +54,9 @@ class CFWBehaviorAdapter:
         if any(not hasattr(session, field) for field in required_session_fields):
             raise TypeError("CFW behavior adapter requires a started RuntimeSession")
         if (not callable(getattr(session, "enable_external_behavior_authority", None))
-                or not callable(getattr(session, "apply_external_behavior_state", None))
-                or not callable(getattr(session, "synchronize_external_behavior_state", None))
-                or not callable(getattr(session, "rollback_external_behavior_state", None))
+                or not callable(getattr(session, "apply_external_behavior_projection", None))
+                or not callable(getattr(session, "synchronize_external_behavior_projection", None))
+                or not callable(getattr(session, "rollback_external_behavior_projection", None))
                 or not callable(getattr(session, "restore_external_behavior_startup", None))
                 or not callable(getattr(session, "preflight_action", None))
                 or not callable(getattr(session, "prepare_action", None))
@@ -98,21 +99,17 @@ class CFWBehaviorAdapter:
             components, separators=(",", ":")).encode()).hexdigest()
         return {"adapter_kind": "cfw-component-runtime",
                 "authority_id": "cfw-execution:" + scope_hash,
-                "protocol_version": CFW_BEHAVIOR_PROJECTION_VERSION,
-                # Named separately from the generic port version so a host can
-                # compare the actuation contract it will actually send against
-                # the one CFW supports, before any intervention happens.
+                "adapter_protocol_version": CFW_ADAPTER_PROTOCOL_VERSION,
                 "behavior_projection_version": self.behavior_projection_version,
                 "scope": scope_hash,
                 "scope_hash": scope_hash, "capability_hash": capability_hash}
 
     @property
-    def applied_behavior_state(self) -> Mapping[str, Any] | None:
-        state = self._session.effective_external_behavior_state()
-        return dict(state) if state else None
+    def applied_behavior_projection(self) -> Mapping[str, Any] | None:
+        projection = self._session.external_behavior_projection
+        return dict(projection) if projection else None
 
     def collect_behavior_signals(self, observation: Any) -> tuple[dict[str, Any], ...]:
-        self._session.expire_external_behavior_leases(int(observation.action_index))
         result = []
         for envelope in self._session.signals[-32:]:
             signal_type = str(envelope.get("signal_type") or "")
@@ -154,8 +151,8 @@ class CFWBehaviorAdapter:
             raise ValueError("CFW directive IDs must be unique")
         return PreparedBehaviorDirectiveBatch(
             directives=normalized,
-            prior_behavior_state=(dict(self._session.external_behavior_state)
-                                  if self._session.external_behavior_state else None),
+            prior_behavior_projection=(dict(self._session.external_behavior_projection)
+                                       if self._session.external_behavior_projection else None),
         )
 
     def apply_behavior_projection(self, prepared: PreparedBehaviorDirectiveBatch,
@@ -176,44 +173,61 @@ class CFWBehaviorAdapter:
         if version != self.behavior_projection_version:
             raise ValueError(
                 f"unsupported CFW behavior projection version {version!r}")
-        revision = projection.get("behavior_revision")
-        if type(revision) is not int or revision < 0:
-            raise ValueError("CFW behavior projection revision must be non-negative")
+        from runtime_contract.component_control import ExternalBehaviorProjection
+        canonical = ExternalBehaviorProjection.from_mapping(projection).to_dict()
+        if len(prepared.directives) > 32:
+            raise ValueError("CFW directive batch exceeds its bound")
+        self._validate_directive_projection(prepared.directives, canonical)
+        self._session.apply_external_behavior_projection(canonical)
         return tuple(item["directive_id"] for item in prepared.directives)
 
-    def apply_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch,
-                                  behavior_state: Mapping[str, Any]
-                                  ) -> tuple[str, ...]:
-        if not isinstance(prepared, PreparedBehaviorDirectiveBatch):
-            raise TypeError("CFW directive batch was not prepared by this adapter")
-        if not isinstance(behavior_state, Mapping):
-            raise TypeError("DP behavior state must be a mapping")
-        self._validate_directive_state(prepared.directives, behavior_state)
-        self._session.apply_external_behavior_state(behavior_state)
-        return tuple(item["directive_id"] for item in prepared.directives)
-
-    def synchronize_behavior_state(self, behavior_state: Mapping[str, Any]) -> None:
-        if not isinstance(behavior_state, Mapping):
-            raise TypeError("DP behavior state must be a mapping")
-        self._session.synchronize_external_behavior_state(behavior_state)
+    def synchronize_behavior_projection(self, projection: Mapping[str, Any]) -> None:
+        if not isinstance(projection, Mapping):
+            raise TypeError("CFW behavior projection must be a mapping")
+        self._session.synchronize_external_behavior_projection(projection)
 
     def rollback_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch) -> None:
         if not isinstance(prepared, PreparedBehaviorDirectiveBatch):
             raise TypeError("CFW directive batch was not prepared by this adapter")
-        if prepared.prior_behavior_state is None:
+        if prepared.prior_behavior_projection is None:
             self._session.restore_external_behavior_startup()
         else:
-            self._session.rollback_external_behavior_state(
-                prepared.prior_behavior_state,
+            self._session.rollback_external_behavior_projection(
+                prepared.prior_behavior_projection,
                 expected_current_revision=self._session.external_behavior_revision)
 
-    def restore_behavior_state(self, behavior_state: Mapping[str, Any], *,
-                               expected_current_revision: int) -> None:
-        """Restore DP's last committed projection after host restart recovery."""
-        self._session.rollback_external_behavior_state(
-            behavior_state,
+    def restore_behavior_projection(self, projection: Mapping[str, Any], *,
+                                    expected_current_revision: int) -> None:
+        """Restore the last committed projection after host restart recovery."""
+        self._session.rollback_external_behavior_projection(
+            projection,
             expected_current_revision=expected_current_revision,
         )
+
+    @staticmethod
+    def _validate_directive_projection(directives: Sequence[Mapping[str, Any]],
+                                       projection: Mapping[str, Any]) -> None:
+        frameworks = projection["framework_modes"]
+        for item in directives:
+            operation = item.get("operation")
+            target = str(item.get("target") or "")
+            value = str(item.get("value") or "")
+            if operation == "set_mode":
+                actual = projection["cognitive_mode"]
+            elif operation == "set_framework":
+                actual = frameworks.get(target.lower())
+            elif operation == "set_control":
+                if target == "focus_criteria":
+                    actual = json.dumps(projection["focus_criteria"], separators=(",", ":"))
+                elif target == "recovery_level":
+                    actual = str(projection["recovery_level"])
+                else:
+                    actual = projection.get(target)
+            else:
+                raise ValueError("CFW received a non-CFW directive in its prepared batch")
+            if actual is None or str(actual) != value:
+                raise ValueError(
+                    f"CFW projection does not materialize directive target {target!r}")
 
     def render_behavior_context(self, context: str, *,
                                 active_statework_ids: Sequence[str] = ()) -> str:
@@ -265,36 +279,11 @@ class CFWBehaviorAdapter:
         suffix = context[last_end + len(closing):]
         return (context[:first].rstrip() + "\n\n" + block + suffix).strip()
 
-    @staticmethod
-    def _validate_directive_state(directives: Sequence[Mapping[str, Any]],
-                                  state: Mapping[str, Any]) -> None:
-        frameworks = state.get("framework_modes")
-        if not isinstance(frameworks, Mapping):
-            raise ValueError("DP behavior state has no framework modes")
-        for directive in directives:
-            operation = directive["operation"]
-            target = directive["target"]
-            expected = directive["value"]
-            if operation == "set_mode":
-                actual = state.get("cognitive_mode")
-            elif operation == "set_framework":
-                actual = frameworks.get(target.lower())
-            elif operation == "set_control":
-                actual = state.get(target)
-                if target == "focus_criteria":
-                    actual = json.dumps(actual, separators=(",", ":"))
-                else:
-                    actual = str(actual)
-            else:
-                raise ValueError("CSW preference directives cannot be applied by CFW")
-            if actual != expected:
-                raise ValueError(
-                    f"DP behavior state does not contain directive value for {target!r}")
-
     @classmethod
     def _validate_directive(cls, value: Mapping[str, Any]) -> dict[str, Any]:
         fields = {"directive_id", "operation", "target", "value", "cause",
-                  "expected_effect", "scope", "expires_after_actions", "intervention_id"}
+                  "expected_effect", "scope", "expires_after_actions", "intervention_id",
+                  "expires_at_action"}
         if not isinstance(value, Mapping) or set(value) != fields:
             raise ValueError("CFW directive has unknown or missing fields")
         item = dict(value)
@@ -311,6 +300,10 @@ class CFWBehaviorAdapter:
         expiry = item["expires_after_actions"]
         if not isinstance(expiry, int) or not 1 <= expiry <= 64:
             raise ValueError("CFW directive expiry is invalid")
+        absolute_expiry = item["expires_at_action"]
+        if (absolute_expiry is not None
+                and (type(absolute_expiry) is not int or absolute_expiry < 0)):
+            raise ValueError("CFW directive absolute expiry is invalid")
         operation, target, raw_value = item["operation"], item["target"], item["value"]
         if not isinstance(raw_value, str) or len(raw_value) > 2048:
             raise ValueError("CFW directive value is invalid")

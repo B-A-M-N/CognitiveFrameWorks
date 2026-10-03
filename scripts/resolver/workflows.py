@@ -13,8 +13,6 @@ from resolver.packet_planning import (
     plan_statework_dag,
 )
 from resolver.statework_matching import (
-    _norm,
-    _tokens,
     match_statework,
     match_stateworks,
 )

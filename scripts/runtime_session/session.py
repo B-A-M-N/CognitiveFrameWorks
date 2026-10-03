@@ -127,7 +127,8 @@ class RuntimeSession(ExternalBehaviorMethods, StandaloneBehaviorMethods, ActionG
     system_one_sequence: int = 0
     system_one_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict, repr=False)
     system_one_outcomes: set[str] = field(default_factory=set, repr=False)
-    external_behavior_state: Dict[str, Any] = field(default_factory=dict, repr=False)
+    external_behavior_projection: Dict[str, Any] = field(default_factory=dict, repr=False)
+    legacy_external_behavior_state: Dict[str, Any] = field(default_factory=dict, repr=False)
     _external_startup_lifecycle: set[str] = field(default_factory=set, repr=False)
     _external_startup_lifecycle_state: Optional[Mapping[str, Any]] = field(
         default=None, repr=False)
@@ -240,7 +241,7 @@ class RuntimeSession(ExternalBehaviorMethods, StandaloneBehaviorMethods, ActionG
                 "shared_branch_ledger", "metacognitive_state", "behavior_authority",
                 "semantic_signals_revision",
                 "system_one_sequence", "system_one_decisions", "system_one_outcomes",
-                "external_behavior_state",
+                "external_behavior_projection", "legacy_external_behavior_state",
                 "_external_startup_lifecycle", "_external_startup_lifecycle_state",
                 "_last_component_overlay_transition",
         "_pending_action_requests", "_pending_retry_candidates",

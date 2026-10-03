@@ -1,12 +1,11 @@
-"""CSW owns workflow semantics; CFW's duplicates must stay marked deprecated.
+"""CSW owns workflow semantics; CFW legacy APIs must stay thin adapters.
 
 CFW's production resolution path goes through StateWorkProvider and CSW's
-WorkflowPlanner. A second implementation of matching, DAG planning, and flow
-selection still exists in CFW for compatibility callers, which is exactly how
-ownership converges and then silently diverges again.
+WorkflowPlanner. Compatibility entry points may remain for old callers, but
+they must delegate to that provider instead of carrying another algorithm.
 
-These tests keep the duplicates callable but visibly deprecated, and prove the
-production path does not route through them.
+These tests prove the wrappers stay deprecated and the production path does
+not route through them.
 """
 from __future__ import annotations
 
@@ -81,6 +80,15 @@ def test_production_resolution_path_does_not_import_the_duplicates():
             if "statework_matching" in name or "packet_planning" in name
             or "statework_runtime" in name}
         assert not offenders, f"{path.name} imports a CFW-side workflow duplicate: {offenders}"
+
+
+def test_compatibility_entrypoints_have_no_local_matching_or_dag_algorithm():
+    matcher = (ROOT / "scripts" / "resolver" / "statework_matching.py").read_text()
+    planner = (ROOT / "scripts" / "resolver" / "packet_planning.py").read_text()
+    assert "_match_statework_impl" not in matcher
+    assert "_plan_statework_dag_impl" not in planner
+    assert "provider.eligible_routes" in matcher
+    assert "provider.resolve_workflows" in planner
 
 
 def test_runtime_facade_has_no_dead_yaml_import():

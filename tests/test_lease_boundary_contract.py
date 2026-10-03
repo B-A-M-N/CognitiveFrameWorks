@@ -60,7 +60,7 @@ def _cfw_overlay(component_control):
                 scope=None, expires_at_action=EXPIRES_AT, source_revision=1)
             for component_id in sorted(component_control.COMPONENT_IDS)),
         target_leases=(component_control.AppliedControlLease(
-            directive_id="d1", intervention_id="intervention-1",
+            lease_id="lease-1", intervention_id="intervention-1",
             target="mode", previous_value="DELIVER", applied_value="VERIFY",
             expires_at_action=EXPIRES_AT, behavior_revision=1),))
 
@@ -137,22 +137,31 @@ def test_dp_ageing_and_the_shared_expiry_boundary_agree():
     # what the actuator passes to both CFW and CSW.
     assert "expires_after_actions" in source
 
-    from lib.behavior_state import BehaviorDirective, BehaviorIntervention
+    from lib.behavior_state import (BehaviorDirective, BehaviorIntervention,
+                                    InterventionTarget)
+    from lib.lease_window import lease_window
+    pre = lease_window("PRE_ACTION", BASELINE_ACTION, DURATION)
+    post = lease_window("POST_ACTION", BASELINE_ACTION, DURATION)
+    assert (pre.effective_from_action, pre.expires_at_action) == (10, 12)
+    assert (post.effective_from_action, post.expires_at_action) == (11, 13)
     directive = BehaviorDirective(
         directive_id="d1", operation="set_mode", target="mode", value="VERIFY",
         cause="test", expected_effect="test",
         scope="tenant/app/agent/session/task/attempt",
-        expires_after_actions=DURATION, intervention_id="intervention-1")
+        expires_after_actions=DURATION, intervention_id="intervention-1",
+        expires_at_action=EXPIRES_AT)
     intervention = BehaviorIntervention(
         intervention_id="intervention-1", scope="tenant/app/agent/session/task/attempt",
         baseline_action_index=BASELINE_ACTION, start_revision=1,
         expires_after_actions=DURATION, actions_elapsed=0,
-        targets=(directive,),
+        targets=(InterventionTarget("mode", "DELIVER", "VERIFY"),),
+        expires_at_action=EXPIRES_AT,
         condition_id="legacy-condition", condition_basis_digest="a" * 64,
         cause="test", expected_effect="test")
 
     # The lease covers exactly DURATION completed actions after its baseline.
-    assert BASELINE_ACTION + DURATION == EXPIRES_AT
+    assert post.expires_at_action == EXPIRES_AT
+    assert intervention.expires_at_action == directive.expires_at_action == EXPIRES_AT
     assert intervention.expires_after_actions == DURATION
 
 
