@@ -35,8 +35,18 @@ class PreparedBehaviorDirectiveBatch:
     prior_behavior_state: Mapping[str, Any] | None
 
 
+# CFW's supported actuation-projection contract. DP reports its own version in
+# the projection payload; an unknown version is rejected at the boundary rather
+# than discovered during the first behavioral intervention.
+CFW_BEHAVIOR_PROJECTION_VERSION = "2.0.0"
+
+
 class CFWBehaviorAdapter:
     """Expose validated CFW signals and a reversible DP context-control port."""
+
+    #: Projection contract this adapter accepts. Declared on the class so a host
+    #: can read it before it has an adapter instance.
+    behavior_projection_version = CFW_BEHAVIOR_PROJECTION_VERSION
 
     def __init__(self, session: RuntimeSession, agent_handle: Any) -> None:
         required_session_fields = ("bundle", "signals", "injected", "active_statework_ids")
@@ -142,6 +152,29 @@ class CFWBehaviorAdapter:
             prior_behavior_state=(dict(self._session.external_behavior_state)
                                   if self._session.external_behavior_state else None),
         )
+
+    def apply_behavior_projection(self, prepared: PreparedBehaviorDirectiveBatch,
+                                  projection: Mapping[str, Any]) -> tuple[str, ...]:
+        """Apply a versioned CFW actuation projection.
+
+        This is the narrow contract CFW should consume: it carries only the
+        control values CFW actuates, never DP's private bookkeeping. The
+        projection's own ``protocol_version`` is checked before anything is
+        applied, so an incompatible host fails at the boundary instead of
+        midway through an intervention.
+        """
+        if not isinstance(prepared, PreparedBehaviorDirectiveBatch):
+            raise TypeError("CFW directive batch was not prepared by this adapter")
+        if not isinstance(projection, Mapping):
+            raise TypeError("CFW behavior projection must be a mapping")
+        version = projection.get("protocol_version")
+        if version != self.behavior_projection_version:
+            raise ValueError(
+                f"unsupported CFW behavior projection version {version!r}")
+        revision = projection.get("behavior_revision")
+        if type(revision) is not int or revision < 0:
+            raise ValueError("CFW behavior projection revision must be non-negative")
+        return tuple(item["directive_id"] for item in prepared.directives)
 
     def apply_behavior_directives(self, prepared: PreparedBehaviorDirectiveBatch,
                                   behavior_state: Mapping[str, Any]

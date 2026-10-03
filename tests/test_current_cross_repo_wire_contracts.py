@@ -298,3 +298,98 @@ def test_criterion_free_candidate_rejection_does_not_index_empty_criteria():
     candidate = type("Candidate", (), {"affected_criterion_ids": ()})()
     criterion_ids = tuple(candidate.affected_criterion_ids)
     assert (criterion_ids[0] if criterion_ids else None) is None
+
+
+# --------------------------------------------------------------------------
+# The narrow, versioned CFW actuation projection
+# --------------------------------------------------------------------------
+
+def test_cfw_projection_version_matches_dp_emit_version():
+    """P2-20: the contract is versioned and the two sides agree.
+
+    A host and framework pair must fail at startup, not on the first
+    intervention, so both sides declare the same version constant.
+    """
+    from digital_psychology_adapter import (CFW_BEHAVIOR_PROJECTION_VERSION as cfw_version)
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from lib.runtime.cfw_projection import (
+        CFW_BEHAVIOR_PROJECTION_VERSION as dp_version)
+    assert cfw_version == dp_version
+
+
+def test_projection_excludes_dp_private_bookkeeping():
+    """The whole point of the projection: CFW cannot see DP's internals."""
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from lib.behavior_state import AttentionLease, BehaviorState, ModeLease
+    from lib.runtime.cfw_projection import build_cfw_behavior_projection
+
+    state = BehaviorState(
+        cognitive_mode="VERIFY",
+        focus_criteria=("criterion-a",),
+        attention_lease=AttentionLease(
+            lease_id="lease-1", criterion_ids=("criterion-a",),
+            issued_revision=0, goal_set_revision=1, start_action=0,
+            max_actions=4, reason="bounded focus"),
+        mode_lease=ModeLease(
+            mode="VERIFY", entered_action=0, minimum_actions=1, max_actions=4,
+            cause="verification requested", exit_condition="verification_result",
+            baseline_approach_epoch="epoch-1"))
+
+    payload = build_cfw_behavior_projection(state, host_action_index=0).to_dict()
+
+    for private in ("mode_lease", "attention_lease", "attention_last_seen",
+                    "active_stateworks", "intervention_history",
+                    "active_interventions", "revision"):
+        assert private not in payload, f"{private} is DP-private and must not cross"
+
+
+def test_projection_round_trips_and_rejects_an_unknown_version():
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from lib.behavior_state import BehaviorState
+    from lib.runtime.cfw_projection import (CFWBehaviorProjection,
+                                            build_cfw_behavior_projection)
+
+    projection = build_cfw_behavior_projection(BehaviorState())
+    assert CFWBehaviorProjection.from_dict(projection.to_dict()) == projection
+
+    drifted = projection.to_dict()
+    drifted["protocol_version"] = "99.0.0"
+    with pytest.raises(ValueError, match="unsupported CFW behavior projection version"):
+        CFWBehaviorProjection.from_dict(drifted)
+
+
+def test_projection_rejects_a_lease_without_its_previous_value():
+    """An unowned change is not a lease; refuse rather than invent a baseline."""
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from lib.behavior_state import BehaviorState
+    from lib.runtime.cfw_projection import build_cfw_behavior_projection
+
+    with pytest.raises(ValueError, match="previous value"):
+        build_cfw_behavior_projection(
+            BehaviorState(),
+            directives=({"directive_id": "d1", "operation": "set_mode",
+                         "target": "mode", "value": "VERIFY"},),
+            host_action_index=0)
+
+
+def test_projection_lease_expiry_uses_the_shared_action_boundary():
+    """P1-12: expiry is computed from one action boundary for all systems."""
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from lib.behavior_state import BehaviorState
+    from lib.runtime.cfw_projection import build_cfw_behavior_projection
+
+    projection = build_cfw_behavior_projection(
+        BehaviorState(),
+        directives=({"directive_id": "d1", "operation": "set_mode",
+                     "target": "mode", "previous_value": "DELIVER",
+                     "value": "VERIFY", "expires_after_actions": 3},),
+        host_action_index=5)
+    lease = projection.target_leases[0]
+    # Baseline 5 + duration 3, stated once so CFW and CSW cannot disagree by one.
+    assert lease.expires_at_action == 8
+    assert lease.source_revision == projection.behavior_revision
