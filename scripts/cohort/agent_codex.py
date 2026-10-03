@@ -145,10 +145,14 @@ def main() -> int:
         # The harness ends a trial only on an explicit completion flag.
         payload["complete"] = True
     if not payload["answer"]:
-        # Never fabricate a successful outcome; record the failure honestly.
-        payload["answer"] = json.dumps(
-            {"status": "blocked",
-             "reason": f"no parsable JSON from agent: {raw[:200]}"})
+        # An empty model reply is an infrastructure failure, not a model
+        # failure. It must stay distinguishable from "the agent answered
+        # wrong", otherwise a flaky backend is scored as behavioral evidence.
+        reason = ("agent produced no output (infrastructure failure)"
+                  if not raw else
+                  f"no parsable JSON from agent: {raw[:200]}")
+        payload["answer"] = json.dumps({"status": "blocked", "reason": reason})
+        payload["infrastructure_failure"] = True
     print(json.dumps(payload), flush=True)
     return 0
 

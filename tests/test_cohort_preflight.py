@@ -201,3 +201,52 @@ def test_a_fairness_violation_is_reported_not_hidden():
 
 def test_zero_violations_passes_the_production_invariant():
     preflight.assert_triads_agree({"cohort-D": {"fairness_violation_count": 0}})
+
+
+# -- infrastructure failures are not behavioral evidence ------------------
+
+def test_hard_zero_ignores_infrastructure_failures():
+    """A flaky backend must not be scored as the agent failing the task."""
+    results = [
+        {"task_family": "long_running_recovery", "completion_success": False,
+         "infrastructure_failure": True},
+        {"task_family": "long_running_recovery", "completion_success": False,
+         "infrastructure_failure": True},
+        {"task_family": "long_running_recovery", "completion_success": True},
+    ]
+    preflight.check_hard_zero(results)
+
+
+def test_a_family_with_only_infrastructure_failures_is_still_rejected():
+    """All-infra means there is no measurement at all, which is also unusable."""
+    results = [
+        {"task_family": "code_repair", "completion_success": False,
+         "infrastructure_failure": True},
+        {"task_family": "code_repair", "completion_success": False,
+         "infrastructure_failure": True},
+    ]
+    with pytest.raises(PreflightError, match="only infrastructure failures"):
+        preflight.check_hard_zero(results)
+
+
+def test_a_genuine_hard_zero_still_aborts():
+    """Infrastructure tolerance must not weaken the real defect check."""
+    results = [
+        {"task_family": "code_repair", "completion_success": False},
+        {"task_family": "code_repair", "completion_success": False},
+    ]
+    with pytest.raises(PreflightError, match="scored zero in every"):
+        preflight.check_hard_zero(results)
+
+
+def test_resource_limit_rows_count_as_infrastructure():
+    results = [{"task_family": "code_repair", "completion_success": False,
+                "failure_category": "resource_limit"},
+               {"task_family": "code_repair", "completion_success": True}]
+    preflight.check_hard_zero(results)
+
+
+def test_adapter_marks_an_empty_reply_as_infrastructure():
+    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
+    assert "infrastructure_failure" in source
+    assert "agent produced no output (infrastructure failure)" in source

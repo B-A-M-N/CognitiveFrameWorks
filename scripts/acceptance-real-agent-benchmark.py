@@ -174,7 +174,7 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                 except Exception as exc:
                     trajectory, usage = [], {"model_calls": 0, "external_tokens": 0, "monetary_cost": 0.0}
                     evaluation = {"completion_success": False, "evidence_quality": 0.0, "regression_rate": 1.0, "metrics": {}, "failure_category": "invalid_completion", "error": str(exc)}
-                results.append({
+                row = {
                     "task_family": family_id,
                     "trial": trial,
                     "holdout": task["holdout"],
@@ -182,7 +182,16 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                     "latency_seconds": round(time.monotonic() - started, 3),
                     "token_overhead": usage["external_tokens"],
                     **evaluation,
-                })
+                }
+                # A trial whose agent produced no usable output is an
+                # infrastructure failure, not behavioral evidence. Recording it
+                # separately stops a flaky backend from being scored as the
+                # agent failing the task.
+                if (trajectory and isinstance(trajectory[-1], dict)
+                        and isinstance(trajectory[-1].get("response"), dict)
+                        and trajectory[-1]["response"].get("infrastructure_failure")):
+                    row["infrastructure_failure"] = True
+                results.append(row)
     return {
         "benchmark_id": contract["benchmark_id"],
         "evidence_scope": "task_outcome_only",

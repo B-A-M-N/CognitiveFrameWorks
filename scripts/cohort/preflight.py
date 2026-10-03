@@ -195,17 +195,42 @@ def _load_task_module(path: Path):
 
 # -- post-matrix tripwires ------------------------------------------------
 
+def _infrastructure_failure(row: Mapping[str, Any]) -> bool:
+    """True when a trial failed for harness reasons rather than model behavior."""
+    if row.get("infrastructure_failure"):
+        return True
+    return row.get("failure_category") == "resource_limit"
+
+
 def check_hard_zero(results: Sequence[Mapping[str, Any]]) -> None:
-    """A family that is exactly zero in every cell is a harness defect."""
-    by_family: dict[str, list[float]] = {}
+    """A family that is exactly zero in every configuration is a harness defect.
+
+    Trials that failed for infrastructure reasons are excluded from this check.
+    An empty model reply is a flaky backend, and counting it as behavioral
+    evidence would let a transient outage masquerade as a result. A family whose
+    trials all failed that way is reported separately, because that is also not
+    a usable measurement.
+    """
+    by_family: dict[str, list[Mapping[str, Any]]] = {}
     for row in results:
-        by_family.setdefault(str(row["task_family"]), []).append(
-            1.0 if row.get("completion_success") else 0.0)
-    for family, values in by_family.items():
-        if values and not any(values):
-            raise PreflightError(
-                f"task family {family!r} scored zero in every configuration; "
-                "this is a harness or evaluator defect, not a result")
+        by_family.setdefault(str(row["task_family"]), []).append(row)
+
+    all_infrastructure: list[str] = []
+    hard_zero: list[str] = []
+    for family, rows in by_family.items():
+        scored = [row for row in rows if not _infrastructure_failure(row)]
+        if not scored:
+            all_infrastructure.append(family)
+        elif not any(row.get("completion_success") for row in scored):
+            hard_zero.append(family)
+    if hard_zero:
+        raise PreflightError(
+            f"task families {sorted(hard_zero)} scored zero in every "
+            "configuration; this is a harness or evaluator defect, not a result")
+    if all_infrastructure:
+        raise PreflightError(
+            f"task families {sorted(all_infrastructure)} produced only "
+            "infrastructure failures; there is no behavioral evidence for them")
 
 
 def check_full_budget_burn(results: Sequence[Mapping[str, Any]],
