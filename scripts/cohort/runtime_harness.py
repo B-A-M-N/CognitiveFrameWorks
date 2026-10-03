@@ -180,6 +180,26 @@ def _bind_dp(cfw_session: Any, *, task_id: str, state_root: Path,
     return session
 
 
+def drive_actions(handles: Mapping[str, Any], *, criterion_id: str,
+                  action_count: int = 3) -> int:
+    """Commit real DP actions so the trace reflects actual runtime behavior.
+
+    A session that was merely constructed has nothing to report; telemetry must
+    come from actions DP actually committed, not from a zeroed placeholder.
+    Returns the number of committed actions.
+    """
+    dp_session = handles.get("dp_session")
+    if dp_session is None:
+        return 0
+    from lib.runtime.contracts import RuntimeObservation
+    committed = 0
+    for index in range(1, action_count + 1):
+        dp_session.process_action(RuntimeObservation(
+            action_index=index, criterion_status={criterion_id: "unmet"}))
+        committed += 1
+    return committed
+
+
 def behavioral_record(handles: Mapping[str, Any], *, trial_id: str,
                       task_outcome_score: float | None = None,
                       task_completed: bool | None = None
@@ -199,4 +219,4 @@ def behavioral_record(handles: Mapping[str, Any], *, trial_id: str,
 
 
 __all__ = ["HarnessError", "InvalidTreatment", "REQUIRED_PROVIDER_ATTESTATION",
-           "build_session", "behavioral_record"]
+           "build_session", "drive_actions", "behavioral_record"]

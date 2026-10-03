@@ -128,3 +128,23 @@ def test_laya_arm_with_full_attestation_constructs(tmp_path):
         provider_manifest=_provider_manifest())
     assert handles["dp_session"] is not None
     assert handles["csw_authority"] is not None
+
+
+def test_drive_actions_produces_a_non_empty_trace(tmp_path):
+    """Telemetry must come from committed actions, not a zeroed placeholder."""
+    sys.path.insert(0, "/home/bamn/DigitalPsychology")
+    handles = harness.build_session(configuration="cfw_csw_dp",
+                                    task_id="drive-1", state_root=tmp_path)
+    committed = harness.drive_actions(handles, criterion_id="drive-1-criterion",
+                                      action_count=4)
+    assert committed == 4
+    record = harness.behavioral_record(handles, trial_id="drive-probe")
+    assert record["committed_actions"] == 4
+    assert record["fairness_bound"] > 0
+    assert record["required_criterion_coverage"] == ["drive-1-criterion"]
+
+
+def test_drive_actions_on_a_configuration_without_dp_is_a_no_op(tmp_path):
+    handles = harness.build_session(configuration="baseline", task_id="drive-2",
+                                    state_root=tmp_path)
+    assert harness.drive_actions(handles, criterion_id="x") == 0

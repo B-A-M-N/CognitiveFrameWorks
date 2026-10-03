@@ -27,9 +27,6 @@ TASK_ROOT = Path(__file__).resolve().parent.parent / "real-agent-benchmark-tasks
 # Envelope keys that belong to the harness protocol, not the answer payload.
 _ENVELOPE_KEYS = frozenset({"answer", "response", "trajectory", "task", "complete",
                             "usage"})
-_MAX_REASON = 512
-
-
 class PreflightError(RuntimeError):
     """The harness is unsound. Abort; do not report a cohort from this state."""
 
@@ -86,9 +83,8 @@ def validate_agent_response(response: Any, *, required_fields: Iterable[str],
     missing = sorted(field for field in required_fields if field not in parsed)
     if missing:
         raise PreflightError(f"agent answer omits evaluated fields: {missing}")
-    reason = parsed.get("reason")
-    if isinstance(reason, str) and len(reason) > _MAX_REASON:
-        raise PreflightError("agent reason exceeds its bound")
+    # Evaluators require a non-empty reason but set no length bound, so this
+    # preflight must not invent one and reject correct work.
     if workspace is not None and not Path(workspace).is_dir():
         raise PreflightError("agent removed or lost the task workspace")
 

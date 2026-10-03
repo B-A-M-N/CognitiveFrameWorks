@@ -38,6 +38,12 @@ cohort_preflight = _util.module_from_spec(_preflight_spec)
 sys.modules[_preflight_spec.name] = cohort_preflight
 _preflight_spec.loader.exec_module(cohort_preflight)
 
+_harness_spec = _util.spec_from_file_location(
+    "cohort_runtime_harness", Path(__file__).resolve().parent / "runtime_harness.py")
+cohort_runtime = _util.module_from_spec(_harness_spec)
+sys.modules[_harness_spec.name] = cohort_runtime
+_harness_spec.loader.exec_module(cohort_runtime)
+
 # Ordered weakest-to-strongest composition. Each entry names the subsystems the
 # host actually wires for that cell.
 CONFIGURATIONS = (
@@ -148,8 +154,38 @@ def main() -> int:
                     holdout_fraction=args.holdout_fraction)
             finally:
                 os.environ.clear(); os.environ.update(saved)
+        # Construct the composition for real and record its behavioral
+        # telemetry. Environment variables alone measure the model, not the
+        # systems, so a configuration that cannot be built is a failure rather
+        # than a quietly weaker cell.
+        telemetry: list[dict[str, Any]] = []
+        construction = None
+        try:
+            state_root = Path(raw) / "runtime-state"
+            handles = cohort_runtime.build_session(
+                configuration=configuration,
+                task_id=f"{configuration}-construction-probe",
+                state_root=state_root)
+            construction = "constructed"
+            if handles.get("dp_session") is not None:
+                criterion = f"{configuration}-construction-probe-criterion"
+                cohort_runtime.drive_actions(
+                    handles, criterion_id=criterion, action_count=3)
+                telemetry.append({
+                    "trial_id": f"{label}-construction-probe",
+                    "configuration": configuration,
+                    "record": cohort_runtime.behavioral_record(
+                        handles, trial_id=f"{label}-construction-probe"),
+                })
+        except cohort_runtime.InvalidTreatment as exc:
+            construction = f"INVALID_TREATMENT: {exc}"
+        except Exception as exc:
+            construction = f"FAILED: {type(exc).__name__}: {exc}"
+
         cohorts[configuration] = {
             "_raw_results": report["results"],
+            "construction": construction,
+            "behavioral_telemetry": telemetry,
             "blinded_label": label,
             "subsystems": list(subsystems),
             "per_family": _aggregate(report["results"]),
