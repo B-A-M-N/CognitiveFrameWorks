@@ -208,26 +208,42 @@ class CFWBehaviorAdapter:
     def _validate_directive_projection(directives: Sequence[Mapping[str, Any]],
                                        projection: Mapping[str, Any]) -> None:
         frameworks = projection["framework_modes"]
+        final_values: dict[str, str] = {}
         for item in directives:
             operation = item.get("operation")
             target = str(item.get("target") or "")
             value = str(item.get("value") or "")
             if operation == "set_mode":
-                actual = projection["cognitive_mode"]
+                key = "mode"
             elif operation == "set_framework":
-                actual = frameworks.get(target.lower())
+                key = "framework:" + target.lower()
             elif operation == "set_control":
+                key = "control:" + target
+            else:
+                raise ValueError("CFW received a non-CFW directive in its prepared batch")
+
+            # A boundary may close one intervention and start another that
+            # changes the same target. The projection represents the final
+            # composed state, so validate the last directive for each target.
+            final_values[key] = value
+
+        for key, value in final_values.items():
+            if key == "mode":
+                actual = projection["cognitive_mode"]
+            elif key.startswith("framework:"):
+                actual = frameworks.get(key.split(":", 1)[1])
+            else:
+                target = key.removeprefix("control:")
                 if target == "focus_criteria":
                     actual = json.dumps(projection["focus_criteria"], separators=(",", ":"))
                 elif target == "recovery_level":
                     actual = str(projection["recovery_level"])
                 else:
                     actual = projection.get(target)
-            else:
-                raise ValueError("CFW received a non-CFW directive in its prepared batch")
             if actual is None or str(actual) != value:
                 raise ValueError(
-                    f"CFW projection does not materialize directive target {target!r}")
+                    f"CFW projection does not materialize directive target {key!r}: "
+                    f"projection value {actual!r}, directive value {value!r}")
 
     def render_behavior_context(self, context: str, *,
                                 active_statework_ids: Sequence[str] = ()) -> str:

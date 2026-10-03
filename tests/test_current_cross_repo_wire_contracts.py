@@ -289,6 +289,174 @@ def test_cfw_projection_version_matches_dp_emit_version():
     assert cfw_version == dp_version
 
 
+def test_real_private_mcp_dp_cfw_csw_path_acts_expires_and_persists(
+        tmp_path, monkeypatch):
+    """Qualify current DP, CFW and CSW authorities through the private bridge."""
+    import asyncio
+
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from digital_psychology_adapter import CFWBehaviorAdapter
+    from lib.behavior_state import GoalItemSnapshot, GoalSetSnapshot
+    from lib.control.service import ControlPlaneService
+    from lib.host import InProcessControlClient
+    from lib.mcp_server import DigitalPsychologyService
+    from lib.runtime import (BehaviorStateStore, CFWRuntimeAdapter, RuntimeHost,
+                             RuntimeIdentity, RuntimeObservation)
+    from lib.runtime.contracts import ActionCandidate
+    from lib.runtime.cfw_projection import build_cfw_behavior_projection
+
+    class AgentHandle:
+        def before_model_call(self, *, behavior_context, **_kwargs):
+            return behavior_context
+
+        def before_tool_planning(self, _action_hint=None, *, behavior_context,
+                                 **_kwargs):
+            return behavior_context
+
+    cfw_session = _real_session(tmp_path, monkeypatch)
+    cfw_port = CFWRuntimeAdapter(CFWBehaviorAdapter(cfw_session, AgentHandle()))
+    scope = _wire_scope()
+    identity = RuntimeIdentity(
+        namespace_id=scope["namespace_id"],
+        application_id=scope["application_id"],
+        application_instance_id=scope["application_instance_id"],
+        agent_instance_id="agent-wire-instance", session_id=scope["workflow_id"],
+        task_id=scope["workflow_id"], attempt_id="attempt-wire",
+        workflow_id=scope["workflow_id"], subject_ref=scope["subject_ref"],
+        segment_id="segment-1", agent_id="agent-wire",
+        behavioral_subject=scope["subject_ref"], goal_contract_hash="d" * 64,
+    )
+    goals = GoalSetSnapshot(revision=0, items=(
+        GoalItemSnapshot(criterion_id="criterion-wire", status="READY"),))
+    authority = _real_csw(tmp_path)
+    csw = _dp_csw_adapter(authority, scope)
+    expiry_calls = []
+    cfw_expiry_calls = []
+    expire_csw = authority.expire_workflow_leases
+    expire_cfw = cfw_session.expire_external_behavior_leases
+
+    def tracked_csw_expiry(**kwargs):
+        expiry_calls.append(kwargs["host_action_index"])
+        return expire_csw(**kwargs)
+
+    def tracked_cfw_expiry(action_index):
+        cfw_expiry_calls.append(action_index)
+        return expire_cfw(action_index)
+
+    monkeypatch.setattr(authority, "expire_workflow_leases", tracked_csw_expiry)
+    monkeypatch.setattr(cfw_session, "expire_external_behavior_leases",
+                        tracked_cfw_expiry)
+    dp_events = DigitalPsychologyService(event_db=tmp_path / "dp-events.sqlite3")
+    store_path = tmp_path / "private-control.sqlite3"
+    state_store = BehaviorStateStore(store_path)
+    control_service = ControlPlaneService(
+        decision_service=dp_events, state_store=state_store)
+    host = RuntimeHost()
+
+    async def exercise():
+        bridge = await host.open_control_bridge(
+            identity=identity, objective="Inspect and complete the requested repository work",
+            objective_criteria=("criterion-wire",), initial_goal_set=goals,
+            cfw=cfw_port, csw=csw,
+            client=InProcessControlClient(control_service),
+            outcome_evidence_connected=True,
+        )
+        try:
+            first = await bridge.after_action(RuntimeObservation(
+                action_index=1, goal_set=goals,
+                equivalent_retry_count=2,
+                active_trigger_codes=("equivalent_retry",),
+                criterion_status={"criterion-wire": "unmet"},
+            ))
+            assert first["status"] == "ready"
+            assert bridge.behavior_state.cognitive_mode == "RECOVER"
+            effective = cfw_session.effective_external_behavior_projection()
+            assert effective["cognitive_mode"] == bridge.behavior_state.cognitive_mode
+            assert cfw_session.external_behavior_revision == bridge.behavior_state.revision
+            forbidden = {"mode_lease", "attention_lease", "attention_last_seen",
+                         "active_stateworks", "intervention_history"}
+            assert forbidden.isdisjoint(cfw_session.external_behavior_projection)
+
+            candidate = ActionCandidate(
+                action_class="read", proposed_purpose="inspect the requested source",
+                affected_criterion_ids=("criterion-wire",), action_id="wire-read-1",
+                tool_name="read", operation="inspect", mutating=False,
+                reversible=True,
+            )
+            action_request = {
+                "tool_binding_id": "read", "arguments": {"path": "README.md"},
+                "subject_ref": cfw_session.bundle.policy.subject_ref,
+            }
+            authorized = await bridge.before_action_candidate(
+                candidate, cfw_action_request=action_request, goal_set=goals)
+            assert authorized["action_authorized"] is True
+            assert authorized["action_request_id"]
+            second = await bridge.after_action(RuntimeObservation(
+                action_index=2, goal_set=goals,
+                criterion_status={"criterion-wire": "unmet"},
+            ))
+            assert second["status"] == "ready", second.get("fault")
+            expected = build_cfw_behavior_projection(
+                bridge.behavior_state, host_action_index=2).to_dict()
+            assert cfw_session.external_behavior_projection == expected
+            assert bridge.behavior_state.active_stateworks == \
+                csw.behavioral_snapshot().active_stateworks
+
+            transitions = state_store.committed_control_transitions(identity.scope)
+            pre_action = next(item for item in transitions
+                              if item["boundary_kind"] == "pre_action")
+            assert pre_action["cfw_preflight_decision"] == "allow"
+            action_rows = state_store.behavioral_action_traces(identity.scope)
+            assert action_rows[-1]["cfw_preflight_decision"] == "allow"
+            assert action_rows[-1]["cfw_final_decision"] == "allow"
+            assert action_rows[-1]["projection_digest"]
+
+            for action_index in (3, 4):
+                result = await bridge.after_action(RuntimeObservation(
+                    action_index=action_index, goal_set=goals,
+                    criterion_status={"criterion-wire": "unmet"},
+                ))
+                assert result["status"] == "ready"
+            reconciled = await bridge.reconcile()
+            assert reconciled["status"] == "ready"
+            current = build_cfw_behavior_projection(
+                bridge.behavior_state, host_action_index=4).to_dict()
+            assert cfw_session.external_behavior_projection == current
+            assert bridge.behavior_state.active_stateworks == \
+                csw.behavioral_snapshot().active_stateworks
+            assert 4 in cfw_expiry_calls and 4 in expiry_calls
+
+            record = control_service.behavioral_trial_record(
+                identity.scope, trial_id="real-private-bridge")
+            assert record["committed_actions"] == 4
+            assert record["cfw_preflight_rejections"] == 0
+            assert record["cfw_final_gate_rejections"] == 0
+            return bridge
+        except Exception:
+            await bridge.close()
+            raise
+
+    try:
+        bridge = asyncio.run(exercise())
+        asyncio.run(bridge.close())
+        # Re-open the durable store through a fresh service to prove that the
+        # private-path action records survive a DP control-process restart.
+        restarted = ControlPlaneService(
+            decision_service=DigitalPsychologyService(
+                event_db=tmp_path / "dp-events-restarted.sqlite3"),
+            state_store=BehaviorStateStore(store_path),
+        )
+        recovered = restarted.behavioral_trial_record(
+            identity.scope, trial_id="restarted-private-bridge")
+        assert recovered["committed_actions"] == 4
+        assert len(BehaviorStateStore(store_path).committed_control_transitions(
+            identity.scope)) >= 5
+        restarted.close()
+    finally:
+        control_service.close()
+
+
 def test_projection_excludes_dp_private_bookkeeping():
     """The whole point of the projection: CFW cannot see DP's internals."""
     if str(DP) not in sys.path:

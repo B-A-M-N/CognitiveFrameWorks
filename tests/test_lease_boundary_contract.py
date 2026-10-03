@@ -31,7 +31,11 @@ DP = Path("/home/bamn/DigitalPsychology")
 
 BASELINE_ACTION = 10
 DURATION = 3
-EXPIRES_AT = BASELINE_ACTION + DURATION  # 13 under the stated convention
+if str(DP) not in sys.path:
+    sys.path.insert(0, str(DP))
+from lib.lease_window import lease_window
+
+EXPIRES_AT = lease_window("POST_ACTION", BASELINE_ACTION, DURATION).expires_at_action
 PROBE_ACTIONS = (9, 10, 11, 12, 13)
 
 
