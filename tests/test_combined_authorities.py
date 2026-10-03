@@ -85,6 +85,7 @@ def test_action_preference_orders_but_does_not_authorize():
                              "flow": "off", "sispis": "normal", "dox": "off"},
         "active_stateworks": [], "focus_criteria": [],
         "attention_lease": None, "attention_last_seen": {},
+        "mode_lease": None,
         "verification_intensity": "normal", "exploration_budget": "normal",
         "retry_policy": "normal", "recovery_level": 0,
         "context_strategy": "standard", "response_strategy": "direct",

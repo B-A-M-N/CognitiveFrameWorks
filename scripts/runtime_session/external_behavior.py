@@ -114,6 +114,7 @@ class ExternalBehaviorMethods:
         expected_fields = {
             "revision", "cognitive_mode", "framework_modes", "active_stateworks",
             "focus_criteria", "attention_lease", "attention_last_seen",
+            "mode_lease",
             "verification_intensity", "exploration_budget",
             "retry_policy", "recovery_level", "context_strategy",
             "response_strategy", "active_interventions", "intervention_history",
@@ -179,7 +180,8 @@ class ExternalBehaviorMethods:
         attention_lease = value.get("attention_lease")
         if attention_lease is not None:
             lease_fields = {"lease_id", "criterion_ids", "issued_revision",
-                            "goal_set_revision", "start_action", "max_actions", "reason"}
+                            "goal_set_revision", "start_action", "max_actions", "reason",
+                            "material_progress_revisions", "continuous_attention_leases"}
             lease_criteria = (attention_lease.get("criterion_ids")
                               if isinstance(attention_lease, Mapping) else None)
             if (not isinstance(attention_lease, Mapping)
@@ -205,6 +207,53 @@ class ExternalBehaviorMethods:
                     or not attention_lease["reason"]
                     or len(attention_lease["reason"]) > 128):
                 raise ValueError("DP attention lease is malformed or inconsistent")
+        mode_lease = value.get("mode_lease")
+        if mode_lease is not None:
+            mode_lease_fields = {
+                "mode", "entered_action", "minimum_actions", "max_actions",
+                "cause", "exit_condition", "baseline_approach_epoch"}
+            if not isinstance(mode_lease, Mapping) or set(mode_lease) != mode_lease_fields:
+                raise ValueError("DP mode lease does not match the versioned CFW port")
+            if (mode_lease.get("mode") not in behavior_modes
+                    or type(mode_lease.get("entered_action")) is not int
+                    or mode_lease["entered_action"] < 0
+                    or type(mode_lease.get("minimum_actions")) is not int
+                    or mode_lease["minimum_actions"] < 0
+                    or type(mode_lease.get("max_actions")) is not int
+                    or mode_lease["max_actions"] < mode_lease["minimum_actions"]
+                    or not isinstance(mode_lease.get("cause"), str)
+                    or not mode_lease["cause"]
+                    or len(mode_lease["cause"]) > 128
+                    or not isinstance(mode_lease.get("exit_condition"), str)
+                    or not mode_lease["exit_condition"]
+                    or len(mode_lease["exit_condition"]) > 128):
+                raise ValueError("DP mode lease is malformed")
+            # DP emits bounded text or null here, not an integer counter.
+            baseline_epoch = mode_lease.get("baseline_approach_epoch")
+            if baseline_epoch is not None and (
+                    not isinstance(baseline_epoch, str)
+                    or not baseline_epoch or len(baseline_epoch) > 256):
+                raise ValueError("DP mode lease baseline epoch is malformed")
+
+        if attention_lease is not None:
+            lease_criteria = tuple(attention_lease.get("criterion_ids") or ())
+            material = attention_lease.get("material_progress_revisions")
+            if not isinstance(material, Mapping) or len(material) > 3:
+                raise ValueError("DP material-progress tracking is malformed")
+            for key, item in material.items():
+                if (key not in lease_criteria
+                        or type(item) is not int or item < 0):
+                    raise ValueError("DP material-progress tracking is malformed")
+            # DP models both lease fields as a criterion-keyed count mapping.
+            continuous = attention_lease.get("continuous_attention_leases")
+            if not isinstance(continuous, Mapping) or len(continuous) > 3:
+                raise ValueError("DP continuous attention lease count is malformed")
+            for key, item in continuous.items():
+                if key not in lease_criteria or type(item) is not int or item < 0:
+                    raise ValueError("DP continuous attention lease entry is malformed")
+                if item > 2:
+                    raise ValueError("DP continuous attention lease count exceeds two")
+
         attention_last_seen = value.get("attention_last_seen")
         if (not isinstance(attention_last_seen, Mapping)
                 or len(attention_last_seen) > 256
