@@ -98,7 +98,12 @@ class CFWBehaviorAdapter:
             components, separators=(",", ":")).encode()).hexdigest()
         return {"adapter_kind": "cfw-component-runtime",
                 "authority_id": "cfw-execution:" + scope_hash,
-                "protocol_version": "1.0.0", "scope": scope_hash,
+                "protocol_version": CFW_BEHAVIOR_PROJECTION_VERSION,
+                # Named separately from the generic port version so a host can
+                # compare the actuation contract it will actually send against
+                # the one CFW supports, before any intervention happens.
+                "behavior_projection_version": self.behavior_projection_version,
+                "scope": scope_hash,
                 "scope_hash": scope_hash, "capability_hash": capability_hash}
 
     @property
