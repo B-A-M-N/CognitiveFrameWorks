@@ -1,6 +1,7 @@
 """Typed packet prerequisite validation and StateWork DAG planning."""
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
@@ -41,6 +42,34 @@ def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
                          statework_subject_refs: Optional[Mapping[str, str]] = None,
                          observation_context: Optional[Mapping[str, Any]] = None,
                          cow_root: Path = DEFAULT_STATEWORK_ROOT) -> List[Dict[str, Any]]:
+    """DEPRECATED compatibility wrapper.
+
+    Packet dependency closure and StateWork DAG composition are owned by CSW and
+    reached through ``StateWorkProvider`` / ``WorkflowPort.resolve_workflows()``.
+    This duplicate stays only for existing callers; new work must not route
+    workflow composition through CFW.
+    """
+    warnings.warn(
+        "plan_statework_dag duplicates CSW-owned composition; use "
+        "WorkflowPort.resolve_workflows()",
+        DeprecationWarning, stacklevel=2)
+    return _plan_statework_dag_impl(
+        statework, stateworks, packet_registry, packet_store, allow_missing_required,
+        missing_required, task_id, subject_ref, statework_subject_refs,
+        observation_context, cow_root)
+
+
+def _plan_statework_dag_impl(statework: Any, stateworks: List[Dict[str, Any]],
+                             packet_registry: Dict[str, Any],
+                             packet_store: Optional[Dict[str, Dict[str, Any]]] = None,
+                             allow_missing_required: bool = True,
+                             missing_required: Optional[List[str]] = None,
+                             task_id: Optional[str] = None,
+                             subject_ref: Optional[str] = None,
+                             statework_subject_refs: Optional[Mapping[str, str]] = None,
+                             observation_context: Optional[Mapping[str, Any]] = None,
+                             cow_root: Path = DEFAULT_STATEWORK_ROOT
+                             ) -> List[Dict[str, Any]]:
     """Plan a composable DAG from every desired StateWork root.
 
     Required packets, declared bundle dependencies, and all roots are merged
@@ -175,5 +204,9 @@ def plan_statework_dag(statework: Any, stateworks: List[Dict[str, Any]],
 
 def plan_statework_chain(statework: Optional[Dict[str, Any]], stateworks: List[Dict[str, Any]],
                          packet_registry: Dict[str, Any], **kwargs: Any) -> List[Dict[str, Any]]:
-    """Backward-compatible single-root spelling for plan_statework_dag."""
-    return plan_statework_dag(statework, stateworks, packet_registry, **kwargs)
+    """DEPRECATED single-root spelling of the CSW-owned DAG planner."""
+    warnings.warn(
+        "plan_statework_chain duplicates CSW-owned composition; use "
+        "WorkflowPort.resolve_workflows()",
+        DeprecationWarning, stacklevel=2)
+    return _plan_statework_dag_impl(statework, stateworks, packet_registry, **kwargs)

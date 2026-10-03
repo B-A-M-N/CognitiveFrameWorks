@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 def _norm(text: str) -> str:
@@ -12,6 +13,24 @@ def _tokens(text: str) -> set:
 
 def match_statework(stateworks: List[Dict[str, Any]], domains: Iterable[str],
                     phase: Optional[str] = None) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """DEPRECATED compatibility wrapper.
+
+    StateWork matching, dependency closure and composition are owned by CSW and
+    reached through ``StateWorkProvider`` / ``WorkflowPort.resolve_workflows()``.
+    This second implementation is reachable only from the compatibility facade,
+    so it stays for existing callers but must not be used for new work: two
+    copies of workflow semantics will diverge again.
+    """
+    warnings.warn(
+        "match_statework duplicates CSW-owned matching; use "
+        "WorkflowPort.resolve_workflows()",
+        DeprecationWarning, stacklevel=2)
+    return _match_statework_impl(stateworks, domains, phase)
+
+
+def _match_statework_impl(stateworks: List[Dict[str, Any]], domains: Iterable[str],
+                          phase: Optional[str] = None
+                          ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """Deterministic matching:
     1. normalize case + punctuation
     2. exact canonical label match first (manifest id or name)
@@ -77,11 +96,15 @@ def match_statework(stateworks: List[Dict[str, Any]], domains: Iterable[str],
 
 def match_stateworks(stateworks: List[Dict[str, Any]], domains: Iterable[str],
                      phase: Optional[str] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Match all independently eligible domain roots with explicit ambiguity."""
+    """DEPRECATED compatibility wrapper around the duplicate matcher."""
+    warnings.warn(
+        "match_stateworks duplicates CSW-owned matching; use "
+        "WorkflowPort.resolve_workflows()",
+        DeprecationWarning, stacklevel=2)
     roots: Dict[str, Dict[str, Any]] = {}
     ambiguous: set[str] = set()
     for domain in domains:
-        candidate, conflicts = match_statework(stateworks, [domain], phase=phase)
+        candidate, conflicts = _match_statework_impl(stateworks, [domain], phase=phase)
         ambiguous.update(str(item) for item in conflicts)
         if candidate is not None:
             roots[str(candidate.get("id"))] = candidate
