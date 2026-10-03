@@ -167,3 +167,30 @@ def test_field_specs_name_the_fields_evaluators_actually_read():
         assert not missing, (
             f"{family_id} spec omits fields its evaluator reads: {missing}. "
             f"spec={spec!r}")
+
+
+def test_adapter_parses_multi_line_json_answers():
+    """The model often emits its JSON across several lines.
+
+    Scanning line-at-a-time missed those entirely and the adapter reported "no
+    parsable JSON" for a correct answer, which scored the trial as a failure.
+    """
+    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
+    assert "raw.splitlines()" not in source.split("parsed_objects")[0][-400:], (
+        "the parser must not scan the output one line at a time")
+    assert 'lines[start:end]' in source, "must scan multi-line chunks"
+    assert "no parsable JSON from agent" in source
+
+
+def test_adapter_prefers_the_last_answer_bearing_object():
+    """Codex prints banner and metadata lines before the model's answer."""
+    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
+    assert "for parsed in reversed(parsed_objects)" in source, (
+        "must prefer the last JSON object that carries an answer")
+
+
+def test_adapter_prompt_states_strict_field_types():
+    """A counter answered as true/false is a real failure mode seen in runs."""
+    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
+    assert "never true or" in source
+    assert "MUST contain every" in source

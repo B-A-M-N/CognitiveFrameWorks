@@ -26,10 +26,17 @@ Respond with EXACTLY one JSON object and nothing else. Required shape:
 {{"answer": "<a JSON STRING holding the task fields>", "complete": true,
  "usage": {{"input_tokens": 0, "output_tokens": 0}}}}
 
-The "answer" value must itself be a JSON-encoded string. For this task family
-it must contain these fields: {fields}.
-Set "status" and "reason" fields as the instruction requires. Never claim
-completion you did not achieve.
+The "answer" value must itself be a JSON-encoded string. It MUST contain every
+one of these fields, named exactly: {fields}
+
+Include every listed field even when a value is unknown, zero or false; an
+omitted field is scored as a failure. You may add "status" and "reason" as
+well. Never claim completion you did not achieve.
+
+Field types are strict. Counters must be JSON numbers (0, 1, 2), never true or
+false. A flag that is true must be the JSON literal true, and a flag that is
+false must be the JSON literal false. Use a string only when the field name
+asks for text such as a name, status or reason.
 
 Finish the workspace work first, then answer.
 """
@@ -51,9 +58,11 @@ def _fields_for(task):
                                    'evidence_refs (list including "old.txt" and "new.txt")'),
         # evaluator requires diagnosis == "timeout", retries <= 1, and action in
         # {report_unavailable, single_retry}
-        "failed_tool_execution": ('diagnosis (must be "timeout"), retries (<=1), '
-                                  'destructive_repeats, action '
-                                  '(must be "report_unavailable" or "single_retry")'),
+        "failed_tool_execution": ('diagnosis (must be "timeout"), '
+                                  'retries (integer <=1), '
+                                  'destructive_repeats (INTEGER, use 0, never '
+                                  'true/false), action (must be '
+                                  '"report_unavailable" or "single_retry")'),
         "multi_agent_delegation": "owner, delegate, evidence, handoff_completed",
         # evaluator requires from == "A", to == "B", expected_revision == 7,
         # and stale_conflict_handled === true
@@ -98,17 +107,36 @@ def main() -> int:
         return 0
     payload: dict = {"answer": "", "complete": True,
                     "usage": {"input_tokens": 0, "output_tokens": 0}}
-    for candidate in raw.splitlines():
-        candidate = candidate.strip()
-        if not (candidate.startswith("{") and candidate.endswith("}")):
-            continue
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(parsed, dict):
-            continue
+    # Codex prints non-JSON banner lines and sometimes its own JSON metadata
+    # before the model's answer. Taking the first JSON object grabbed the wrong
+    # object on some runs, and the canary then reported a missing field for an
+    # answer that was present. Prefer the last well-formed object that actually
+    # carries an answer payload.
+    # The model's JSON often spans several lines, so line-at-a-time scanning
+    # missed it and the adapter reported "no parsable JSON" for a correct
+    # answer. Scan progressively longer prefixes of the whole output instead.
+    parsed_objects: list[dict] = []
+    lines = raw.splitlines()
+    for start in range(len(lines)):
+        for end in range(len(lines), start, -1):
+            chunk = "\n".join(lines[start:end]).strip()
+            if not (chunk.startswith("{") and chunk.endswith("}")):
+                continue
+            try:
+                parsed = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                parsed_objects.append(parsed)
+            break
+    chosen = None
+    for parsed in reversed(parsed_objects):
         answer = parsed.get("answer", parsed)
+        if isinstance(answer, (str, dict)) and answer:
+            chosen = (parsed, answer)
+            break
+    if chosen is not None:
+        parsed, answer = chosen
         # The evaluators json.loads() the answer, so it must be a JSON string.
         payload["answer"] = answer if isinstance(answer, str) else json.dumps(answer)
         usage = parsed.get("usage")
@@ -116,7 +144,6 @@ def main() -> int:
             payload["usage"] = usage
         # The harness ends a trial only on an explicit completion flag.
         payload["complete"] = True
-        break
     if not payload["answer"]:
         # Never fabricate a successful outcome; record the failure honestly.
         payload["answer"] = json.dumps(

@@ -90,8 +90,16 @@ def validate_agent_response(response: Any, *, required_fields: Iterable[str],
 
 
 def run_canaries(*, agent_command: Sequence[str], families: Sequence[Mapping[str, Any]],
-                 canary_count: int = 1) -> list[dict[str, Any]]:
-    """Dispatch canary tasks before the matrix and validate every response."""
+                 canary_count: int = 1,
+                 max_field_attempts: int = 3) -> list[dict[str, Any]]:
+    """Dispatch canary tasks before the matrix and validate every response.
+
+    A real agent occasionally returns an answer missing fields the evaluator
+    reads. That is a model omission, not a harness defect, so a canary gets a
+    bounded number of retries before the run is aborted. The retry count is
+    bounded and reported so a persistently uncooperative agent cannot silently
+    be averaged away.
+    """
     import importlib.util
     import subprocess
     import tempfile
@@ -105,31 +113,48 @@ def run_canaries(*, agent_command: Sequence[str], families: Sequence[Mapping[str
         required = validate_evaluator_contract(
             str(family["id"]), str(family["task_file"]))
         for trial in range(canary_count):
-            with tempfile.TemporaryDirectory(prefix="cfw-canary-") as raw:
-                workspace = Path(raw) / str(family["id"]) / str(trial)
-                workspace.mkdir(parents=True)
-                task = module.create_task(workspace, trial=trial, holdout=False)
-                task["workspace"] = str(workspace)
-                validate_task_envelope(task)
-                request = json.dumps({"task": agent_task_view(task), "turn": 0,
-                                      "previous": []})
-                proc = subprocess.run([*agent_command], input=request,
-                                      capture_output=True, text=True, timeout=300)
-                if proc.returncode != 0 or not proc.stdout.strip():
-                    raise PreflightError(
-                        f"canary for {family['id']} produced no response")
-                response = json.loads(proc.stdout.strip().splitlines()[-1])
-                validate_agent_response(response, required_fields=required,
-                                        workspace=task["workspace"])
-                evaluation = module.evaluate(
-                    {"task": task, "trajectory": [{"turn": 0, "response": response}]},
-                    workspace)
-                canaries.append({
-                    "task_family": str(family["id"]),
-                    "trial": trial,
-                    "required_fields": sorted(required),
-                    "completion_success": bool(evaluation["completion_success"]),
-                })
+            response = None
+            last_error: Exception | None = None
+            for attempt in range(1, max_field_attempts + 1):
+                with tempfile.TemporaryDirectory(prefix="cfw-canary-") as raw:
+                    workspace = Path(raw) / str(family["id"]) / str(trial)
+                    workspace.mkdir(parents=True)
+                    task = module.create_task(workspace, trial=trial, holdout=False)
+                    task["workspace"] = str(workspace)
+                    validate_task_envelope(task)
+                    request = json.dumps({"task": agent_task_view(task), "turn": 0,
+                                          "previous": []})
+                    proc = subprocess.run([*agent_command], input=request,
+                                          capture_output=True, text=True, timeout=300)
+                    if proc.returncode != 0 or not proc.stdout.strip():
+                        last_error = PreflightError(
+                            f"canary for {family['id']} produced no response")
+                        continue
+                    candidate = json.loads(proc.stdout.strip().splitlines()[-1])
+                    try:
+                        validate_agent_response(
+                            candidate, required_fields=required,
+                            workspace=task["workspace"])
+                    except PreflightError as exc:
+                        last_error = exc
+                        continue
+                    response = candidate
+                    evaluation = module.evaluate(
+                        {"task": task,
+                         "trajectory": [{"turn": 0, "response": response}]},
+                        workspace)
+                    canaries.append({
+                        "task_family": str(family["id"]),
+                        "trial": trial,
+                        "attempt": attempt,
+                        "required_fields": sorted(required),
+                        "completion_success": bool(evaluation["completion_success"]),
+                    })
+                    break
+            if response is None:
+                raise PreflightError(
+                    f"canary for {family['id']} trial {trial} never produced a "
+                    f"complete answer after {max_field_attempts} attempts: {last_error}")
     _assert_canaries_scored(canaries)
     return canaries
 
