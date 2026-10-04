@@ -676,6 +676,15 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
             assert progress["status"] == "ready", progress.get("fault")
             assert not bridge.behavior_state.active_interventions
             assert not csw.behavioral_snapshot().active_stateworks
+            assert cfw_session.effective_external_behavior_projection()[
+                "target_leases"] == []
+            # Criterion 1 remains a repeated failed approach after the verified
+            # recovery attempt. The remaining runnable criteria must still get
+            # attention within DP's declared fairness bound.
+            stuck_goals = GoalSetSnapshot(revision=2, items=tuple(
+                replace(item, equivalent_retry_count=2)
+                if item.criterion_id == criteria[0] else item
+                for item in progressed_goals.items))
 
             # Drive enough actual host actions for DP's round-robin attention to
             # cover all twelve required criteria under the real triad.
@@ -683,10 +692,10 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
                 criterion = criteria[(action_index - 3) % len(criteria)]
                 result = await bridge.before_action_candidate(
                     candidate(action_index, criterion),
-                    cfw_action_request=action_request(), goal_set=progressed_goals)
+                    cfw_action_request=action_request(), goal_set=stuck_goals)
                 assert result["action_authorized"] is True
                 completed = await bridge.after_action(RuntimeObservation(
-                    action_index=action_index, goal_set=progressed_goals,
+                    action_index=action_index, goal_set=stuck_goals,
                     criterion_status=criterion_status))
                 assert completed["status"] == "ready", completed.get("fault")
 
@@ -709,6 +718,7 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
             rejected_rows = [row for row in transitions
                              if row.get("cfw_rejection_stage") == "cfw_final_gate"]
             assert len(rejected_rows) == 1
+            assert rejected_rows[0]["host_action_index"] == 2
             assert rejected_rows[0].get("ward_hard_safety") is False
             await bridge.close()
         except Exception:
