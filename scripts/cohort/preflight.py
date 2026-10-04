@@ -252,8 +252,10 @@ def check_semantic_treatment(manifests: Mapping[str, Mapping[str, Any]]) -> None
     The treatment must never silently collapse into the DP-only arm.
     """
     required = ("backend_id", "model_id", "model_revision", "model_content_hash",
-                "provider_protocol_hash", "calibration_bundle_hash",
-                "enabled_question_families")
+                "provider_protocol_hash", "calibration_bundle_hash", "provider_mode",
+                "capability_digest", "enabled_question_families")
+    digest_fields = ("model_content_hash", "provider_protocol_hash",
+                     "calibration_bundle_hash", "capability_digest")
     for label, manifest in manifests.items():
         if manifest.get("semantic_provider_status") != "enabled":
             raise PreflightError(
@@ -263,9 +265,26 @@ def check_semantic_treatment(manifests: Mapping[str, Mapping[str, Any]]) -> None
         if missing:
             raise PreflightError(
                 f"cohort {label} is missing provider attestation: {missing}")
-        if not manifest.get("capability_handshake_observed"):
+        if manifest.get("capability_handshake_observed") is not True:
             raise PreflightError(
                 f"cohort {label} recorded no semantic capability handshake")
+        if manifest.get("backend_id") != "digitalpsychology-laya-native":
+            raise PreflightError(
+                f"cohort {label} attested a provider other than native Laya")
+        if manifest.get("provider_mode") not in {"shadow", "advisory"}:
+            raise PreflightError(
+                f"cohort {label} has an invalid semantic provider mode")
+        for field in digest_fields:
+            if not isinstance(manifest.get(field), str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", manifest[field]):
+                raise PreflightError(
+                    f"cohort {label} has an invalid provider attestation digest: {field}")
+        families = manifest.get("enabled_question_families")
+        if (not isinstance(families, list) or not families or len(families) > 16
+                or any(not isinstance(item, str) or not item for item in families)
+                or len(families) != len(set(families))):
+            raise PreflightError(
+                f"cohort {label} has invalid enabled question families")
 
 
 def check_telemetry_present(reports: Mapping[str, Mapping[str, Any]]) -> None:

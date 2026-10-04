@@ -31,10 +31,17 @@
       ]
     },
     {
-      "name": "dp_three_system",
+      "name": "dp_guard_policy_causal",
       "cwd": "DigitalPsychology",
       "command": [
         "scripts/acceptance-three-system.py"
+      ]
+    },
+    {
+      "name": "dp_runtime_triad",
+      "cwd": "DigitalPsychology",
+      "command": [
+        "scripts/acceptance-runtime-triad.py"
       ]
     },
     {

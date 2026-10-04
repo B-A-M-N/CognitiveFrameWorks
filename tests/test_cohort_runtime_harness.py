@@ -25,9 +25,11 @@ _spec.loader.exec_module(harness)
 
 
 def _provider_manifest(**overrides):
-    manifest = {"semantic_provider_status": "enabled", "backend_id": "laya",
+    manifest = {"semantic_provider_status": "enabled",
+                "backend_id": "digitalpsychology-laya-native",
                 "model_id": "m", "model_revision": "r",
                 "model_content_hash": "a" * 64, "provider_protocol_hash": "b" * 64,
+                "provider_mode": "shadow", "capability_digest": "d" * 64,
                 "calibration_bundle_hash": "c" * 64,
                 "enabled_question_families": ["action_relation"],
                 "capability_handshake_observed": True}
@@ -99,7 +101,9 @@ def test_configuration_without_dp_reports_absent_telemetry(tmp_path):
 
 # -- treatment attestation (P1-16) ---------------------------------------
 
-def test_laya_arm_without_a_live_provider_is_an_invalid_treatment(tmp_path):
+def test_laya_arm_without_a_live_provider_is_an_invalid_treatment(tmp_path, monkeypatch):
+    monkeypatch.setenv("DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE", "disabled")
+    monkeypatch.setenv("DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER", "disabled")
     with pytest.raises(harness.InvalidTreatment, match="INVALID_TREATMENT"):
         harness.build_session(configuration="cfw_csw_dp_laya", task_id="l-1",
                               state_root=tmp_path)
@@ -110,24 +114,14 @@ def test_laya_arm_without_a_live_provider_is_an_invalid_treatment(tmp_path):
                                   semantic_provider_status="disabled"))
 
 
-@pytest.mark.parametrize("missing", [
-    "backend_id", "model_id", "model_revision", "model_content_hash",
-    "provider_protocol_hash", "calibration_bundle_hash",
-    "enabled_question_families", "capability_handshake_observed"])
-def test_laya_arm_requires_every_attestation_field(tmp_path, missing):
-    manifest = _provider_manifest()
-    manifest.pop(missing)
-    with pytest.raises(harness.InvalidTreatment):
-        harness.build_session(configuration="cfw_csw_dp_laya", task_id="l-3",
-                              state_root=tmp_path, provider_manifest=manifest)
-
-
-def test_laya_arm_with_full_attestation_constructs(tmp_path):
-    handles = harness.build_session(
-        configuration="cfw_csw_dp_laya", task_id="l-4", state_root=tmp_path,
-        provider_manifest=_provider_manifest())
-    assert handles["dp_session"] is not None
-    assert handles["csw_authority"] is not None
+def test_laya_arm_does_not_trust_a_complete_caller_supplied_attestation(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE", "disabled")
+    monkeypatch.setenv("DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER", "disabled")
+    with pytest.raises(harness.InvalidTreatment, match="actual enabled provider"):
+        harness.build_session(
+            configuration="cfw_csw_dp_laya", task_id="l-4", state_root=tmp_path,
+            provider_manifest=_provider_manifest())
 
 
 def test_drive_actions_produces_a_non_empty_trace(tmp_path):

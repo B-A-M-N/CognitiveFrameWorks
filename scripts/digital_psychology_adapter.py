@@ -13,8 +13,13 @@ from typing import Any, Mapping, Sequence
 
 from runtime import context_for
 from runtime_contract.component_control import (COMPONENT_ALLOWED_MODES,
+                                                COMPONENT_BASELINE_MODES,
+                                                COMPONENT_DYNAMIC_CONTROL,
                                                 COMPONENT_HARD_FLOOR_MODES,
-                                                COMPONENT_IDS)
+                                                COMPONENT_IDS,
+                                                COMPONENT_MODEL_VISIBILITY,
+                                                PIPELINE_MANIFEST_HASH,
+                                                PIPELINE_MANIFEST_VERSION)
 
 
 _SCOPE = re.compile(r"^dp-runtime-[0-9a-f]{64}$")
@@ -95,14 +100,32 @@ class CFWBehaviorAdapter:
         scope_hash = hashlib.sha256(json.dumps(
             identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         components = tuple(sorted(self.available_component_ids()))
-        capability_hash = hashlib.sha256(json.dumps(
-            components, separators=(",", ":")).encode()).hexdigest()
+        component_contract = {
+            component_id: {
+                "allowed_modes": sorted(COMPONENT_ALLOWED_MODES[component_id]),
+                "baseline_mode": COMPONENT_BASELINE_MODES[component_id],
+                "dynamic_control": COMPONENT_DYNAMIC_CONTROL[component_id],
+                "hard_floor_mode": COMPONENT_HARD_FLOOR_MODES.get(component_id),
+                "model_visibility": COMPONENT_MODEL_VISIBILITY[component_id],
+            }
+            for component_id in components
+        }
+        component_contract_hash = hashlib.sha256(json.dumps({
+            "components": component_contract,
+            "pipeline_manifest_version": PIPELINE_MANIFEST_VERSION,
+            "pipeline_manifest_hash": PIPELINE_MANIFEST_HASH,
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        capability_hash = hashlib.sha256(json.dumps({
+            "component_contract_hash": component_contract_hash,
+            "behavior_projection_version": self.behavior_projection_version,
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return {"adapter_kind": "cfw-component-runtime",
                 "authority_id": "cfw-execution:" + scope_hash,
                 "adapter_protocol_version": CFW_ADAPTER_PROTOCOL_VERSION,
                 "behavior_projection_version": self.behavior_projection_version,
                 "scope": scope_hash,
-                "scope_hash": scope_hash, "capability_hash": capability_hash}
+                "scope_hash": scope_hash, "capability_hash": capability_hash,
+                "component_contract_hash": component_contract_hash}
 
     @property
     def applied_behavior_projection(self) -> Mapping[str, Any] | None:

@@ -13,6 +13,7 @@ def load_pipeline_document(path: Path) -> Dict[str, Any]:
     if isinstance(components, list):
         components = {str(item["id"]): item for item in components}
     return {
+        "version": data.get("version"),
         "stages": stages,
         "components": components,
         "aliases": data.get("aliases", {}) or {},

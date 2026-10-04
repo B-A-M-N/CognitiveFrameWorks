@@ -66,9 +66,10 @@ def test_statework_provider_contract_and_fail_closed_configured_root(tmp_path):
         resolve.load_stateworks(invalid)
 
 
-def test_cfw_does_not_discover_optional_provider_during_default_startup():
+def test_cfw_does_not_discover_optional_provider_during_default_startup(monkeypatch):
     # Even when an optional CSW entry point is installed, startup defaults to
     # the CFW-owned registry location. Hosts opt in by supplying a root/port.
+    monkeypatch.delenv("COGNITIVE_STATEWORK_ROOT", raising=False)
     assert default_statework_root() == ROOT / "statework"
 
 
@@ -186,6 +187,8 @@ def test_cfw_runtime_uses_the_neutral_state_authority_port():
 def test_partial_component_lease_expiry_preserves_other_live_targets():
     from types import SimpleNamespace
     from runtime import LifecycleController
+    from runtime_session.legacy_external_behavior import (
+        component_overlay_from_legacy_behavior_state)
 
     scope = "dp-runtime-" + "a" * 64
     state = {
@@ -212,7 +215,7 @@ def test_partial_component_lease_expiry_preserves_other_live_targets():
             },
         ],
     }
-    overlay = ComponentOverlay.from_legacy_behavior_state(state)
+    overlay = component_overlay_from_legacy_behavior_state(state)
     lifecycle = LifecycleController(SimpleNamespace(kernel_instructions=()))
     prepared = lifecycle.prepare_component_overlay(overlay)
     lifecycle.apply_component_overlay(prepared, startup_active=set())

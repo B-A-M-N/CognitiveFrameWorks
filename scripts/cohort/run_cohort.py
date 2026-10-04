@@ -70,10 +70,12 @@ def _agent_env(configuration: str, *, state_root: Path) -> dict[str, str]:
         env["COGNITIVE_STATEWORK_ROOT"] = "/home/bamn/CognitiveStateWork"
     else:
         env.pop("COGNITIVE_STATEWORK_ROOT", None)
-    # DP's semantic provider is never enabled implicitly; Laya stays disabled
-    # unless the cell explicitly requires it and a checkpoint is pinned.
-    env["DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE"] = "disabled"
-    env["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] = "disabled"
+    # Ordinary cells always run without System-1. A Laya cell inherits only
+    # explicit operator-pinned provider settings; the runtime harness performs
+    # the actual handshake and rejects a disabled or incomplete provider.
+    if configuration != "cfw_csw_dp_laya":
+        env["DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE"] = "disabled"
+        env["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] = "disabled"
     return env
 
 
@@ -171,11 +173,21 @@ def main() -> int:
                 criterion = f"{configuration}-construction-probe-criterion"
                 cohort_runtime.drive_actions(
                     handles, criterion_id=criterion, action_count=3)
+                record = cohort_runtime.behavioral_record(
+                    handles, trial_id=f"{label}-construction-probe")
+                if configuration == "cfw_csw_dp_laya":
+                    attestation = record.get("semantic_provider_attestation")
+                    manifest = (dict(attestation) if isinstance(attestation, dict)
+                                else {})
+                    manifest.update({
+                        "semantic_provider_status": "enabled" if attestation else "disabled",
+                        "capability_handshake_observed": bool(attestation),
+                    })
+                    cohort_preflight.check_semantic_treatment({label: manifest})
                 telemetry.append({
                     "trial_id": f"{label}-construction-probe",
                     "configuration": configuration,
-                    "record": cohort_runtime.behavioral_record(
-                        handles, trial_id=f"{label}-construction-probe"),
+                    "record": record,
                 })
         except cohort_runtime.InvalidTreatment as exc:
             construction = f"INVALID_TREATMENT: {exc}"

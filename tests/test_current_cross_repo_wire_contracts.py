@@ -20,13 +20,15 @@ individually.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-COW = Path("/home/bamn/CognitiveStateWork")
+COW = Path(os.environ.get("COGNITIVE_STATEWORK_ROOT",
+                          "/home/bamn/CognitiveStateWork"))
 DP = Path("/home/bamn/DigitalPsychology")
 
 
@@ -63,7 +65,7 @@ def _cfw_component_control():
 # Real CFW RuntimeSession bound to DP as the behavior authority
 # --------------------------------------------------------------------------
 
-def _real_session(tmp_path, monkeypatch):
+def _real_session(tmp_path, monkeypatch, *, shape="quick"):
     """Start a real CFW RuntimeSession and bind DP as its behavior authority."""
     if str(ROOT / "scripts") not in sys.path:
         sys.path.insert(0, str(ROOT / "scripts"))
@@ -79,7 +81,7 @@ def _real_session(tmp_path, monkeypatch):
         resolve.TaskRequest(task_id="wire-contract", namespace_id="tenant-wire",
                             application_id="wire-app",
                             application_instance_id="wire-instance",
-                            shape="quick"),
+                            shape=shape),
         cow_root=ROOT / "statework")
     session = runtime.start(bundle, session_nonce="wire-session",
                             telemetry_disabled=True)
@@ -120,6 +122,18 @@ def test_current_dp_state_still_rejected_when_it_drifted(tmp_path, monkeypatch):
     drifted["a_field_cfw_does_not_know"] = 1
     with pytest.raises(ValueError, match="projection does not match the v2 contract"):
         session.apply_external_behavior_projection(drifted)
+
+
+def test_legacy_whole_state_compatibility_is_isolated_and_still_works(
+        tmp_path, monkeypatch):
+    """Legacy persisted whole-state input stays behind its compatibility API."""
+    _, BehaviorState, _, _ = _dp_behavior_state()
+    session = _real_session(tmp_path, monkeypatch)
+    legacy_state = BehaviorState(revision=1).to_dict()
+
+    session.apply_legacy_external_behavior_state(legacy_state)
+
+    assert session.effective_legacy_external_behavior_state()["revision"] == 1
 
 
 def test_cfw_focus_criteria_lease_round_trips_through_a_real_session(
@@ -434,7 +448,10 @@ def test_real_private_mcp_dp_cfw_csw_path_acts_expires_and_persists(
             assert record["cfw_final_gate_rejections"] == 0
             return bridge
         except Exception:
-            await bridge.close()
+            try:
+                await bridge.close()
+            except Exception:
+                await bridge.client.close()
             raise
 
     try:
@@ -455,6 +472,228 @@ def test_real_private_mcp_dp_cfw_csw_path_acts_expires_and_persists(
         restarted.close()
     finally:
         control_service.close()
+
+
+def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
+        tmp_path, monkeypatch):
+    """Release acceptance through real CFW, CSW, and private DP MCP boundaries."""
+    import asyncio
+    from dataclasses import replace
+
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from digital_psychology_adapter import CFWBehaviorAdapter
+    from lib.behavior_state import GoalItemSnapshot, GoalSetSnapshot
+    from lib.host import MCPControlClient
+    from lib.outcomes import HostOutcomeFact
+    from lib.runtime import (BehaviorStateStore, CFWRuntimeAdapter, RuntimeHost,
+                             RuntimeIdentity, RuntimeObservation)
+    from lib.runtime.contracts import ActionCandidate
+    from lib.runtime.cfw_projection import build_cfw_behavior_projection
+    from lib.mcp_server import DigitalPsychologyService
+
+    class AgentHandle:
+        def before_model_call(self, *, behavior_context, **_kwargs):
+            return behavior_context
+
+        def before_tool_planning(self, _action_hint=None, *, behavior_context,
+                                 **_kwargs):
+            return behavior_context
+
+    criteria = tuple(f"criterion-{index:02d}" for index in range(1, 13))
+    criterion_status = {criterion: "unmet" for criterion in criteria}
+    goals = GoalSetSnapshot(revision=0, items=tuple(
+        GoalItemSnapshot(criterion_id=item, status="READY",
+                         priority=100 if item == criteria[0] else 0,
+                         equivalent_retry_count=2 if item == criteria[0] else 0)
+        for item in criteria))
+    cfw_session = _real_session(tmp_path, monkeypatch, shape="implement")
+    cfw = CFWRuntimeAdapter(CFWBehaviorAdapter(cfw_session, AgentHandle()))
+    scope = _wire_scope()
+    identity = RuntimeIdentity(
+        namespace_id=scope["namespace_id"], application_id=scope["application_id"],
+        application_instance_id=scope["application_instance_id"],
+        agent_instance_id="triad-agent-instance", session_id=scope["workflow_id"],
+        task_id=scope["workflow_id"], attempt_id="triad-attempt",
+        workflow_id=scope["workflow_id"], subject_ref=scope["subject_ref"],
+        segment_id="triad-segment", agent_id="triad-agent",
+        behavioral_subject=scope["subject_ref"], goal_contract_hash="e" * 64,
+    )
+    authority = _real_csw(tmp_path)
+    csw = _dp_csw_adapter(authority, scope)
+    host = RuntimeHost()
+    trusted_state = tmp_path / "private-state"
+    env = os.environ.copy()
+    env.update({
+        "DIGITALPSYCHOLOGY_STATE_ROOT": str(trusted_state),
+        "DIGITALPSYCHOLOGY_EVENT_DB": str(trusted_state / "events.sqlite3"),
+        "DIGITALPSYCHOLOGY_BEHAVIOR_STATE_DB": str(
+            trusted_state / "behavior-state.sqlite3"),
+        "DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE": "disabled",
+    })
+
+    def private_client():
+        return MCPControlClient(
+            command=sys.executable, args=("-m", "lib.transport.control_mcp"),
+            env=env, cwd=DP)
+
+    def candidate(index, criterion):
+        return ActionCandidate(
+            action_class="read", proposed_purpose="inspect requested repository state",
+            affected_criterion_ids=(criterion,), action_id=f"triad-read-{index:02d}",
+            tool_name="read", operation="inspect", mutating=False,
+            reversible=True)
+
+    def action_request():
+        return {"tool_binding_id": "read", "arguments": {"path": "README.md"},
+                "subject_ref": cfw_session.bundle.policy.subject_ref}
+
+    async def exercise():
+        bridge = await host.open_control_bridge(
+            identity=identity, objective="Inspect and complete a twelve-criterion repository task",
+            objective_criteria=criteria, initial_goal_set=goals,
+            cfw=cfw, csw=csw, client=private_client(),
+            outcome_evidence_connected=True)
+        try:
+            # Persist a model-call projection before recovery so the report can
+            # distinguish real model-context churn from action projection writes.
+            await bridge.before_model_call("Inspect the current task context.")
+            first = await bridge.after_action(RuntimeObservation(
+                action_index=1, goal_set=goals, equivalent_retry_count=2,
+                active_trigger_codes=("equivalent_retry",),
+                criterion_status=criterion_status))
+            assert first["status"] == "ready", first.get("fault")
+            assert bridge.behavior_state.cognitive_mode == "RECOVER"
+            assert bridge.behavior_state.active_interventions
+            intervention = bridge.behavior_state.active_interventions[0]
+            assert intervention.expires_at_action is not None
+            assert csw.behavioral_snapshot().active_stateworks
+            statework = csw.behavioral_snapshot().active_stateworks[0]
+            owner = next(item for item in bridge.behavior_state.active_interventions
+                         if any(target.target == f"statework:{statework}"
+                                for target in item.targets))
+            activation = authority.workflow_activation_metadata(
+                workflow_scope=scope, statework_id=statework)
+            assert activation["activation_owner"] == "digitalpsychology"
+            assert activation["intervention_id"] == owner.intervention_id
+            assert activation["expires_at_action"] == owner.expires_at_action
+            projection = cfw_session.effective_external_behavior_projection()
+            assert projection["protocol_version"] == "2.0.0"
+            intervention_expiries = {
+                item.intervention_id: item.expires_at_action
+                for item in bridge.behavior_state.active_interventions}
+            assert projection["target_leases"]
+            assert all(intervention_expiries[lease["intervention_id"]]
+                       == lease["expires_at_action"]
+                       for lease in projection["target_leases"])
+            forbidden = {"mode_lease", "attention_lease", "active_stateworks",
+                         "intervention_history"}
+            assert forbidden.isdisjoint(cfw_session.external_behavior_projection)
+
+            # A real CFW tool hook runs only at prepare_action, after preflight.
+            from runtime_session.lifecycle import GateDecision
+            hook_calls = []
+
+            def reject_final_gate_once(_request):
+                hook_calls.append("final")
+                return (GateDecision.REQUIRE_REINSPECTION
+                        if len(hook_calls) == 1 else None)
+
+            cfw_session.tool_hooks.append(reject_final_gate_once)
+            candidate_two = candidate(2, criteria[0])
+            rejected = await bridge.before_action_candidate(
+                candidate_two, cfw_action_request=action_request(), goal_set=goals)
+            assert rejected["status"] == "rejected"
+            assert rejected["stage"] == "cfw_final_gate"
+            assert rejected["decision"] == "require_reinspection"
+            assert bridge._action_index == 1
+            assert bridge._boundary_observation("pre_action", goal_set=goals,
+                                                candidate_action=candidate_two).action_index == 2
+
+            # Restart only the private DP subprocess. The bridge must restore its
+            # persisted cursor and reconcile the pre-action CFW projection.
+            await bridge.client.close()
+            bridge.client = private_client()
+            bridge._remote_open = False
+            bridge._needs_reconciliation = True
+            await bridge.before_model_call("Resume after private control restart.")
+            assert bridge._action_index == 1
+            assert bridge._cfw_projection_action_index == 2
+            assert cfw_session.external_behavior_projection == \
+                build_cfw_behavior_projection(
+                    bridge.behavior_state, host_action_index=2).to_dict()
+
+            authorized = await bridge.before_action_candidate(
+                candidate_two, cfw_action_request=action_request(), goal_set=goals)
+            assert authorized["action_authorized"] is True
+            action_two = await bridge.after_action(RuntimeObservation(
+                action_index=2, goal_set=goals,
+                criterion_status=criterion_status))
+            assert action_two["status"] == "ready", action_two.get("fault")
+
+            # Material progress is sourced from the criterion's revision delta,
+            # then released through both real target authorities.
+            progressed_goals = GoalSetSnapshot(revision=1, items=tuple(
+                replace(item, material_progress_revision=1,
+                        equivalent_retry_count=0)
+                if item.criterion_id == criteria[0] else item for item in goals.items))
+            fact = HostOutcomeFact(
+                evidence_ref="validator:criterion-01:revision-1",
+                scope=identity.scope, source="host_validator",
+                kind="objective_progress", observed_revision=1,
+                criterion_id=criteria[0], action_index=2)
+            validator_observation = RuntimeObservation(
+                action_index=2, action_completed=False, goal_set=progressed_goals,
+                criterion_status=criterion_status,
+                evidence_refs=(fact.evidence_ref,))
+            progress = await bridge.observe_boundary(
+                "validator", observation=validator_observation,
+                goal_set=progressed_goals, outcome_facts=(fact,))
+            assert progress["status"] == "ready", progress.get("fault")
+            assert not bridge.behavior_state.active_interventions
+            assert not csw.behavioral_snapshot().active_stateworks
+
+            # Drive enough actual host actions for DP's round-robin attention to
+            # cover all twelve required criteria under the real triad.
+            for action_index in range(3, 15):
+                criterion = criteria[(action_index - 3) % len(criteria)]
+                result = await bridge.before_action_candidate(
+                    candidate(action_index, criterion),
+                    cfw_action_request=action_request(), goal_set=progressed_goals)
+                assert result["action_authorized"] is True
+                completed = await bridge.after_action(RuntimeObservation(
+                    action_index=action_index, goal_set=progressed_goals,
+                    criterion_status=criterion_status))
+                assert completed["status"] == "ready", completed.get("fault")
+
+            assert bridge.behavior_state.active_stateworks == \
+                csw.behavioral_snapshot().active_stateworks
+            record = await bridge.client.behavioral_trial_record(
+                identity.scope, trial_id="runtime-triad-private-mcp")
+            assert record["committed_actions"] == 14
+            assert record["cfw_preflight_rejections"] == 0
+            assert record["cfw_final_gate_rejections"] == 1
+            assert record["model_projection_events"] >= 2
+            assert record["model_projection_updates"] >= 1
+            assert set(record["required_criterion_coverage"]) == set(criteria)
+            assert record["fairness_violation_count"] == 0
+            assert record["fairness_bound"] >= 12
+            transitions = BehaviorStateStore(
+                trusted_state / "behavior-state.sqlite3").committed_control_transitions(
+                    identity.scope)
+            rejected_rows = [row for row in transitions
+                             if row.get("cfw_rejection_stage") == "cfw_final_gate"]
+            assert len(rejected_rows) == 1
+            assert rejected_rows[0].get("ward_hard_safety") is False
+            await bridge.close()
+        except Exception:
+            try:
+                await bridge.close()
+            except Exception:
+                await bridge.client.close()
+            raise
+
+    asyncio.run(exercise())
 
 
 def test_projection_excludes_dp_private_bookkeeping():

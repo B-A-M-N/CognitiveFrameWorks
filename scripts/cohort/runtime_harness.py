@@ -32,8 +32,8 @@ DP = Path("/home/bamn/DigitalPsychology")
 # Required provider attestation for a real semantic treatment (P1-16).
 REQUIRED_PROVIDER_ATTESTATION = (
     "backend_id", "model_id", "model_revision", "model_content_hash",
-    "provider_protocol_hash", "calibration_bundle_hash",
-    "enabled_question_families",
+    "provider_protocol_hash", "calibration_bundle_hash", "provider_mode",
+    "capability_digest", "enabled_question_families",
 )
 
 
@@ -90,19 +90,33 @@ def build_session(*, configuration: str, task_id: str, state_root: Path,
     if configuration not in {"baseline", "cfw", "cfw_csw", "cfw_csw_dp",
                              "cfw_csw_dp_laya"}:
         raise HarnessError(f"unknown cohort configuration {configuration!r}")
+    system_one_service = None
     if configuration == "cfw_csw_dp_laya":
-        manifest = dict(provider_manifest or {})
-        if manifest.get("semantic_provider_status") != "enabled":
+        # Caller-supplied metadata is not evidence that a provider is live.
+        # Build the provider from its pinned environment and derive attestation
+        # from the capability handshake DP will actually use.
+        if str(DP) not in sys.path:
+            sys.path.insert(0, str(DP))
+        from lib.control.system_one import create_system_one_frame_factory
+        from lib.system_one_service import SystemOneService
+        from lib.telemetry.behavioral_trace import provider_attestation
+        try:
+            system_one_service = SystemOneService.from_environment()
+            factory = create_system_one_frame_factory(system_one_service)
+            attestation = provider_attestation(factory)
+            missing = [field for field in REQUIRED_PROVIDER_ATTESTATION
+                       if attestation is None or not attestation.get(field)]
+            if (missing
+                    or attestation.get("backend_id") != "digitalpsychology-laya-native"
+                    or attestation.get("provider_mode") not in {"shadow", "advisory"}):
+                raise ValueError(
+                    "the live provider handshake is incomplete or is not a pinned Laya treatment")
+        except Exception as exc:
+            if system_one_service is not None:
+                system_one_service.close()
             raise InvalidTreatment(
-                "the Laya arm ran without an enabled semantic provider; "
-                "INVALID_TREATMENT")
-        missing = [f for f in REQUIRED_PROVIDER_ATTESTATION if not manifest.get(f)]
-        if missing:
-            raise InvalidTreatment(
-                f"the Laya arm is missing provider attestation: {missing}")
-        if not manifest.get("capability_handshake_observed"):
-            raise InvalidTreatment(
-                "the Laya arm recorded no semantic capability handshake")
+                "the Laya arm lacks an actual enabled provider capability handshake; "
+                "INVALID_TREATMENT") from exc
 
     resolve, runtime = _cfw_modules()
     use_csw = configuration != "baseline"
@@ -139,13 +153,13 @@ def build_session(*, configuration: str, task_id: str, state_root: Path,
         handles["dp_session"] = _bind_dp(
             cfw_session, task_id=task_id, state_root=state_root,
             statework_id=statework_id, authority=authority,
-            provider_manifest=provider_manifest)
+            system_one_service=system_one_service)
     return handles
 
 
 def _bind_dp(cfw_session: Any, *, task_id: str, state_root: Path,
              statework_id: str, authority: Any,
-             provider_manifest: Mapping[str, Any] | None):
+             system_one_service: Any = None):
     """Open a real DP RuntimeSession with CFW as its component port."""
     if str(DP) not in sys.path:
         sys.path.insert(0, str(DP))
@@ -163,10 +177,16 @@ def _bind_dp(cfw_session: Any, *, task_id: str, state_root: Path,
         workflow_id=f"workflow-{task_id}", subject_ref=f"repo:{task_id}",
         segment_id="segment-0", behavioral_subject=f"repo:{task_id}")
 
-    service = DigitalPsychologyService(event_db=state_root / "dp-events.sqlite3")
+    service = DigitalPsychologyService(
+        event_db=state_root / "dp-events.sqlite3",
+        system_one_service=system_one_service)
     host = RuntimeHost(service=service,
                        state_path=state_root / "dp-behavior.sqlite3")
-    policy_context = {"semantic_provider_status": "disabled"}
+    policy_context = {
+        "semantic_provider_status": (
+            "enabled" if system_one_service is not None else "disabled")}
+    if system_one_service is not None:
+        policy_context["deliverable_kind"] = "code"
     # CFWBehaviorAdapter is the production DP-facing port: it owns the signal
     # collection, action gating and context projection DP binds against.
     cfw_port = CFWBehaviorAdapter(cfw_session, cfw_session)

@@ -480,7 +480,7 @@ That is the direction of the project.
 
 ## Tests, limitations, and release status
 
-The authoritative automated release gate is [`release-gates.json`](release-gates.json). It covers CFW runtime/public API/structural/session routing, CSW validation/control-plane/concurrency, DP self-tests/routing/cross-system/three-system/dynamic improvement, package resources, installation, upgrade, and hostile-install checks.
+The authoritative automated release gate is [`release-gates.json`](release-gates.json). It covers CFW runtime/public API/structural/session routing, CSW validation/control-plane/concurrency, DP self-tests/routing/cross-system, guard-policy causal acceptance, the private-MCP runtime triad, dynamic improvement, package resources, installation, upgrade, and hostile-install checks. The runtime-triad gate runs the current DP, CFW, and CSW authorities together and qualifies restart reconciliation, CFW final-gate rejection, lease ownership, and twelve-criterion attention coverage.
 
 The public-beta gate uses the three local checkout layout. Standalone CFW behavior is separately exercised by the isolated install, doctor, and quickstart commands above.
 

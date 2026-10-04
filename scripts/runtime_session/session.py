@@ -24,6 +24,7 @@ from runtime_session.attempts import AttemptMethods
 from runtime_session.completion import CompletionMethods
 from runtime_session.evidence import EvidenceMethods
 from runtime_session.external_behavior import ExternalBehaviorMethods
+from runtime_session.legacy_external_behavior import LegacyExternalBehaviorMethods
 from runtime_session.host_authority import (
     HostIngress, PolicyRevocationAuthority, SharedWorkflowMembershipAuthority,
     StateAuthority, _HostCapability,
@@ -40,7 +41,7 @@ from runtime_session.resolver_bridge import resolve_runtime
 TelemetrySink = Callable[[Dict[str, Any]], None]
 
 @dataclass
-class RuntimeSession(ExternalBehaviorMethods, StandaloneBehaviorMethods, ActionGateMethods, EvidenceMethods, AttemptMethods, CompletionMethods, RouteReplanningMethods, SessionLifecycleMethods):
+class RuntimeSession(ExternalBehaviorMethods, LegacyExternalBehaviorMethods, StandaloneBehaviorMethods, ActionGateMethods, EvidenceMethods, AttemptMethods, CompletionMethods, RouteReplanningMethods, SessionLifecycleMethods):
     """A started CFW enforcement session: injected components + action hooks."""
     bundle: resolve_runtime.RuntimeBundle
     injected: Dict[str, str] = field(default_factory=dict)

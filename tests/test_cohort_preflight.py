@@ -145,9 +145,11 @@ def test_normal_failures_do_not_trip_the_budget_guard():
 # -- semantic treatment attestation (P1-16) ------------------------------
 
 def _valid_manifest():
-    return {"semantic_provider_status": "enabled", "backend_id": "laya",
+    return {"semantic_provider_status": "enabled",
+            "backend_id": "digitalpsychology-laya-native",
             "model_id": "m", "model_revision": "r",
             "model_content_hash": "a" * 64, "provider_protocol_hash": "b" * 64,
+            "provider_mode": "shadow", "capability_digest": "d" * 64,
             "calibration_bundle_hash": "c" * 64,
             "enabled_question_families": ["action_relation"],
             "capability_handshake_observed": True}
@@ -160,9 +162,13 @@ def test_laya_arm_with_disabled_provider_is_an_invalid_treatment():
         preflight.check_semantic_treatment({"cohort-E": manifest})
 
 
-def test_laya_arm_missing_attestation_is_rejected():
+@pytest.mark.parametrize("missing", [
+    "backend_id", "model_id", "model_revision", "model_content_hash",
+    "provider_protocol_hash", "calibration_bundle_hash", "provider_mode",
+    "capability_digest", "enabled_question_families"])
+def test_laya_arm_missing_attestation_is_rejected(missing):
     manifest = _valid_manifest()
-    del manifest["model_content_hash"]
+    del manifest[missing]
     with pytest.raises(PreflightError, match="missing provider attestation"):
         preflight.check_semantic_treatment({"cohort-E": manifest})
 
@@ -176,6 +182,18 @@ def test_laya_arm_without_a_capability_handshake_is_rejected():
 
 def test_fully_attested_laya_arm_passes():
     preflight.check_semantic_treatment({"cohort-E": _valid_manifest()})
+
+
+def test_laya_treatment_rejects_unpinned_or_disabled_provider_metadata():
+    manifest = _valid_manifest()
+    manifest["provider_mode"] = "disabled"
+    with pytest.raises(PreflightError, match="invalid semantic provider mode"):
+        preflight.check_semantic_treatment({"cohort-E": manifest})
+
+    manifest = _valid_manifest()
+    manifest["capability_digest"] = "unhashed"
+    with pytest.raises(PreflightError, match="invalid provider attestation digest"):
+        preflight.check_semantic_treatment({"cohort-E": manifest})
 
 
 # -- telemetry presence and the fairness invariant ------------------------

@@ -125,6 +125,32 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
     task.close()
 
 
+def test_authority_identity_hashes_component_contract_semantics(monkeypatch):
+    resolve = _load_resolver()
+    from cognitive_runtime import CognitiveRuntime
+    import digital_psychology_adapter as adapter_module
+    from runtime_contract.component_control import COMPONENT_ALLOWED_MODES
+
+    task = CognitiveRuntime(telemetry_disabled=True).begin_task(
+        resolve.TaskRequest(task_id="dp-capability-identity", application_id="dp-test",
+                            shape="implement", subject_ref="repo:dp-capability-identity"),
+        telemetry_disabled=True,
+    )
+    try:
+        adapter = task.digital_psychology_adapter()
+        original = adapter.authority_identity()
+        assert len(original["component_contract_hash"]) == 64
+        assert len(original["capability_hash"]) == 64
+        current = COMPONENT_ALLOWED_MODES["owl"]
+        monkeypatch.setitem(COMPONENT_ALLOWED_MODES, "owl",
+                            frozenset(current - {"reset"}))
+        changed = adapter.authority_identity()
+        assert changed["component_contract_hash"] != original["component_contract_hash"]
+        assert changed["capability_hash"] != original["capability_hash"]
+    finally:
+        task.close()
+
+
 def test_dp_component_overlay_changes_actual_flow_lifecycle_activation():
     resolve = _load_resolver()
     from cognitive_runtime import CognitiveRuntime
