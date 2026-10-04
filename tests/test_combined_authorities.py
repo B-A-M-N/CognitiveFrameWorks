@@ -1,12 +1,14 @@
 """Cross-project authority and adaptive-action acceptance proofs."""
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-COW = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
+COW = Path(os.environ.get(
+    "COGNITIVE_STATEWORK_ROOT", ROOT.parent / "CognitiveStateWork"))
 
 
 def _load(name: str, path: Path):

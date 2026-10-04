@@ -28,8 +28,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 COW = Path(os.environ.get("COGNITIVE_STATEWORK_ROOT",
-                          "/home/bamn/CognitiveStateWork"))
-DP = Path("/home/bamn/DigitalPsychology")
+                          ROOT.parent / "CognitiveStateWork")).resolve()
+DP = Path(os.environ.get("DIGITALPSYCHOLOGY_ROOT",
+                         ROOT.parent / "DigitalPsychology")).resolve()
 
 
 def _load(name: str, path: Path):
@@ -111,6 +112,81 @@ def test_current_dp_projection_crosses_a_real_cfw_runtime_session(tmp_path, monk
     assert effective["cognitive_mode"] == "VERIFY"
     assert effective["target_leases"][0]["intervention_id"] == "intervention-mode"
     assert effective["protocol_version"] == "2.0.0"
+
+
+def test_bound_dp_session_never_runs_cfw_standalone_global_controller(
+        tmp_path, monkeypatch):
+    """DP owns global behavior while CFW keeps applying local and hard gates."""
+    session = _real_session(tmp_path, monkeypatch)
+    projection = {
+        "protocol_version": "2.0.0", "behavior_revision": 1,
+        "host_action_index": 0, "cognitive_mode": "DELIVER",
+        "framework_modes": {"owl": "normal", "anchor": "passive",
+                             "fuse": "constrained", "ward": "mandatory",
+                             "flow": "off", "sispis": "normal", "dox": "off"},
+        "focus_criteria": [], "verification_intensity": "normal",
+        "exploration_budget": "normal", "retry_policy": "normal",
+        "recovery_level": 0, "context_strategy": "standard",
+        "response_strategy": "direct", "target_leases": [],
+    }
+    session.apply_external_behavior_projection(projection)
+
+    class ForbiddenStandaloneController:
+        def __getattr__(self, name):
+            raise AssertionError(f"standalone CFW controller invoked: {name}")
+
+    forbidden = ForbiddenStandaloneController()
+    object.__setattr__(session, "metacognitive_state", forbidden)
+    object.__setattr__(session, "convergence", forbidden)
+    monkeypatch.setattr(type(session), "metacognitive_controller",
+                        property(lambda _session: forbidden))
+    monkeypatch.setattr(type(session), "system_one_judge",
+                        property(lambda _session: forbidden))
+
+    assert "ACTION STRATEGY" not in session.before_model_call(tool_capable=True)
+    assert session.lifecycle.component_mode("fuse") == "constrained"
+
+    host = session._host_ingress()
+    denied = host.prepare_action({"tool_binding_id": "unregistered",
+                                  "arguments": {}})
+    assert denied.decision.value == "block"
+
+    request = {"tool_binding_id": "read", "arguments": {"path": "README.md"}}
+    prepared = host.prepare_action(request)
+    assert prepared.decision.value == "allow"
+    host.record_tool_result(
+        "read", "success", invocation_id="no-dual-controller-invocation",
+        action_request_id=prepared.action_request_id,
+        actual_result={"path": "README.md", "content": "ok"})
+
+
+def test_cfw_signal_delivery_journal_replays_only_unacknowledged_signals(
+        tmp_path, monkeypatch):
+    session = _real_session(tmp_path, monkeypatch)
+    envelope = {
+        "schema_version": "1.1.0",
+        "signal_id": "durable-signal-1", "cause_id": "durable-cause-1",
+        "source": "owl", "signal_type": "owl.approach_failed",
+        "severity": "high", "scope": "task",
+        "evidence_refs": ["cfw:evidence:1"], "required_action": "recover",
+        "subject_ref": "criterion-1",
+    }
+    session.emit_signal(envelope)
+    assert session.peek_behavior_signals().signals[0]["signal_id"] == "durable-signal-1"
+
+    runtime = sys.modules["wire_runtime"]
+    resumed = runtime.resume_task(
+        session.bundle, "wire-session", telemetry_disabled=True)
+    pending = resumed.peek_behavior_signals()
+    assert [item["signal_id"] for item in pending.signals] == ["durable-signal-1"]
+    assert pending.next_cursor == 1
+    resumed.acknowledge_behavior_signals(through_cursor=pending.next_cursor)
+
+    resumed_again = runtime.resume_task(
+        session.bundle, "wire-session", telemetry_disabled=True)
+    assert resumed_again.peek_behavior_signals().signals == ()
+    assert resumed_again._behavior_signal_cursor == 1
+    assert resumed_again._behavior_signal_ack_cursor == 1
 
 
 def test_current_dp_state_still_rejected_when_it_drifted(tmp_path, monkeypatch):
@@ -586,9 +662,6 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
             assert cfw_session.lifecycle.component_mode("anchor") == "recovery"
             assert cfw_session.lifecycle.component_mode("fuse") == "constrained"
             assert {"owl", "anchor_open"}.issubset(cfw_session.active_lifecycle)
-            # This fixture is a one-shot failed-approach event. Once DP receives
-            # it, the CFW signal queue advances so it cannot retrigger forever.
-            cfw_session.signals.clear()
             intervention = bridge.behavior_state.active_interventions[0]
             assert intervention.expires_at_action is not None
             assert csw.behavioral_snapshot().active_stateworks
@@ -674,10 +747,25 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
                 "validator", observation=validator_observation,
                 goal_set=progressed_goals, outcome_facts=(fact,))
             assert progress["status"] == "ready", progress.get("fault")
+            assert bridge.goal_set.revision == 1
+            assert bridge._descriptor().initial_goal_set.revision == 0
             assert not bridge.behavior_state.active_interventions
             assert not csw.behavioral_snapshot().active_stateworks
             assert cfw_session.effective_external_behavior_projection()[
                 "target_leases"] == []
+
+            # Reopen DP after the task goal set has evolved. Session identity
+            # retains its original goal set while current state is recovered.
+            await bridge.client.close()
+            bridge.client = private_client()
+            bridge._remote_open = False
+            bridge._needs_reconciliation = True
+            await bridge.before_model_call("Resume after goal-set evolution.")
+            assert bridge._descriptor().initial_goal_set.revision == 0
+            assert bridge.goal_set.revision == 1
+            assert cfw_session.external_behavior_projection == \
+                build_cfw_behavior_projection(
+                    bridge.behavior_state, host_action_index=2).to_dict()
             # Criterion 1 remains a repeated failed approach after the verified
             # recovery attempt. The remaining runnable criteria must still get
             # attention within DP's declared fairness bound.
@@ -698,6 +786,10 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
                     action_index=action_index, goal_set=stuck_goals,
                     criterion_status=criterion_status))
                 assert completed["status"] == "ready", completed.get("fault")
+
+            assert cfw_session._behavior_signal_cursor == \
+                cfw_session._behavior_signal_ack_cursor
+            assert cfw_session._behavior_signal_journal == []
 
             assert bridge.behavior_state.active_stateworks == \
                 csw.behavioral_snapshot().active_stateworks

@@ -344,6 +344,14 @@ includes an action request ID for correlating the eventual host result. CFW's
 preflight does not execute tools or consume confirmation grants. CSW selection
 and transition calls use its separate revisioned workflow API.
 
+The versioned adapter protocol (`1.2.0`) exposes CFW signals as bounded,
+cursor-based batches. DP acknowledges a batch only after its control tick and
+consumed cursor commit, so a restart can replay unacknowledged signals safely.
+Signal envelopes retain cause and action-scope metadata. Both CFW gate stages
+also return receipts bound to the CFW authority identity, adapter version,
+action digest, decision, and stable reason codes; these receipts support host
+audit and do not transfer action authority to DP.
+
 Host handles live in a bounded, expiring session registry. The registry pins
 each handle to its immutable execution identity, closes telemetry resources on
 explicit close or eviction, and rejects a handle if its owner identity changes.
@@ -355,6 +363,8 @@ directive IDs, causes, or lease bookkeeping in model context. When DP is
 unavailable, DP-owned local overlays expire at host action boundaries and CFW
 continues enforcing its own component and action contracts. CFW remains usable
 without DP, and its optional CSW provider remains absent in standalone mode.
+The trusted adapter also exposes CFW's effective surviving local projection
+for DP's degraded-mode guidance after DP-owned overlays expire.
 The component catalog assigns each component a `model_visibility` policy:
 `guidance` may enter context, while `consequence_only` and `none` stay outside
 the prompt. DP-controlled prompts omit pipeline labels and internal contract

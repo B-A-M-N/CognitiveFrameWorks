@@ -21,13 +21,16 @@ reported rather than silently downgraded to a weaker cell.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
-COW = Path("/home/bamn/CognitiveStateWork")
-DP = Path("/home/bamn/DigitalPsychology")
+COW = Path(os.environ.get("COGNITIVE_STATEWORK_ROOT",
+                          ROOT.parent / "CognitiveStateWork")).resolve()
+DP = Path(os.environ.get("DIGITALPSYCHOLOGY_ROOT",
+                         ROOT.parent / "DigitalPsychology")).resolve()
 
 # Required provider attestation for a real semantic treatment (P1-16).
 REQUIRED_PROVIDER_ATTESTATION = (

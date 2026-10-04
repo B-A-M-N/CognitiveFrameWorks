@@ -72,6 +72,30 @@ def _restore_session(session: RuntimeSession) -> None:
             statuses = record.get("segment_status") or {}
             for segment_id, status in statuses.items():
                 session._segment_status[segment_id] = SegmentStatus(status)
+        elif event_type == "behavior_signal_recorded":
+            cursor = int(record.get("delivery_cursor", 0))
+            envelope = record.get("envelope")
+            if cursor != session._behavior_signal_cursor + 1 or not isinstance(
+                    envelope, Mapping):
+                raise PermissionError("behavior signal journal sequence is malformed")
+            signal = dict(envelope)
+            signal_id = str(signal.get("signal_id") or "")
+            if not signal_id or signal_id in session.signal_seen:
+                raise PermissionError("behavior signal journal identity is malformed")
+            session.signal_seen[signal_id] = signal
+            session.signals.append(signal)
+            session._behavior_signal_journal.append((cursor, signal))
+            session._behavior_signal_cursor = cursor
+        elif event_type == "behavior_signal_acknowledged":
+            cursor = int(record.get("through_cursor", -1))
+            if not session._behavior_signal_ack_cursor <= cursor <= session._behavior_signal_cursor:
+                raise PermissionError("behavior signal acknowledgement journal is malformed")
+            session._behavior_signal_ack_cursor = cursor
+            session._behavior_signal_journal = [
+                (item_cursor, envelope)
+                for item_cursor, envelope in session._behavior_signal_journal
+                if item_cursor > cursor
+            ]
         elif event_type == "segment_activated":
             session.current_segment_index = int(record["segment_index"])
             session._segment_status[record["segment_id"]] = SegmentStatus.ACTIVE

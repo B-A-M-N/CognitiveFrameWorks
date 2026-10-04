@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any, Dict, Mapping, Optional
 
 from runtime_contract.actions import (
-    ActionObjectiveBinding, ActionStrategy, AgentActionRequest,
+    ActionDescriptor, ActionObjectiveBinding, ActionStrategy, AgentActionRequest,
     ProtectedResourcePolicy,
 )
 from runtime_contract.behavioral_fusion import fuse_retry_relation
@@ -293,11 +293,15 @@ class ActionGateMethods:
         if (request.subject_ref == self.bundle.policy.subject_ref
                 and not self._authoritative_state_ready()):
             decision = GateDecision.BLOCK
+            reasons = ("workflow_authority_unavailable",)
         elif not self._revocation_current() or not self._membership_current():
             decision = GateDecision.BLOCK
+            reasons = ("authority_membership_stale",)
         else:
             decision = self._decision(request)
-        return ActionPreflightResult(request.digest, decision)
+            reasons = ("action_policy." + decision.value,)
+        return ActionPreflightResult(request.digest, decision,
+                                     reason_codes=reasons)
     def prepare_action(self, action: Dict[str, Any] | AgentActionRequest) -> ActionPreparation:
         """Authorize an action and return its unique request ID for its eventual result."""
         return self._prepare_action(action)
@@ -319,14 +323,19 @@ class ActionGateMethods:
         action_request_id = f"action-request-{uuid.uuid4()}"
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
-                                     self._descriptor(request), request.digest)
+                                     self._descriptor(request), request.digest,
+                                     reason_codes=("workflow_authority_unavailable",))
         if not self._revocation_current() or not self._membership_current():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
-                                     self._descriptor(request), request.digest)
+                                     self._descriptor(request), request.digest,
+                                     reason_codes=("authority_membership_stale",))
         descriptor = self._descriptor(request)
         decision = self._decision(request)
         strategy = self._action_strategy()
         candidate: Optional[ActivityFact] = None
+        host_relation = binding.goal_relation if binding else "ambiguous"
+        action_lane = "UNCLASSIFIED"
+        hook_reasons = []
         for hook in self.tool_hooks:
             hook_decision = hook({"tool_binding_id": request.binding_id,
                                   "arguments": dict(request.arguments),
@@ -334,15 +343,26 @@ class ActionGateMethods:
             if hook_decision is not None:
                 if not isinstance(hook_decision, GateDecision):
                     raise ValueError("tool hooks must return GateDecision or None")
+                if hook_decision != GateDecision.ALLOW:
+                    hook_reasons.append("tool_hook." + hook_decision.value)
                 decision = self._more_restrictive(decision, hook_decision)
 
-        # System-1 sees this action only after every hard host check. Objective
-        # accounting comes from an exact host-issued request binding; tool
-        # descriptors continue to describe authority and capability only.
-        if decision == GateDecision.ALLOW:
+        # When DP owns session-wide behavior, CFW still applies its hard and
+        # component-local gates but does not run its standalone global
+        # behavioral controller. Objective accounting uses the host-issued
+        # binding in either mode.
+        if decision == GateDecision.ALLOW and self.external_behavior_authority:
+            if binding is not None:
+                action_lane = {
+                    "DIRECT_GOAL": "DIRECT",
+                    "BLOCKER_REMOVAL": "DIRECT",
+                    "REQUIRED_VERIFICATION": "VERIFICATION",
+                    "DIAGNOSTIC": "SUPPORT",
+                    "INCIDENTAL": "SUPPORT",
+                }[binding.purpose_class]
+        elif decision == GateDecision.ALLOW and not self.external_behavior_authority:
             target_ref = next((request.arguments.get(key) for key in ("target", "path", "resource")
                                if isinstance(request.arguments.get(key), str)), None)
-            host_relation = binding.goal_relation if binding else "ambiguous"
             criterion_ids = binding.criterion_ids if binding else ()
             candidate = self.metacognitive_state.make_candidate(
                 "action", source="host_observed",
@@ -420,7 +440,6 @@ class ActionGateMethods:
                         total_action_limit=int(verification.get(
                             "max_committed_actions_without_goal_progress", 15) or 15))):
                 decision = GateDecision.REQUIRE_GOAL_REANCHOR
-
         if decision == GateDecision.ALLOW:
             self._pending_action_requests[action_request_id] = {
                 "descriptor": descriptor.__dict__.copy(),
@@ -459,7 +478,10 @@ class ActionGateMethods:
             self._journal("confirmation_consumed", grant_id=confirmation.grant_id)
         if decision != GateDecision.ALLOW:
             self._pending_action_requests.pop(action_request_id, None)
-        return ActionPreparation(action_request_id, decision, descriptor, request.digest)
+        reason_codes = tuple(dict.fromkeys(
+            hook_reasons + ["action_policy." + decision.value]))
+        return ActionPreparation(action_request_id, decision, descriptor, request.digest,
+                                 reason_codes=reason_codes)
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
         """Dispatch retry-specific structural handlers at the host boundary."""
         action = self._request(request)
@@ -471,37 +493,39 @@ class ActionGateMethods:
         if attempt is None:
             return GateDecision.REQUIRE_REINSPECTION
         semantic = self.attempt_semantics.get(attempt_ref)
-        candidate = self.metacognitive_state.make_candidate(
-            "retry", source="host_observed",
-            action_class=(semantic.planned_action_class if semantic else "retry"),
-            host_declared_relation="ambiguous",
-            target_kind=(semantic.planned_target_kind if semantic else "attempt"),
-            proposed_purpose=(semantic.hypothesis_summary if semantic else None),
-            proposed_purpose_source=(semantic.source if semantic else "derived"),
-            affected_criterion_ids=(semantic.affected_criterion_ids if semantic else ()))
+        candidate = None
         self._semantic_retry_same.discard(attempt_ref)
-        if semantic is not None and self._system_one_policy().mode != "disabled":
-            state = self.convergence.state(attempt.cause_id) if self.convergence else None
-            deterministic_same = bool(state and
-                state.action_fingerprint == attempt.action_plan_digest
-                and state.hypothesis_fingerprint == attempt.premise_digest
-                and state.premise_digest == attempt.premise_digest)
-            judgment = None
-            decision = None
-            if not deterministic_same:
-                judgment = self._system_one_query(
-                    questions=("retry_relation",), candidate=candidate,
-                    subject_ref=action.subject_ref)
-                decision = (self.system_one_decisions.get(judgment.request_id)
-                            if judgment else None)
-            retry_relation = fuse_retry_relation(
-                deterministic_same=deterministic_same, judgment=judgment,
-                policy=self._system_one_policy(),
-                calibrated=tuple((decision or {}).get("calibrated_question_ids") or ()))
-            if retry_relation == "equivalent_retry" and not deterministic_same:
-                # Inference can collapse novelty to the already-recorded branch;
-                # it cannot create a new branch or reset any host budget.
-                self._semantic_retry_same.add(attempt_ref)
+        if not self.external_behavior_authority and semantic is not None:
+            candidate = self.metacognitive_state.make_candidate(
+                "retry", source="host_observed",
+                action_class=semantic.planned_action_class,
+                host_declared_relation="ambiguous",
+                target_kind=semantic.planned_target_kind,
+                proposed_purpose=semantic.hypothesis_summary,
+                proposed_purpose_source=semantic.source,
+                affected_criterion_ids=semantic.affected_criterion_ids)
+            if self._system_one_policy().mode != "disabled":
+                state = self.convergence.state(attempt.cause_id) if self.convergence else None
+                deterministic_same = bool(state and
+                    state.action_fingerprint == attempt.action_plan_digest
+                    and state.hypothesis_fingerprint == attempt.premise_digest
+                    and state.premise_digest == attempt.premise_digest)
+                judgment = None
+                decision = None
+                if not deterministic_same:
+                    judgment = self._system_one_query(
+                        questions=("retry_relation",), candidate=candidate,
+                        subject_ref=action.subject_ref)
+                    decision = (self.system_one_decisions.get(judgment.request_id)
+                                if judgment else None)
+                retry_relation = fuse_retry_relation(
+                    deterministic_same=deterministic_same, judgment=judgment,
+                    policy=self._system_one_policy(),
+                    calibrated=tuple((decision or {}).get("calibrated_question_ids") or ()))
+                if retry_relation == "equivalent_retry" and not deterministic_same:
+                    # Inference can collapse novelty to the already-recorded branch;
+                    # it cannot create a new branch or reset any host budget.
+                    self._semantic_retry_same.add(attempt_ref)
         try:
             for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
                 if enforcement.get("mode") != "structural":
@@ -528,8 +552,9 @@ class ActionGateMethods:
                         return GateDecision.REQUIRE_GOAL_REANCHOR
             retry_relation = ("equivalent_retry" if attempt_ref in self._semantic_retry_same
                               else "different_fingerprint")
-            self._pending_retry_candidates[attempt_ref] = replace(
-                candidate, result_class=retry_relation)
+            if not self.external_behavior_authority and candidate is not None:
+                self._pending_retry_candidates[attempt_ref] = replace(
+                    candidate, result_class=retry_relation)
             return GateDecision.ALLOW
         finally:
             self._semantic_retry_same.discard(attempt_ref)

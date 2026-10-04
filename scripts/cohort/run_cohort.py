@@ -65,9 +65,11 @@ def _agent_env(configuration: str, *, state_root: Path) -> dict[str, str]:
     import os
     env = dict(os.environ)
     env["XDG_RUNTIME_DIR"] = str(state_root / "xdg")
+    env["COGNITIVE_FRAMEWORKS_ROOT"] = str(ROOT)
+    env["DIGITALPSYCHOLOGY_ROOT"] = str(cohort_runtime.DP)
     (state_root / "xdg").mkdir(parents=True, exist_ok=True)
     if configuration in {"cfw_csw", "cfw_csw_dp", "cfw_csw_dp_laya"}:
-        env["COGNITIVE_STATEWORK_ROOT"] = "/home/bamn/CognitiveStateWork"
+        env["COGNITIVE_STATEWORK_ROOT"] = str(cohort_runtime.COW)
     else:
         env.pop("COGNITIVE_STATEWORK_ROOT", None)
     # Ordinary cells always run without System-1. A Laya cell inherits only

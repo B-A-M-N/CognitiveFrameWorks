@@ -44,7 +44,7 @@ class PreparedBehaviorDirectiveBatch:
 # the projection payload; an unknown version is rejected at the boundary rather
 # than discovered during the first behavioral intervention.
 CFW_BEHAVIOR_PROJECTION_VERSION = "2.0.0"
-CFW_ADAPTER_PROTOCOL_VERSION = "1.0.0"
+CFW_ADAPTER_PROTOCOL_VERSION = "1.2.0"
 
 
 class CFWBehaviorAdapter:
@@ -63,6 +63,8 @@ class CFWBehaviorAdapter:
                 or not callable(getattr(session, "synchronize_external_behavior_projection", None))
                 or not callable(getattr(session, "rollback_external_behavior_projection", None))
                 or not callable(getattr(session, "restore_external_behavior_startup", None))
+                or not callable(getattr(session, "peek_behavior_signals", None))
+                or not callable(getattr(session, "acknowledge_behavior_signals", None))
                 or not callable(getattr(session, "preflight_action", None))
                 or not callable(getattr(session, "prepare_action", None))
                 or not callable(getattr(session, "available_component_ids", None))):
@@ -132,12 +134,32 @@ class CFWBehaviorAdapter:
         projection = self._session.external_behavior_projection
         return dict(projection) if projection else None
 
+    @property
+    def effective_behavior_projection(self) -> Mapping[str, Any] | None:
+        """Expose CFW's surviving local lease values during DP outages."""
+        projection = self._session.effective_external_behavior_projection()
+        return dict(projection) if projection else None
+
+    def peek_behavior_signals(self, *, after_cursor: int | None = None,
+                              maximum: int = 32) -> Mapping[str, Any]:
+        batch = self._session.peek_behavior_signals(
+            after_cursor=after_cursor, maximum=maximum)
+        return {"after_cursor": batch.after_cursor,
+                "next_cursor": batch.next_cursor,
+                "signals": [dict(envelope) for envelope in batch.signals]}
+
+    def acknowledge_behavior_signals(self, *, through_cursor: int) -> None:
+        self._session.acknowledge_behavior_signals(
+            through_cursor=through_cursor)
+
     def collect_behavior_signals(self, observation: Any) -> tuple[dict[str, Any], ...]:
+        """Compatibility view of the current unacknowledged batch."""
+        batch = self.peek_behavior_signals(maximum=32)
         result = []
         goal_set = getattr(observation, "goal_set", None)
         objective_criteria = ({item.criterion_id for item in goal_set.items}
                               if goal_set is not None else set())
-        for envelope in self._session.signals[-32:]:
+        for envelope in batch["signals"]:
             signal_type = str(envelope.get("signal_type") or "")
             criterion_id = envelope.get("criterion_id")
             # Canonical CFW signal envelopes use subject_ref for the affected
@@ -153,21 +175,40 @@ class CFWBehaviorAdapter:
                 "severity": str(envelope.get("severity") or "warning"),
                 "criterion_id": criterion_id,
                 "evidence_refs": list(envelope.get("evidence_refs") or ()),
+                "signal_id": envelope.get("signal_id"),
+                "cause_id": envelope.get("cause_id"),
+                "required_action": envelope.get("required_action"),
+                "scope": envelope.get("scope"),
+                "subject_ref": subject_ref,
             })
         return tuple(result)
 
-    def preflight_action(self, action: Mapping[str, Any]) -> Mapping[str, str]:
+    def _gate_receipt(self, result: Any, stage: str) -> Mapping[str, Any]:
+        identity = self.authority_identity()
+        return {
+            "authority_id": identity["authority_id"],
+            "adapter_kind": identity["adapter_kind"],
+            "adapter_protocol_version": identity["adapter_protocol_version"],
+            "stage": stage,
+            "action_digest": result.action_digest,
+            "decision": result.decision.value,
+            "reason_codes": list(result.reason_codes),
+        }
+
+    def preflight_action(self, action: Mapping[str, Any]) -> Mapping[str, Any]:
         """Apply CFW's hard gate before DP evaluates a sanitized candidate."""
         result = self._session.preflight_action(dict(action))
         return {"action_digest": result.action_digest,
-                "decision": result.decision.value}
+                "decision": result.decision.value,
+                "gate_receipt": self._gate_receipt(result, "preflight")}
 
-    def authorize_action(self, action: Mapping[str, Any]) -> Mapping[str, str]:
+    def authorize_action(self, action: Mapping[str, Any]) -> Mapping[str, Any]:
         """Run CFW's final gate after DP directives have been materialized."""
         result = self._session.prepare_action(dict(action))
         return {"action_digest": result.action_digest,
                 "action_request_id": result.action_request_id,
-                "decision": result.decision.value}
+                "decision": result.decision.value,
+                "gate_receipt": self._gate_receipt(result, "final")}
 
     def expire_local_behavior_leases(self, action_index: int) -> bool:
         """Expire only target-scoped DP leases while preserving live controls."""

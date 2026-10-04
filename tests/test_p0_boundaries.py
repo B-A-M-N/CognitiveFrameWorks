@@ -11,6 +11,7 @@ from runtime_contract.workflow_port import (
 from runtime_contract.component_control import COMPONENT_IDS, ComponentOverlay
 
 ROOT = Path(__file__).resolve().parents[1]
+COW = ROOT.parent / "CognitiveStateWork"
 SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -255,7 +256,7 @@ def test_latest_active_layer_wins_then_restores_oldest_previous_target():
 
 def test_explicit_ineligible_flow_is_rejected():
     resolve = _resolver()
-    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
+    cow = COW
     stateworks = resolve.load_stateworks(cow)
     tuid = next(item for item in stateworks if item["id"] == "tuid")
     try:
@@ -273,7 +274,7 @@ def test_advisor_receives_host_eligible_statework_flow_choices():
         def advice_for_task(self, *, static_policy, **kwargs):
             seen.update({**kwargs, "static_policy": static_policy})
             return {**static_policy, "status": "ok", "adjustments": []}
-    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
+    cow = COW
     request = resolve.TaskRequest(task_id="flow-advice", application_id="app",
                                   shape="quick", domain_tags=("infrastructure",),
                                   operation="deploy", subject_ref="repo")
@@ -284,7 +285,7 @@ def test_advisor_receives_host_eligible_statework_flow_choices():
 
 def test_legal_flow_preference_changes_selection():
     resolve = _resolver()
-    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
+    cow = COW
     class Advisor:
         def __init__(self, route): self.route = route
         def advice_for_task(self, *, static_policy, **kwargs):
@@ -306,7 +307,7 @@ def test_legal_flow_preference_changes_selection():
 
 def test_advisor_sees_alternative_eligible_flows():
     resolve = _resolver()
-    cow = Path("/home/bamn/CognitiveStateWorks") if Path("/home/bamn/CognitiveStateWorks").exists() else Path("/home/bamn/CognitiveStateWork")
+    cow = COW
     infrae = next(item for item in resolve.load_stateworks(cow) if item["id"] == "infrae")
     routes = resolve.enumerate_eligible_routes(infrae, cow, operation="deploy", task_shape="implement")
     assert "change" in {route["route"] for route in routes if route["route_type"] == "flow"}

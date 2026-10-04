@@ -64,6 +64,8 @@ def test_workflow_configurations_supply_the_statework_root(name):
     with tempfile.TemporaryDirectory() as raw:
         env = cohort._agent_env(name, state_root=Path(raw))
     assert env["COGNITIVE_STATEWORK_ROOT"].endswith("CognitiveStateWork")
+    assert env["COGNITIVE_FRAMEWORKS_ROOT"] == str(cohort.ROOT)
+    assert env["DIGITALPSYCHOLOGY_ROOT"] == str(cohort.cohort_runtime.DP)
 
 
 def test_aggregation_separates_holdout_from_treatment():

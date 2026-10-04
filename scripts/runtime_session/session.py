@@ -50,6 +50,12 @@ class RuntimeSession(ExternalBehaviorMethods, LegacyExternalBehaviorMethods, Sta
     final_hooks: List[Callable[[Dict[str, Any]], None]] = field(default_factory=list)
     signals: List[Dict[str, Any]] = field(default_factory=list)
     signal_seen: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    _behavior_signal_journal: List[tuple[int, Dict[str, Any]]] = field(
+        default_factory=list, repr=False)
+    _behavior_signal_cursor: int = field(default=0, repr=False)
+    _behavior_signal_ack_cursor: int = field(default=0, repr=False)
+    _behavior_signal_lock: Any = field(
+        default_factory=threading.RLock, init=False, repr=False)
     statework_states: Dict[tuple[str, str], str] = field(default_factory=dict)
     statework_entry_times: Dict[tuple[str, str], str] = field(default_factory=dict)
     active_statework_ids: set[str] = field(default_factory=set)

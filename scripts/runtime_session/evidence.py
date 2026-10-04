@@ -592,32 +592,35 @@ class EvidenceMethods:
         if not isinstance(changed, bool):
             changed = None
         evidence_kinds = tuple(dict.fromkeys(("tool_result",) + supporting_kinds))
-        if pending is not None and isinstance(pending.get("candidate"), ActivityFact):
-            candidate = replace(
-                pending["candidate"], result_class=result_class[:64],
-                artifact_changed=changed, evidence_kinds=evidence_kinds)
-            candidate = self.metacognitive_state.commit_candidate(
-                candidate,
-                verification_relation=("required_verification"
-                                       if pending.get("relation") == "required_verification"
-                                       else None))
-            retry_candidate = pending.get("retry_candidate")
-            if isinstance(retry_candidate, ActivityFact):
-                self.metacognitive_state.commit_candidate(retry_candidate)
-        else:
-            candidate = self.metacognitive_state.record_activity(
-                "tool_result", source="host_observed",
-                action_class=(descriptor.action_class if descriptor else tool_type[:64]),
-                host_declared_relation=(pending.get("relation", "ambiguous")
-                                        if pending else "ambiguous"),
-                target_kind=(descriptor.target_kind if descriptor else None),
-                target_scope=(descriptor.target_scope if descriptor else None),
-                result_class=result_class[:64], artifact_changed=changed,
-                affected_criterion_ids=(descriptor.affected_criterion_ids if descriptor else ()),
-                evidence_kinds=evidence_kinds)
-        self._journal("system_one_projection_changed",
-                      snapshot=self.metacognitive_state.snapshot())
-        if (self.convergence is not None
+        candidate = None
+        if not self.external_behavior_authority:
+            if pending is not None and isinstance(pending.get("candidate"), ActivityFact):
+                candidate = replace(
+                    pending["candidate"], result_class=result_class[:64],
+                    artifact_changed=changed, evidence_kinds=evidence_kinds)
+                candidate = self.metacognitive_state.commit_candidate(
+                    candidate,
+                    verification_relation=("required_verification"
+                                           if pending.get("relation") == "required_verification"
+                                           else None))
+                retry_candidate = pending.get("retry_candidate")
+                if isinstance(retry_candidate, ActivityFact):
+                    self.metacognitive_state.commit_candidate(retry_candidate)
+            else:
+                candidate = self.metacognitive_state.record_activity(
+                    "tool_result", source="host_observed",
+                    action_class=(descriptor.action_class if descriptor else tool_type[:64]),
+                    host_declared_relation=(pending.get("relation", "ambiguous")
+                                            if pending else "ambiguous"),
+                    target_kind=(descriptor.target_kind if descriptor else None),
+                    target_scope=(descriptor.target_scope if descriptor else None),
+                    result_class=result_class[:64], artifact_changed=changed,
+                    affected_criterion_ids=(descriptor.affected_criterion_ids
+                                            if descriptor else ()),
+                    evidence_kinds=evidence_kinds)
+            self._journal("system_one_projection_changed",
+                          snapshot=self.metacognitive_state.snapshot())
+        if (not self.external_behavior_authority and self.convergence is not None
                 and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"):
             lane = str((pending or {}).get("accounting_lane") or "UNCLASSIFIED")
             state = self.convergence.record_committed_action(
@@ -639,7 +642,8 @@ class EvidenceMethods:
                 self._record_support_action_event(
                     evidence_id=evidence_id, subject_ref=subject_ref,
                     support_count=state.support_actions_since_goal_progress)
-        if self._system_one_policy().mode != "disabled":
+        if (not self.external_behavior_authority
+                and self._system_one_policy().mode != "disabled"):
             self._system_one_query(
                 questions=("progress_relation",), candidate=candidate,
                 subject_ref=subject_ref,
@@ -743,10 +747,11 @@ class EvidenceMethods:
                      "result": typed_result},
             claim_digest=claim_digest, schema_id=f"validator-result:{evidence_type}",
             validator_id=validator_id)
-        self.metacognitive_state.record_activity(
-            "validation", source="validator", result_class=evidence_type,
-            progress_class="VALIDATION_EVIDENCE", evidence_kinds=(evidence_type,))
-        if self.convergence is not None:
+        if not self.external_behavior_authority:
+            self.metacognitive_state.record_activity(
+                "validation", source="validator", result_class=evidence_type,
+                progress_class="VALIDATION_EVIDENCE", evidence_kinds=(evidence_type,))
+        if not self.external_behavior_authority and self.convergence is not None:
             self.convergence.record_progress(
                 cause_id="primary-objective",
                 progress_digest=hashlib.sha256(json.dumps({

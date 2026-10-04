@@ -20,14 +20,17 @@ control whose StateWork had been released one action earlier.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-COW = Path("/home/bamn/CognitiveStateWork")
-DP = Path("/home/bamn/DigitalPsychology")
+COW = Path(os.environ.get("COGNITIVE_STATEWORK_ROOT",
+                                         ROOT.parent / "CognitiveStateWork"))
+DP = Path(os.environ.get("DIGITALPSYCHOLOGY_ROOT",
+                                        ROOT.parent / "DigitalPsychology"))
 
 BASELINE_ACTION = 10
 DURATION = 3

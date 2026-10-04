@@ -93,6 +93,8 @@ class ActionPreflightResult:
 
     action_digest: str
     decision: GateDecision
+    authority: str = "cfw_action_gate"
+    reason_codes: tuple[str, ...] = ()
 @dataclass(frozen=True)
 class ActionPreparation:
     """One host authorization result and its unique request correlation ID."""
@@ -101,6 +103,8 @@ class ActionPreparation:
     decision: GateDecision
     descriptor: ActionDescriptor
     action_digest: str = ""
+    authority: str = "cfw_action_gate"
+    reason_codes: tuple[str, ...] = ()
 @dataclass(frozen=True)
 class RouteReplanRecommendation:
     """A source-attributed recommendation among host-resolved child bundles."""

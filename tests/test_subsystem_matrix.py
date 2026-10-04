@@ -16,9 +16,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-COW = Path("/home/bamn/CognitiveStateWork")
+COW = ROOT.parent / "CognitiveStateWork"
 # A path with no registry.yaml: CFW resolves an empty provider and stays CFW-only.
-NO_CSW_ROOT = Path("/home/bamn/CognitiveFrameWorks") / "statework"
+NO_CSW_ROOT = ROOT / "statework"
 
 
 def _load(name: str, path: Path):

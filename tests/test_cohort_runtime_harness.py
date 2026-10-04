@@ -71,7 +71,7 @@ def test_an_unknown_configuration_is_refused(tmp_path):
 # -- telemetry is real, or honestly absent -------------------------------
 
 def test_dp_configuration_emits_a_real_behavioral_record(tmp_path):
-    sys.path.insert(0, "/home/bamn/DigitalPsychology")
+    sys.path.insert(0, str(harness.DP))
     from lib.runtime.contracts import RuntimeObservation
 
     handles = harness.build_session(configuration="cfw_csw_dp",
@@ -126,7 +126,7 @@ def test_laya_arm_does_not_trust_a_complete_caller_supplied_attestation(
 
 def test_drive_actions_produces_a_non_empty_trace(tmp_path):
     """Telemetry must come from committed actions, not a zeroed placeholder."""
-    sys.path.insert(0, "/home/bamn/DigitalPsychology")
+    sys.path.insert(0, str(harness.DP))
     handles = harness.build_session(configuration="cfw_csw_dp",
                                     task_id="drive-1", state_root=tmp_path)
     committed = harness.drive_actions(handles, criterion_id="drive-1-criterion",

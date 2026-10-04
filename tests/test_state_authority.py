@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 from pathlib import Path
 
@@ -12,7 +13,9 @@ def test_csw_authority_is_shared_and_compare_and_swap(tmp_path):
     module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
     create_state_authority = module.create_state_authority
 
-    root = Path("/home/bamn/CognitiveStateWork")
+    root = Path(os.environ.get(
+        "COGNITIVE_STATEWORK_ROOT", Path(__file__).resolve().parents[1].parent
+        / "CognitiveStateWork"))
     first = create_state_authority(root, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
     second = create_state_authority(root, state_path=tmp_path / "subjects.json", evidence_path=tmp_path / "evidence.json")
     assert type(first).__module__ == "cognitive_statework.cfw_authority"

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
@@ -14,6 +16,13 @@ from runtime_contract.stateworks import SegmentStatus
 from runtime_session.host_authority import _HostCapability
 from runtime_session.lifecycle import GateDecision
 from runtime_session.standalone_behavior import _sispis_calibration
+
+
+@dataclass(frozen=True)
+class BehaviorSignalBatch:
+    after_cursor: int
+    next_cursor: int
+    signals: tuple[Mapping[str, Any], ...]
 
 
 class CompletionMethods:
@@ -295,15 +304,67 @@ class CompletionMethods:
             signal_schema=contracts.get("signal_schema"),
             signal_registry=contracts.get("signal_registry"))
         signal_id = envelope["signal_id"]
-        prior = self.signal_seen.get(signal_id)
-        if prior and prior != envelope:
-            raise ValueError(f"conflicting signal envelope {signal_id!r}")
-        self.signal_seen[signal_id] = envelope
-        self.signals.append(envelope)
+        with self._behavior_signal_lock:
+            prior = self.signal_seen.get(signal_id)
+            if prior and prior != envelope:
+                raise ValueError(f"conflicting signal envelope {signal_id!r}")
+            if prior == envelope:
+                return
+            cursor = self._behavior_signal_cursor + 1
+            recorded = deepcopy(envelope)
+            # Persist the delivery journal before publishing it to in-memory
+            # consumers. A restart can therefore replay an unacknowledged
+            # signal without mutating the audit history.
+            self._journal("behavior_signal_recorded", delivery_cursor=cursor,
+                          envelope=recorded)
+            self.signal_seen[signal_id] = recorded
+            self.signals.append(deepcopy(recorded))
+            self._behavior_signal_journal.append((cursor, recorded))
+            self._behavior_signal_cursor = cursor
         self._emit_runtime({"category": "decision", "event_type": "signal_emitted",
                    "subject": envelope.get("subject_ref"),
                    "payload": {"summary": envelope["signal_type"][:512],
                                "result_class": envelope["required_action"][:64]}})
+
+    def peek_behavior_signals(self, *, after_cursor: int | None = None,
+                              maximum: int = 32) -> BehaviorSignalBatch:
+        """Return a bounded batch of unacknowledged signals without consuming it."""
+        if type(maximum) is not int or not 1 <= maximum <= 32:
+            raise ValueError("behavior signal batch size must be between one and 32")
+        with self._behavior_signal_lock:
+            cursor = (self._behavior_signal_ack_cursor if after_cursor is None
+                      else after_cursor)
+            if type(cursor) is not int or cursor < self._behavior_signal_ack_cursor:
+                raise ValueError("behavior signal cursor precedes the acknowledged cursor")
+            if cursor > self._behavior_signal_cursor:
+                raise ValueError("behavior signal cursor exceeds the journal")
+            selected = [(item_cursor, envelope)
+                        for item_cursor, envelope in self._behavior_signal_journal
+                        if item_cursor > cursor][:maximum]
+            next_cursor = selected[-1][0] if selected else cursor
+            return BehaviorSignalBatch(
+                after_cursor=cursor,
+                next_cursor=next_cursor,
+                signals=tuple(deepcopy(envelope) for _, envelope in selected),
+            )
+
+    def acknowledge_behavior_signals(self, *, through_cursor: int) -> None:
+        """Durably acknowledge a committed signal batch; repeated ACKs are safe."""
+        if type(through_cursor) is not int or through_cursor < 0:
+            raise ValueError("behavior signal acknowledgement cursor is invalid")
+        with self._behavior_signal_lock:
+            if through_cursor <= self._behavior_signal_ack_cursor:
+                return
+            if through_cursor > self._behavior_signal_cursor:
+                raise ValueError("cannot acknowledge behavior signals beyond the journal")
+            self._journal("behavior_signal_acknowledged",
+                          through_cursor=through_cursor)
+            self._behavior_signal_ack_cursor = through_cursor
+            self._behavior_signal_journal = [
+                (cursor, envelope)
+                for cursor, envelope in self._behavior_signal_journal
+                if cursor > through_cursor
+            ]
     def _render_output(self, output: Optional[Dict[str, Any]] = None,
                        *, complete: bool = False, run_final_hooks: bool = True,
                        **kwargs: Any) -> Dict[str, Any]:
