@@ -82,37 +82,55 @@ class ActionGateMethods:
         lines.append("Preferences do not grant permission; every action still passes the host gate.")
         return "\n".join(lines)
     def _decision(self, action: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
+        return self._decision_with_reason(action)[0]
+
+    def _decision_with_reason(
+            self, action: Mapping[str, Any] | AgentActionRequest
+            ) -> tuple[GateDecision, str]:
+        """Return the gate result with stable component-level provenance."""
         request = self._request(action)
         descriptor = self._descriptor(request)
         for adjustment in self.bundle.guard_pack.get("routing_adjustments", ()):
             if (adjustment.get("route_type") == "tool_policy"
                     and adjustment.get("disposition") == "suppress"
                     and adjustment.get("route") == request.binding_id):
-                return GateDecision.BLOCK
-        for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
+                return GateDecision.BLOCK, "routing_policy.route_suppressed"
+        for name, enforcement in self.bundle.guard_pack.get(
+                "structural_handlers", {}).items():
             if enforcement.get("mode") not in {"structural", "tool_gate"}:
                 continue
             handler = handler_for_enforcement(enforcement)
             result = (handler.gate(self, request, enforcement)
                       if handler and "before_action" in getattr(handler, "hooks", ())
                       else None)
-            if result == "block":
-                return GateDecision.BLOCK
-            if result == "require_reinspection":
-                return GateDecision.REQUIRE_REINSPECTION
+            if result in {"block", "require_reinspection"}:
+                decision = (GateDecision.BLOCK if result == "block" else
+                            GateDecision.REQUIRE_REINSPECTION)
+                owner = str(enforcement.get("owner") or {
+                    "stale_model.reinspect": "owl",
+                    "contradiction.reinspect": "owl",
+                    "completion.boundary_evidence": "sispis",
+                    "retry.changed_hypothesis": "fuse",
+                    "authority.boundaries": "ward",
+                    "tool_gate.bad_action": "ward",
+                }.get(name, name.split(".", 1)[0])).lower()
+                reason = name.rsplit(".", 1)[-1].replace("-", "_")
+                return decision, f"{owner}.{reason}"
         confirmation = self.host_context.confirmation_for(request, self._consumed_grant_ids)
         if descriptor.destructive and confirmation is None:
-            return GateDecision.REQUIRE_CONFIRMATION
-        if descriptor.outside_scope or descriptor.untrusted:
-            return GateDecision.BLOCK
+            return GateDecision.REQUIRE_CONFIRMATION, "ward.confirmation_required"
+        if descriptor.untrusted:
+            return GateDecision.BLOCK, "ward.untrusted_action"
+        if descriptor.outside_scope:
+            return GateDecision.BLOCK, "ward.outside_scope_action"
         authorities = set(descriptor.allowed_authorities or ())
         if descriptor.required_authority and not authorities:
             authorities = {descriptor.required_authority}
         if authorities and self.host_context.principal not in authorities:
-            return GateDecision.REQUIRE_CONFIRMATION
+            return GateDecision.REQUIRE_CONFIRMATION, "ward.authority_mismatch"
         if descriptor.required_capabilities and not set(descriptor.required_capabilities).issubset(
                 set(self.host_context.capabilities)):
-            return GateDecision.REQUIRE_CONFIRMATION
+            return GateDecision.REQUIRE_CONFIRMATION, "ward.capability_missing"
         if descriptor.mutability not in {"read", "inspect"}:
             policy = self.host_context.protected_resources
             if tuple(self.host_context.filesystem_scope) != policy.authorized_write_roots:
@@ -120,12 +138,18 @@ class ActionGateMethods:
                                                  tuple(self.host_context.filesystem_scope))
             classification = policy.classify_write(request.arguments)
             if classification != "authorized":
-                return GateDecision.BLOCK
+                reason = {
+                    "protected": ("secret_exposure" if descriptor.secret_access
+                                  else "protected_resource"),
+                    "outside_scope": "outside_scope_write",
+                    "missing_target": "missing_write_target",
+                }.get(classification, "write_policy_denied")
+                return GateDecision.BLOCK, f"ward.{reason}"
         if any(not record["resolved"] and
                (record.get("subject") in {None, request.subject_ref})
                for record in self.contradictions.values()):
-            return GateDecision.REQUIRE_REINSPECTION
-        return GateDecision.ALLOW
+            return GateDecision.REQUIRE_REINSPECTION, "owl.operator_contradiction"
+        return GateDecision.ALLOW, "cfw.action_policy_allow"
     @staticmethod
     def _more_restrictive(left: GateDecision, right: GateDecision) -> GateDecision:
         rank = {
@@ -293,13 +317,13 @@ class ActionGateMethods:
         if (request.subject_ref == self.bundle.policy.subject_ref
                 and not self._authoritative_state_ready()):
             decision = GateDecision.BLOCK
-            reasons = ("workflow_authority_unavailable",)
+            reasons = ("csw.workflow_authority_unavailable",)
         elif not self._revocation_current() or not self._membership_current():
             decision = GateDecision.BLOCK
-            reasons = ("authority_membership_stale",)
+            reasons = ("ward.authority_membership_stale",)
         else:
-            decision = self._decision(request)
-            reasons = ("action_policy." + decision.value,)
+            decision, reason = self._decision_with_reason(request)
+            reasons = (reason,)
         return ActionPreflightResult(request.digest, decision,
                                      reason_codes=reasons)
     def prepare_action(self, action: Dict[str, Any] | AgentActionRequest) -> ActionPreparation:
@@ -324,13 +348,13 @@ class ActionGateMethods:
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
                                      self._descriptor(request), request.digest,
-                                     reason_codes=("workflow_authority_unavailable",))
+                                     reason_codes=("csw.workflow_authority_unavailable",))
         if not self._revocation_current() or not self._membership_current():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
                                      self._descriptor(request), request.digest,
-                                     reason_codes=("authority_membership_stale",))
+                                     reason_codes=("ward.authority_membership_stale",))
         descriptor = self._descriptor(request)
-        decision = self._decision(request)
+        decision, gate_reason = self._decision_with_reason(request)
         strategy = self._action_strategy()
         candidate: Optional[ActivityFact] = None
         host_relation = binding.goal_relation if binding else "ambiguous"
@@ -344,8 +368,12 @@ class ActionGateMethods:
                 if not isinstance(hook_decision, GateDecision):
                     raise ValueError("tool hooks must return GateDecision or None")
                 if hook_decision != GateDecision.ALLOW:
-                    hook_reasons.append("tool_hook." + hook_decision.value)
+                    hook_authority = str(getattr(hook, "authority", "cfw.tool_hook")).lower()
+                    hook_reasons.append(hook_authority + "." + hook_decision.value)
+                prior_decision = decision
                 decision = self._more_restrictive(decision, hook_decision)
+                if decision != prior_decision and hook_reasons:
+                    gate_reason = hook_reasons[-1]
 
         # When DP owns session-wide behavior, CFW still applies its hard and
         # component-local gates but does not run its standalone global
@@ -425,6 +453,7 @@ class ActionGateMethods:
                         "max_repeated_equivalent_verifications", 1) or 1))
                 if violation:
                     decision = GateDecision.BLOCK
+                    gate_reason = "owl.verification_action_limited"
                     self._emit_runtime({
                         "category": "blocker", "event_type": "verification_action_limited",
                         "subject": request.subject_ref,
@@ -440,6 +469,7 @@ class ActionGateMethods:
                         total_action_limit=int(verification.get(
                             "max_committed_actions_without_goal_progress", 15) or 15))):
                 decision = GateDecision.REQUIRE_GOAL_REANCHOR
+                gate_reason = "flow.goal_progress_limit"
         if decision == GateDecision.ALLOW:
             self._pending_action_requests[action_request_id] = {
                 "descriptor": descriptor.__dict__.copy(),
@@ -479,7 +509,7 @@ class ActionGateMethods:
         if decision != GateDecision.ALLOW:
             self._pending_action_requests.pop(action_request_id, None)
         reason_codes = tuple(dict.fromkeys(
-            hook_reasons + ["action_policy." + decision.value]))
+            hook_reasons + [gate_reason]))
         return ActionPreparation(action_request_id, decision, descriptor, request.digest,
                                  reason_codes=reason_codes)
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:

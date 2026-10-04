@@ -13,7 +13,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from runtime_contract.actions import ActionDescriptor
+from runtime_contract.actions import (ActionDescriptor, HostExecutionContext,
+                                      ProtectedResourcePolicy)
 from runtime_contract.behavioral_fusion import fuse_action_relation
 from runtime_contract.protocol_artifact import (
     PROTOCOL_HASH, PROTOCOL_VERSION, QUESTION_REGISTRY_HASH,
@@ -185,14 +186,15 @@ class FixedJudge:
         return SimpleNamespace(judgment=judgment, status="ok", calibrated=self.calibrated)
 
 
-def request(task_id, *, system_one_policy=None, action_registry=None, support_limit=5):
+def request(task_id, *, system_one_policy=None, action_registry=None, support_limit=5,
+            subject_ref="component:target"):
     goal = TaskGoalContract(
         objective="Change the requested component and verify the stated outcome.",
         deliverable_kind="code_behavior", work_mode="delivery",
         acceptance_criteria=(AcceptanceCriterion(
             "C1", "The requested behavior is present and verified.", "behavior"),))
     return TaskRequest(
-        task_id=task_id, application_id="system-one-tests", subject_ref="component:target",
+        task_id=task_id, application_id="system-one-tests", subject_ref=subject_ref,
         shape="implement", goal_contract=goal,
         system_one_policy=system_one_policy or make_test_policy(),
         action_registry=action_registry or {},
@@ -244,6 +246,49 @@ def test_shadow_judgment_is_bounded_telemetry_and_cannot_change_action_gate():
     assert decision["payload"]["system_one_fused_action_relation"] == "diagnostic_support"
     assert decision["payload"]["action_request_id"] == prepared.action_request_id
     assert "raw-secret-marker" not in json.dumps(events)
+
+
+def test_action_gate_receipt_preserves_ward_reason_provenance(tmp_path):
+    resolve, runtime = runtime_modules()
+    action_registry = {
+        "read_secret": ActionDescriptor(
+            "read_secret", mutability="write", secret_access=True,
+            required_authority=None),
+    }
+    policy = ProtectedResourcePolicy(
+        protected_roots=(str(tmp_path),),
+        authorized_write_roots=(str(tmp_path),),
+    )
+    context = HostExecutionContext(
+        principal="operator", filesystem_scope=(str(tmp_path),),
+        protected_resources=policy)
+    bundle = resolve.resolve(request(
+        "ward-provenance", action_registry=action_registry, subject_ref=None))
+    session = runtime.start(
+        bundle, action_registry=action_registry, host_context=context,
+        telemetry_disabled=True, session_nonce="ward-provenance")
+    from digital_psychology_adapter import CFWBehaviorAdapter
+
+    class AgentHandle:
+        def before_model_call(self, *, behavior_context, **_kwargs):
+            return behavior_context
+
+        def before_tool_planning(self, _action_hint=None, *, behavior_context,
+                                 **_kwargs):
+            return behavior_context
+
+    adapter = CFWBehaviorAdapter(session, AgentHandle())
+    action = {"tool_binding_id": "read_secret",
+              "arguments": {"path": str(tmp_path / "credentials.json")},
+              "subject_ref": "component:target"}
+
+    preflight = adapter.preflight_action(action)
+    final = adapter.authorize_action(action)
+
+    assert preflight["decision"] == "block"
+    assert preflight["gate_receipt"]["reason_codes"] == ["ward.secret_exposure"]
+    assert final["decision"] == "block"
+    assert final["gate_receipt"]["reason_codes"] == ["ward.secret_exposure"]
 
 
 def test_advisory_directive_requires_pinned_calibration_and_hysteresis():
