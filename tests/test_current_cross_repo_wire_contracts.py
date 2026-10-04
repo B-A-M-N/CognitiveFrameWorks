@@ -558,13 +558,37 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
             # Persist a model-call projection before recovery so the report can
             # distinguish real model-context churn from action projection writes.
             await bridge.before_model_call("Inspect the current task context.")
+            cfw_session.emit_signal({
+                "schema_version": "1.1.0",
+                "signal_id": "runtime-triad-criterion-01-retry",
+                "cause_id": "runtime-triad-criterion-01-failed-approach",
+                "source": "owl",
+                "signal_type": "owl.approach_failed",
+                "severity": "high",
+                "scope": "task",
+                "evidence_refs": ["cfw:criterion-01:approach-failed"],
+                "required_action": "recover",
+                "subject_ref": criteria[0],
+            })
+            retry_signals = cfw.collect_behavior_signals(RuntimeObservation(
+                action_index=1, goal_set=goals,
+                criterion_status=criterion_status))
+            assert any(signal.code == "equivalent_retry"
+                       and signal.criterion_id == criteria[0]
+                       for signal in retry_signals)
             first = await bridge.after_action(RuntimeObservation(
                 action_index=1, goal_set=goals, equivalent_retry_count=2,
-                active_trigger_codes=("equivalent_retry",),
                 criterion_status=criterion_status))
             assert first["status"] == "ready", first.get("fault")
             assert bridge.behavior_state.cognitive_mode == "RECOVER"
             assert bridge.behavior_state.active_interventions
+            assert cfw_session.lifecycle.component_mode("owl") == "reset"
+            assert cfw_session.lifecycle.component_mode("anchor") == "recovery"
+            assert cfw_session.lifecycle.component_mode("fuse") == "constrained"
+            assert {"owl", "anchor_open"}.issubset(cfw_session.active_lifecycle)
+            # This fixture is a one-shot failed-approach event. Once DP receives
+            # it, the CFW signal queue advances so it cannot retrigger forever.
+            cfw_session.signals.clear()
             intervention = bridge.behavior_state.active_interventions[0]
             assert intervention.expires_at_action is not None
             assert csw.behavioral_snapshot().active_stateworks
@@ -671,6 +695,7 @@ def test_runtime_triad_private_mcp_qualification_uses_all_three_authorities(
             record = await bridge.client.behavioral_trial_record(
                 identity.scope, trial_id="runtime-triad-private-mcp")
             assert record["committed_actions"] == 14
+            assert record["equivalent_retries"] == 1
             assert record["cfw_preflight_rejections"] == 0
             assert record["cfw_final_gate_rejections"] == 1
             assert record["model_projection_events"] >= 2

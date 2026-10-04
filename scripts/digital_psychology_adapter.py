@@ -134,14 +134,24 @@ class CFWBehaviorAdapter:
 
     def collect_behavior_signals(self, observation: Any) -> tuple[dict[str, Any], ...]:
         result = []
+        goal_set = getattr(observation, "goal_set", None)
+        objective_criteria = ({item.criterion_id for item in goal_set.items}
+                              if goal_set is not None else set())
         for envelope in self._session.signals[-32:]:
             signal_type = str(envelope.get("signal_type") or "")
+            criterion_id = envelope.get("criterion_id")
+            # Canonical CFW signal envelopes use subject_ref for the affected
+            # artifact. When it exactly names a host criterion, preserve that
+            # scope for DP's multi-criterion trigger checks.
+            subject_ref = envelope.get("subject_ref")
+            if criterion_id is None and subject_ref in objective_criteria:
+                criterion_id = subject_ref
             result.append({
                 "source": str(envelope.get("source") or "cfw"),
                 "code": signal_type,
                 "active": True,
                 "severity": str(envelope.get("severity") or "warning"),
-                "criterion_id": envelope.get("criterion_id"),
+                "criterion_id": criterion_id,
                 "evidence_refs": list(envelope.get("evidence_refs") or ()),
             })
         return tuple(result)
