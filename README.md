@@ -21,9 +21,10 @@ Over time, that grew from a collection of behavioral protocols into a host-integ
 
 CognitiveFrameWorks is implemented as task-local enforcement and a component policy compiler:
 
-- **Task policy resolution** freezes an immutable policy snapshot for each task.
+- **Standalone behavior authority** gives CFW deterministic behavior and route policy when DP is absent. The trusted host still owns the `TaskGoalContract`, its acceptance criteria, and the completion evidence.
+- **Task authority** pins the goal, structural eligibility, component floors, and local enforcement policy. Revisioned behavioral overlays may adjust optional behavior without changing those authority boundaries.
 - **Capability composition** supports CFW-only, CFW + CSW, CFW + DP, and the full CFW + CSW + DP deployment. A missing StateWork checkout does not prevent an ordinary CFW-only task from resolving.
-- **Safe adaptive advice** is applied only after the host computes eligible choices. Mandatory stages such as `WARD` cannot be suppressed, and malformed or ineligible advice is rejected as a whole.
+- **Safe adaptive advice** is applied only after the host computes eligible choices. CFW exports a task-specific behavior contract and rejects any DigitalPsychology projection below a selected component's baseline floor. Transient operations such as `reset`, `reopen`, and `recovery` are validated separately from baseline modes. Malformed or ineligible advice is rejected as a whole.
 - **Action authority** remains host-owned. `ActionStrategy` provides bounded preference hints, but every action still passes the structural action gate.
 - **Evidence and telemetry** are separated: the runtime keeps local NDJSON telemetry, while the optional exporter provides bounded, cursor-based, event-ID-idempotent delivery to an external service.
 - **StateWork integration** accepts only workflows eligible under CSW's current authoritative selection and delegates legal state transitions and evidence checks to CSW.
@@ -54,7 +55,7 @@ The example resolves an `implement` task, shows the host action gate decision, a
 
 ## Optional integrations
 
-- **CFW alone:** required for the example above. No CSW or DP installation is loaded.
+- **CFW alone:** CFW uses its deterministic standalone behavior authority and action gates; the host-owned `TaskGoalContract` remains authoritative for the objective and completion criteria. No CSW or DP installation is loaded.
 - **CFW + CSW:** install CSW's optional CFW provider and point `--statework-root` at its registry. CSW owns workflow state, evidence, and legal transitions; CFW consumes the provider contract for compatible component context and action gates.
 - **CFW + CSW + DP:** CFW and CSW keep those same authorities; the trusted DP host uses their declared ports to coordinate bounded behavioral interventions and measures outcomes using host evidence.
 - **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, the trusted host passes `RuntimeTaskHandle.digital_psychology_adapter()` to DP's `HostControlBridge`; the host launches DP's private MCP process and applies its prepared directives through CFW's lifecycle overlay. The bridge is not part of `AgentSessionHandle`, and CFW keeps its hard permission gates active.
@@ -75,7 +76,7 @@ This provider install and root configuration are optional; CFW remains standalon
 
 | Deployment | CFW role | Other-system requirement |
 | --- | --- | --- |
-| **CFW alone** | Components, task policy, evidence handling, and action gates | None |
+| **CFW alone** | Components, deterministic standalone behavior policy, evidence handling, and action gates | None; the host supplies the task contract |
 | **CSW alone** | Not loaded | CSW runs through its standalone host interface |
 | **CFW + DP** | Supplies signals and validates/applies component directives | DP decision service is an optional private host process |
 | **CSW + DP** | Not loaded | CSW remains the authority for eligible StateWork selection and legal transitions |
@@ -85,6 +86,95 @@ This provider install and root configuration are optional; CFW remains standalon
 CFW and CSW each have standalone entry points and work together without DP.
 The full three-system mode is recommended when behavioral interventions should
 adapt across both cognitive components and domain workflows.
+
+### Generic Codex App Server host
+
+`scripts/codex_app_server_adapter.py` connects a host-authored CFW task to the
+generic Codex App Server stdio API. The host registers `cfw_` dynamic tools with
+JSON schemas, CFW action descriptors, and trusted executors; each call passes
+through CFW's action gate before the executor runs. The host owns the task
+contract, stable session identity, recovery record, validation, and completion.
+The default child configuration disables every recognized native execution,
+tool, integration, and local side-effect feature that is outside the host's
+registered CFW tools. It also disables MCP servers and web search while
+retaining App Server infrastructure required for host-registered dynamic
+tools. Codex App Server dynamic tools are experimental and require the client's
+`experimentalApi` capability. See the
+[Codex App Server guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server) for the
+protocol details.
+
+The adapter is an optional generic host integration. CFW does not require a
+Codex App Server installation to run. It launches `codex` from `PATH` by
+default; set `CODEX_APP_SERVER_BIN` to the App Server executable when the
+`codex` command is a wrapper or resolves to another launcher.
+
+For a composite CFW+CSW+DP host, pass a `CodexCognitiveHost` implementation as
+`cognitive_host`. `scripts/codex_app_server_dp_bridge.py` connects DP's private
+`HostControlBridge` to the App Server lifecycle. Its `bridge_factory` runs
+after the CFW task starts, so the application can build DP identity and a
+CFW behavior port from that exact task. The trusted application host supplies
+the shared CSW authority, private DP control client, a candidate projector,
+and an evidence projector. The connector checks that DP's CFW adapter belongs
+to the same task and that both systems use the same task objective and criteria
+before opening. DP control tools remain host-private; the App Server receives
+only the registered `cfw_` actions.
+Visibility status reports zero model-visible DP tools only when the adapter's
+own constrained App Server launcher (or a host-verified client) is used.
+The adapter status also includes a bounded `cognitive_host_status` snapshot:
+private DP bridge readiness, CFW authority verification, shared CSW workflow
+bindings, CFW/DP behavior revisions, intervention count, and DP's aggregate
+production counters and timing data. This lets an operator distinguish a
+completed Codex turn from a task that actually ran through the triad.
+Use the adapter's `task_start_options` to pass host-owned CFW authority objects
+such as the shared CSW-backed `state_authority`; the adapter reserves session
+identity and resume fields so these objects cannot replace recovery identity.
+The DP connector requires `combined_enforcing` mode and non-empty CFW workflow
+bindings by default. `require_shared_csw=False` is an explicit CFW+DP-only mode.
+
+This is a direct integration with the regular packaged Codex CLI and its generic
+App Server protocol. It is independent of HarvardCodex Control. The host pins
+the CLI version and complete feature catalog and refuses startup for an
+unreviewed catalog. Provider credentials come from `--provider-env-file`, then
+`CODEX_PROVIDER_ENV_FILE`, then the explicitly named environment variable; no
+machine-specific credential path is assumed. The native model action surfaces
+remain disabled, and only host-registered `cfw_` tools are available to the
+model.
+
+Recorded ChatGPT-mode attempts stopped during App Server workspace-routing
+discovery before the host or model turn started. The completed external-provider
+sample used FreeInference's Responses endpoint. This is a provider-path
+qualification for regular Codex; it does not change the host boundary or imply
+that the ChatGPT routing failure was caused by CFW.
+
+On the four-defect coding fixture, the recorded baseline reached 4/4 in all ten
+runs, so the fixture has no baseline headroom for a behavioral-superiority
+claim. The 50-trial dirty-tree matrix recorded CFW at 7/10 full scores and
+CFW+CSW, triad, and triad-multipath at 10/10 each. These results establish
+integration and sample-specific non-regression only; they do not establish
+general efficacy. The [live-results index](evaluation_fixtures/live-results/README.md)
+records the exact artifacts and limitations.
+
+Completion validators use `CodexValidatorBinding` entries keyed to host-owned
+acceptance criteria. Each entry fixes the action binding and arguments, declares
+the criteria and boundary evidence it covers, and validates output against a
+host-authored JSON Schema. `validate_completion()` runs these actions through
+CFW and, when attached, DP, then asks CFW to issue the completion permit.
+Missing, blocked, or failed validators leave the task incomplete; the model
+cannot supply a pass boolean or invent validator evidence.
+
+The deterministic adapter contract fixture is in
+`evaluation_fixtures/codex-app-server-host-v1.json`. It runs matched baseline,
+treatment, and safe-read holdout cases. It checks host gate behavior and tool
+correlation; it does not evaluate model effectiveness or support efficacy claims.
+
+For a live, narrowly scoped action-gate comparison, run
+`python integration_tests/run_codex_app_server_live_evaluation.py --trials 10`.
+It uses the regular Codex App Server profile, an identical disposable repository
+and `cfw_write` tool in each condition, and counterbalances baseline, CFW-only,
+CFW+CSW, and CFW+CSW+DP in seeded random order. The JSON result is written under
+`evaluation_fixtures/live-results/` after each trial. This experiment measures
+only whether each host boundary blocks this fixture's protected write; it is not
+a general coding-agent effectiveness claim.
 
 ## The larger architecture
 
@@ -170,7 +260,9 @@ CFW uses **progressive disclosure and task composition**: activate the smallest 
 
 ## Runtime model
 
-At runtime, a task is resolved into a frozen effective policy.
+At runtime, a task is resolved into a pinned structural authority contract.
+Optional behavior can change through revisioned host-applied overlays, subject
+to CFW's component floors and action gates.
 
 ```text
 TaskRequest
@@ -196,11 +288,14 @@ TaskRequest
             └── guards
             │
             ▼
- Optional validated behavioral routing
-        from DigitalPsychology
+   Host/CSW workflow plan
+   (when a workflow provider is enabled)
             │
             ▼
-      EffectivePolicy
+     Pinned CFW task authority
+             ▲
+             │ revisioned optional overlay
+        DigitalPsychology
             │
             ▼
        RuntimeSession
@@ -237,6 +332,13 @@ A key invariant is:
 
 > **Behavioral learning may refine legal choices. It must not make an illegal choice legal.**
 
+CFW pins its own component and enforcement policy separately from the host's
+composite runtime identity. The CFW policy hash covers CFW-owned contracts;
+the composite snapshot also covers the CSW registry and workflow plan, the host
+goal contract, and the model, harness, and toolset. A workflow or toolset change
+therefore changes the composite identity without changing the CFW policy hash
+when CFW's own policy is unchanged.
+
 DigitalPsychology can provide evidence that a particular flow, specialist, stage, or optional intervention is counterproductive in a particular context.
 
 CFW can use that evidence to prefer or suppress an eligible route.
@@ -249,18 +351,21 @@ The architecture deliberately separates two timescales.
 
 ### Fast loop — current work
 
-CFW and CognitiveStateWorks govern the running task:
+The trusted host coordinates current-task behavior. CFW enforces component
+and action authority, CSW owns workflow legality and evidence, and DP may adjust
+optional behavior through bounded host-applied decisions:
 
 ```text
-observe
-→ reason
-→ act
-→ receive evidence
-→ update operational state
-→ continue / recover / complete
+host event
+→ CFW and CSW provide bounded state
+→ DP selects an optional behavioral adjustment
+→ host applies legal CFW/CSW changes
+→ agent acts
+→ host records evidence and outcomes
 ```
 
-Current-task policy is frozen so that execution remains reproducible and causal attribution remains meaningful.
+Structural authority remains pinned for the task. Optional behavioral overlays
+are revisioned and recorded so the host can reproduce the active projection.
 
 ### Slow loop — learning across work
 
@@ -302,9 +407,10 @@ The runtime's security-sensitive authority identities remain separate from analy
 
 ## CognitiveStateWorks integration
 
-CFW determines **which StateWork is applicable and how it is composed**.
-
-CognitiveStateWorks determines **which domain states and transitions are legal**.
+CSW owns **StateWork eligibility, selection, legal composition, domain state,
+and transitions**. The trusted host or DP may request a choice from the legal
+set; CSW validates and records it. CFW consumes only normalized workflow and
+component requirements through the neutral `WorkflowPort`.
 
 For example:
 
@@ -413,7 +519,7 @@ CognitiveFrameWorks is host-neutral. Install into a built-in registry or pass an
 python3 scripts/install-framework.py --target agents
 python3 scripts/doctor.py --target agents
 
-# Any host registry, including HarvardCodex-like layouts
+# Any third-party host registry
 python3 scripts/install-framework.py \
   --registry my-host="$HOME/.my-host/skills"
 python3 scripts/doctor.py \
@@ -458,8 +564,10 @@ Previous confidence does not outrank new evidence.
 **Behavioral adaptation cannot weaken structural authority.**
 Learning operates inside legal boundaries.
 
-**Current-task policy should remain reproducible.**
-Learning belongs primarily between sessions, not as uncontrolled mutation during one.
+**Current-task authority should remain reproducible.**
+Structural authority stays pinned; optional behavioral projections can change
+through revisioned, host-applied overlays. Slow-loop learning remains a
+separate process from uncontrolled policy mutation during a task.
 
 **Repeated mistakes should become engineering problems.**
 If a failure recurs, investigate the structure producing it rather than repeatedly reminding the model to "be careful."

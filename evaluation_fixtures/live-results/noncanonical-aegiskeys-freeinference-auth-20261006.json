@@ -1,0 +1,29 @@
+{
+  "schema": "generic-codex-app-server-trial-attempt/v1",
+  "trial_id": "aegiskeys-imported-triad-20261006",
+  "recorded_date": "2026-10-06",
+  "condition": "triad",
+  "stack": "cfw-csw-dp",
+  "model": "deepseek-v4-flash",
+  "codex": "regular packaged Codex CLI through generic App Server",
+  "auth": {
+    "mode": "external_provider",
+    "provider_id": "freeinference",
+    "provider_base_url": "https://freeinference.org/v1",
+    "wire_api": "responses",
+    "credential_source": "AegisKeys child-only injection"
+  },
+  "outcome": {
+    "thread_started": true,
+    "turn_started": true,
+    "turn_status": "failed",
+    "provider_http_status": 401,
+    "failure_message": "Invalid or expired API key",
+    "assistant_message_present": false,
+    "dynamic_tool_calls": 0,
+    "model_execution_observed": false,
+    "efficacy_scored": false,
+    "trial_valid": false
+  },
+  "interpretation": "The provider rejected the stored credential before assistant output or host-tool calls. This is an authentication diagnostic, not a behavioral result. No credential value or provider request identifier is retained."
+}
