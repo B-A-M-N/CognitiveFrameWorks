@@ -1,0 +1,150 @@
+{
+  "version": "1.1.0",
+  "signals": [
+    {
+      "id": "owl.verification_needed",
+      "producer": "owl",
+      "consumers": [
+        "fuse",
+        "sispis"
+      ],
+      "description": "A claim requires verification before it can be treated as established."
+    },
+    {
+      "id": "owl.approach_failed",
+      "producer": "owl",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "Current reasoning or implementation approach is not working."
+    },
+    {
+      "id": "owl.constraint_drift",
+      "producer": "owl",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "The constraints of the task have shifted from what was originally established."
+    },
+    {
+      "id": "owl.user_observation_conflict",
+      "producer": "owl",
+      "consumers": [
+        "anchor",
+        "fuse",
+        "sispis"
+      ],
+      "description": "A user report of current observable behavior conflicts with a prior agent conclusion or verified state."
+    },
+    {
+      "id": "owl.circular_verification",
+      "producer": "owl",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "A completion claim materially rests on edit existence, an implementation-mirroring test, or rereading newly written code."
+    },
+    {
+      "id": "owl.cohesion_risk",
+      "producer": "owl",
+      "consumers": [
+        "flow",
+        "sispis"
+      ],
+      "description": "A proposed edit adds another distinct responsibility to an already multi-responsibility unit."
+    },
+    {
+      "id": "fuse.retry_bound_exceeded",
+      "producer": "fuse",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "Tool execution has exceeded retry bounds without success."
+    },
+    {
+      "id": "fuse.overclaimed_evidence",
+      "producer": "fuse",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "A tool result is being interpreted more broadly than it warrants."
+    },
+    {
+      "id": "fuse.conflicting_evidence_unrechecked",
+      "producer": "fuse",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "An earlier observation or passing test is relied on after a newer contradictory report without fresh inspection."
+    },
+    {
+      "id": "flow.responsibility_concentration",
+      "producer": "flow",
+      "consumers": [
+        "sispis",
+        "anchor"
+      ],
+      "description": "The produced artifact concentrates responsibility in one owner beyond its scope."
+    },
+    {
+      "id": "flow.operational_drag",
+      "producer": "flow",
+      "consumers": [
+        "sispis",
+        "anchor"
+      ],
+      "description": "The produced code creates measurable operational friction or load."
+    },
+    {
+      "id": "ward.authority_risk",
+      "producer": "ward",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "An action carries authority, permission, or scope risk."
+    },
+    {
+      "id": "ward.secret_exposure",
+      "producer": "ward",
+      "consumers": [
+        "anchor",
+        "sispis"
+      ],
+      "description": "An action would expose or transmit secrets."
+    },
+    {
+      "id": "anchor.recovery_started",
+      "producer": "anchor",
+      "consumers": [
+        "owl",
+        "fuse",
+        "sispis"
+      ],
+      "description": "ANCHOR has initiated a recovery procedure."
+    },
+    {
+      "id": "ward.confirmation_required",
+      "producer": "ward",
+      "consumers": [
+        "sispis"
+      ],
+      "description": "An action requires user confirmation before proceeding."
+    },
+    {
+      "id": "flow.change_amplification",
+      "producer": "flow",
+      "consumers": [
+        "sispis",
+        "anchor"
+      ],
+      "description": "The produced artifact amplifies the impact of a small change across a wide surface."
+    }
+  ]
+}

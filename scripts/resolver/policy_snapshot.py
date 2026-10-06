@@ -8,12 +8,16 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
 from runtime_contract.policy import freeze_contracts as _freeze_contracts
 from runtime_contract.policy import stable_hash as _stable_contract_hash
+from runtime_contract.composite_snapshot import (
+    CFWPolicySnapshot, CompositeCognitiveRuntimeSnapshot,
+)
+from runtime_contract.paths import runtime_asset_root
 from runtime_contract.task import TaskRequest, SystemOnePolicy
 from runtime_contract.workflow_port import WorkflowResolution
 from resolver.common import _frozen_mapping, _thaw, sha256_bytes
 from resolver.guards import load_guard_pack, semantic_guard_hash
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = runtime_asset_root()
 
 class SnapshotIntegrityError(ValueError):
     pass
@@ -44,6 +48,8 @@ class PolicySnapshot:
     application_instance_id: str
     frozen_at: str
     policy_hash: str = ""
+    cfw_policy_snapshot: Optional[CFWPolicySnapshot] = None
+    composite_snapshot: Optional[CompositeCognitiveRuntimeSnapshot] = None
     subject_ref: Optional[str] = None
     contracts: Mapping[str, Any] = field(default_factory=dict)
     goal_contract: Mapping[str, Any] = field(default_factory=dict)
@@ -73,6 +79,7 @@ class PolicySnapshot:
     shared_workflow_membership: Optional[Mapping[str, Any]] = None
     shared_workflow_memberships: Tuple[Mapping[str, Any], ...] = ()
     statework_subject_refs: Mapping[str, str] = field(default_factory=dict)
+    workflow_completion_claim_classes: Mapping[str, Any] = field(default_factory=dict)
     policy_revocation_revision: int = 0
     revocation_mode: str = "deferred"
 
@@ -86,6 +93,9 @@ class PolicySnapshot:
             _freeze_contracts(item) for item in self.shared_workflow_memberships))
         object.__setattr__(self, "statework_subject_refs",
                            _freeze_contracts(dict(self.statework_subject_refs)))
+        object.__setattr__(self, "workflow_completion_claim_classes",
+                           _freeze_contracts(
+                               dict(self.workflow_completion_claim_classes)))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -110,6 +120,12 @@ class PolicySnapshot:
             "application_instance_id": self.application_instance_id,
             "frozen_at": self.frozen_at,
             "policy_hash": self.policy_hash,
+            "cfw_policy_hash": (self.cfw_policy_snapshot.policy_hash
+                                if self.cfw_policy_snapshot else ""),
+            "cfw_policy_snapshot": (self.cfw_policy_snapshot.to_dict()
+                                    if self.cfw_policy_snapshot else None),
+            "composite_snapshot": (self.composite_snapshot.to_dict()
+                                   if self.composite_snapshot else None),
             "subject_ref": self.subject_ref,
             "goal_contract": _thaw(self.goal_contract),
             "goal_contract_hash": self.goal_contract_hash,
@@ -133,6 +149,8 @@ class PolicySnapshot:
             "shared_workflow_memberships": [_thaw(item)
                                             for item in self.shared_workflow_memberships],
             "statework_subject_refs": _thaw(self.statework_subject_refs),
+            "workflow_completion_claim_classes": _thaw(
+                self.workflow_completion_claim_classes),
             "policy_revocation_revision": self.policy_revocation_revision,
             "revocation_mode": self.revocation_mode,
             "phase": self.phase,
@@ -245,8 +263,8 @@ class EffectivePolicy:
     goal_contract_hash: str = ""
     signal_schema_hash: str = ""
     signal_registry_hash: str = ""
-    behavior_event_schema_hash: str = ""
-    behavior_event_schema_version: str = ""
+    runtime_event_schema_hash: str = ""
+    runtime_event_schema_version: str = ""
     runtime_behavior_hash: str = ""
     validator_registry_hash: str = ""
     handler_registry_hash: str = ""
@@ -294,8 +312,8 @@ class EffectivePolicy:
             "goal_contract_hash": self.goal_contract_hash,
             "signal_schema_hash": self.signal_schema_hash,
             "signal_registry_hash": self.signal_registry_hash,
-            "behavior_event_schema_hash": self.behavior_event_schema_hash,
-            "behavior_event_schema_version": self.behavior_event_schema_version,
+            "runtime_event_schema_hash": self.runtime_event_schema_hash,
+            "runtime_event_schema_version": self.runtime_event_schema_version,
             "runtime_behavior_hash": self.runtime_behavior_hash,
             "validator_registry_hash": self.validator_registry_hash,
             "handler_registry_hash": self.handler_registry_hash,
@@ -383,6 +401,19 @@ def _policy_from_bundle(bundle: "RuntimeBundle") -> EffectivePolicy:
             differences.append("stateworks")
         raise SnapshotIntegrityError(
             "runtime bundle content differs from its pinned policy: " + ",".join(differences))
+    cfw_snapshot = bundle.cfw_policy_snapshot
+    composite_snapshot = bundle.composite_snapshot
+    if cfw_snapshot is not None:
+        if (bundle.pinned.get("cfw_policy_hash") != cfw_snapshot.policy_hash
+                or _thaw(bundle.pinned.get("cfw_policy_snapshot"))
+                != cfw_snapshot.to_dict()):
+            raise SnapshotIntegrityError("runtime bundle CFW policy snapshot pin is invalid")
+    if composite_snapshot is not None:
+        if (_thaw(bundle.pinned.get("composite_snapshot"))
+                != composite_snapshot.to_dict()
+                or composite_snapshot.cfw_policy_hash
+                != (cfw_snapshot.policy_hash if cfw_snapshot else None)):
+            raise SnapshotIntegrityError("runtime bundle composite snapshot pin is invalid")
     return bundle.policy
 
 @dataclass(frozen=True)
@@ -406,9 +437,18 @@ class RuntimeBundle:
     # policy snapshot because absolute installation paths are not policy
     # identity; the executable COW hash is pinned in EffectivePolicy.
     statework_root: str = ""
+    cfw_policy_snapshot: Optional[CFWPolicySnapshot] = None
+    composite_snapshot: Optional[CompositeCognitiveRuntimeSnapshot] = None
     # Host-owned descriptors composed before resolution.  Runtime-only so
     # absolute/source-specific objects never become policy artifact fields.
     action_registry: Mapping[str, Any] = field(default_factory=dict, repr=False)
+    workflow_port: Any = field(default=None, repr=False, compare=False)
+    workflow_runtime_identity: Mapping[str, Any] = field(
+        default_factory=dict, repr=False, compare=False)
+    workflow_task_context: Mapping[str, Any] = field(
+        default_factory=dict, repr=False, compare=False)
+    workflow_route_contract_digests: Mapping[str, str] = field(
+        default_factory=dict, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kernel", tuple(self.kernel))
@@ -424,6 +464,19 @@ class RuntimeBundle:
         object.__setattr__(self, "execution_plan", tuple(self.execution_plan))
         object.__setattr__(self, "action_registry",
                            MappingProxyType(dict(self.action_registry)))
+        object.__setattr__(self, "workflow_runtime_identity",
+                           _frozen_mapping(self.workflow_runtime_identity))
+        object.__setattr__(self, "workflow_task_context",
+                           _frozen_mapping(self.workflow_task_context))
+        route_digests = dict(self.workflow_route_contract_digests)
+        if (len(route_digests) > 64
+                or any(not isinstance(route, str) or not route or len(route) > 192
+                       or not isinstance(digest, str) or len(digest) != 64
+                       or any(char not in "0123456789abcdef" for char in digest)
+                       for route, digest in route_digests.items())):
+            raise ValueError("runtime workflow route contract digests are invalid")
+        object.__setattr__(self, "workflow_route_contract_digests",
+                           MappingProxyType(route_digests))
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -436,6 +489,10 @@ class RuntimeBundle:
             "handoff_plan": [_thaw(item) for item in self.handoff_plan],
             "guard_pack": _thaw(self.guard_pack),
             "pinned": _thaw(self.pinned),
+            "cfw_policy_snapshot": (self.cfw_policy_snapshot.to_dict()
+                                    if self.cfw_policy_snapshot else None),
+            "composite_snapshot": (self.composite_snapshot.to_dict()
+                                   if self.composite_snapshot else None),
             "capsule_hashes": _thaw(self.capsule_hashes),
             "injected_capsules": [[stage, [text, content_hash]]
                                   for stage, (text, content_hash) in self.injected_capsules],

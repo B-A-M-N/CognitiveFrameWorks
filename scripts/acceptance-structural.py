@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DP_ROOT = ROOT.parent / "DigitalPsychology"
+CSW_ROOT = ROOT.parent / "CognitiveStateWork"
 sys.path.insert(0, str(DP_ROOT))
 
 
@@ -30,6 +31,7 @@ def main() -> int:
         root = Path(temp)
         os.environ["DIGITALPSYCHOLOGY_STATE_ROOT"] = str(root / "dp-state")
         os.environ["XDG_RUNTIME_DIR"] = str(root / "runtime")
+        os.environ["COGNITIVE_STATEWORK_ROOT"] = str(CSW_ROOT)
         from lib import feedback_loop as dp
         registry = dp.GuardRegistry(default_to_trusted_state=True)
         guard = dp.Guard(

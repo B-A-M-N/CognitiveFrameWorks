@@ -7,6 +7,7 @@ import json
 import multiprocessing as mp
 import os
 import random
+import sqlite3
 import sys
 import tempfile
 import time
@@ -20,6 +21,8 @@ DP = ROOT.parent / "DigitalPsychology"
 for value in (str(ROOT / "scripts"), str(DP), str(COW / "scripts")):
     if value not in sys.path:
         sys.path.insert(0, value)
+
+from lib.versions import BEHAVIOR_EVENT_SCHEMA_VERSION
 
 
 def load(name: str, path: Path):
@@ -69,7 +72,8 @@ def private_agent(index: int, state_path: str, evidence_path: str, output_path: 
         COW, state_path=Path(state_path), evidence_path=Path(evidence_path),
         namespace_id=request.namespace_id, application_id=request.application_id,
         application_instance_id=request.application_instance_id)
-    bundle = runtime.resolve_runtime.resolve(request, requested_flows={"tuid": "discover"})
+    bundle = runtime.resolve_runtime.resolve(
+        request, cow_root=COW, requested_flows={"tuid": "discover"})
     session = runtime.start(bundle, telemetry_disabled=True, state_authority=authority,
                             runtime_mode="combined_enforcing",
                             membership_authority=membership_authority)
@@ -115,9 +119,12 @@ def independent_private_scenario(root: Path) -> None:
     second = json.loads((root / "private-1.json").read_text())
     assert first["storage_key"] != second["storage_key"]
     assert first["evidence"] != second["evidence"]
-    store = json.loads(state_path.read_text())
-    assert len(store["subjects"]) == 2, store
-    assert len([item for item in store["history"] if item["to_state"] == "OBSERVED"]) == 2, store
+    with sqlite3.connect(state_path.with_suffix(".sqlite3")) as database:
+        subjects = database.execute("SELECT record_json FROM subjects").fetchall()
+        history = [json.loads(row[0]) for row in database.execute(
+            "SELECT event_json FROM subject_history").fetchall()]
+    assert len(subjects) == 2, subjects
+    assert len([item for item in history if item["to_state"] == "OBSERVED"]) == 2, history
     evidence = json.loads(evidence_path.read_text())
     assert {item["subject_ref"] for item in evidence} == {"same-subject"}
 
@@ -135,9 +142,12 @@ def shared_state_race(root: Path) -> None:
     assert all(result is None for result in results)
     outputs = [json.loads((root / f"shared-{i}.json").read_text()) for i in range(2)]
     assert sorted(item["decision"] for item in outputs).count("allow") >= 1
-    store = json.loads(state_path.read_text())
-    assert len(store["subjects"]) == 1
-    revisions = [item["revision"] for item in store["history"] if item["to_state"] == "OBSERVED"]
+    with sqlite3.connect(state_path.with_suffix(".sqlite3")) as database:
+        subjects = database.execute("SELECT record_json FROM subjects").fetchall()
+        history = [json.loads(row[0]) for row in database.execute(
+            "SELECT event_json FROM subject_history").fetchall()]
+    assert len(subjects) == 1
+    revisions = [item["revision"] for item in history if item["to_state"] == "OBSERVED"]
     assert revisions and revisions == list(range(revisions[0], revisions[0] + len(revisions)))
     assert all(revisions[i] < revisions[i + 1] for i in range(len(revisions) - 1))
 
@@ -146,7 +156,7 @@ def shared_state_race(root: Path) -> None:
 
 def dp_event(index: int, event_id: str) -> dict:
     return {
-        "schema_version": "2.7.0", "event_id": event_id,
+        "schema_version": BEHAVIOR_EVENT_SCHEMA_VERSION, "event_id": event_id,
         "timestamp": "2026-09-24T12:00:00Z", "task_id": "task",
         "agent_id": "agent", "agent_instance_id": "agent",
         "session_id": "session", "attempt_id": "attempt-1",
@@ -274,6 +284,7 @@ def reused_evidence_ref_is_origin_scoped(root: Path) -> None:
 
 def main() -> int:
     os.environ["XDG_RUNTIME_DIR"] = tempfile.mkdtemp(prefix="cfw-isolation-")
+    os.environ["COGNITIVE_STATEWORK_ROOT"] = str(COW)
     runtime = load("isolation_runtime_parent", ROOT / "scripts" / "runtime.py")
     sys.modules["resolve_runtime"] = runtime.resolve_runtime
     with tempfile.TemporaryDirectory(prefix="concurrent-agent-isolation-") as raw:

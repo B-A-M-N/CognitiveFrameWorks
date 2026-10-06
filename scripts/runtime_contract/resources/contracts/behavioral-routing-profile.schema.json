@@ -1,0 +1,963 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digitalpsychology.dev/schemas/behavioral-routing-profile.schema.json",
+  "title": "DigitalPsychology behavioral routing profile",
+  "type": "object",
+  "required": [
+    "profile_version",
+    "profile_id",
+    "status",
+    "subject",
+    "context",
+    "observations",
+    "routing_adjustments",
+    "evidence",
+    "criterion",
+    "profile_hash"
+  ],
+  "properties": {
+    "profile_version": {
+      "const": "1.0.0"
+    },
+    "profile_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "status": {
+      "enum": [
+        "candidate",
+        "validated",
+        "active",
+        "stale",
+        "rolled_back"
+      ]
+    },
+    "scope_mode": {
+      "enum": [
+        "exact",
+        "validated_generalization"
+      ]
+    },
+    "selector_semantics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "subject": {
+          "type": "string",
+          "enum": [
+            "exact"
+          ]
+        },
+        "context": {
+          "type": "string",
+          "enum": [
+            "exact",
+            "contains_all",
+            "contains_any"
+          ]
+        }
+      }
+    },
+    "validated_strata": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "generalization_receipt": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "artifact_trust": {
+      "type": "object",
+      "required": [
+        "mode",
+        "owner_uid"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "filesystem-owner"
+        },
+        "owner_uid": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "lifecycle_revision": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "lifecycle_status": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "deployment_lineage_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "lifecycle_reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 512
+    },
+    "subject": {
+      "type": "object",
+      "required": [
+        "agent_instance_id"
+      ],
+      "properties": {
+        "namespace_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "application_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "application_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_revision": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_capability_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "task_family": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_shape": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "work_mode": { "type": ["string", "null"] },
+        "deliverable_kind": { "type": ["string", "null"] },
+        "acceptance_criterion_kinds": {
+          "type": "array", "items": { "type": "string" }, "uniqueItems": true
+        },
+        "verification_policy": {
+          "type": ["object", "null"],
+          "properties": {
+            "support_actions_before_goal_reanchor": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_committed_actions_without_goal_progress": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_recovery_epochs_without_goal_progress": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_same_approach_retries": { "type": "integer", "minimum": 1, "maximum": 100 }
+          },
+          "additionalProperties": false
+        },
+        "domain_tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "phase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "environment": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stateworks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "toolset": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experiment_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "comparison_context_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statework_versions": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "framework_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "guard_pack_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interaction_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delegation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "observations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "routing_adjustments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "route_type",
+          "route",
+          "disposition",
+          "condition",
+          "evidence_refs"
+        ],
+        "properties": {
+          "route_type": {
+            "enum": [
+              "stage",
+              "statework",
+              "flow",
+              "specialist",
+              "guard",
+              "tool_policy",
+              "lifecycle_stage"
+            ]
+          },
+          "route": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statework_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disposition": {
+            "enum": [
+              "suppress",
+              "prefer",
+              "activate"
+            ]
+          },
+          "condition": {
+            "type": "object"
+          },
+          "behavior_policy": {
+            "type": "object",
+            "required": [
+              "candidate_id",
+              "cognitive_mode",
+              "framework_modes",
+              "controls"
+            ],
+            "properties": {
+              "candidate_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "cognitive_mode": {
+                "enum": [
+                  "DELIVER",
+                  "DIAGNOSE",
+                  "VERIFY",
+                  "RECOVER",
+                  "REPLAN",
+                  "BLOCKED",
+                  "REINSPECT",
+                  "READY_TO_COMPLETE"
+                ]
+              },
+              "framework_modes": {
+                "type": "object",
+                "maxProperties": 16,
+                "propertyNames": {
+                  "enum": ["owl", "anchor", "dox", "fuse", "flow", "ward", "sispis"]
+                },
+                "additionalProperties": {
+                  "enum": [
+                    "off",
+                    "passive",
+                    "normal",
+                    "elevated",
+                    "mandatory",
+                    "constrained",
+                    "reopen",
+                    "recovery",
+                    "reset"
+                  ]
+                }
+              },
+              "controls": {
+                "type": "object",
+                "required": [
+                  "verification_intensity",
+                  "exploration_budget",
+                  "retry_policy",
+                  "recovery_level",
+                  "context_strategy",
+                  "response_strategy"
+                ],
+                "properties": {
+                  "verification_intensity": {
+                    "enum": ["passive", "normal", "high", "strict"]
+                  },
+                  "exploration_budget": {
+                    "enum": ["disabled", "low", "normal", "bounded"]
+                  },
+                  "retry_policy": {
+                    "enum": ["normal", "materially_different_only", "no_retry"]
+                  },
+                  "recovery_level": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3
+                  },
+                  "context_strategy": {
+                    "enum": ["standard", "compact", "criterion_focused"]
+                  },
+                  "response_strategy": {
+                    "enum": ["direct", "detailed", "structured"]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "focus_scope": {
+                "const": "current_attention"
+              },
+              "focus_criteria": {
+                "const": "$current_attention"
+              },
+              "statework_preferences": {
+                "type": "array",
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "reason_codes": {
+                "type": "array",
+                "maxItems": 16,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "cause": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "expected_effect": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "additionalProperties": false
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "expires_after_samples": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "route_type": {
+                "const": "tool_policy"
+              },
+              "disposition": {
+                "enum": [
+                  "suppress",
+                  "prefer"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "route_type": {
+                "const": "specialist"
+              },
+              "disposition": {
+                "enum": [
+                  "suppress",
+                  "prefer"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "route_type": {
+                "const": "flow"
+              },
+              "disposition": {
+                "enum": [
+                  "prefer",
+                  "suppress"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "route_type": {
+                "const": "stage"
+              },
+              "disposition": {
+                "enum": [
+                  "prefer",
+                  "suppress"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "route_type": {
+                "const": "lifecycle_stage"
+              },
+              "disposition": {
+                "enum": [
+                  "prefer",
+                  "suppress"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "route_type": {
+                "const": "statework"
+              },
+              "disposition": {
+                "enum": [
+                  "prefer",
+                  "suppress"
+                ]
+              }
+            }
+          },
+          {
+            "properties": {
+              "route_type": {
+                "const": "guard"
+              },
+              "disposition": {
+                "enum": [
+                  "prefer",
+                  "suppress"
+                ]
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": [
+        "event_ids",
+        "trajectory_ids",
+        "source_hash"
+      ],
+      "properties": {
+        "event_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "trajectory_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "experiment_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experiment_plan_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "candidate_adjustment": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "receipt_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "experiment_receipt": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "receipt": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "receipt_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "const": "routing_experiment"
+            },
+            "receipt_version": {
+              "const": "1.0.0"
+            },
+            "experiment_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "experiment_plan_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "profile_candidate_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "source_evidence_hash": {
+              "type": "string",
+              "minLength": 1
+            },
+            "candidate_adjustment": {
+              "type": "object"
+            },
+            "control_trajectory_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "treatment_trajectory_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "policy_hashes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "policy_identities": {
+              "type": "object"
+            },
+            "comparison_context_hash": {
+              "type": "string",
+              "minLength": 1
+            },
+            "evaluator_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "evaluator_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "evaluator_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "control_bad_rate": {
+              "type": "number"
+            },
+            "treatment_bad_rate": {
+              "type": "number"
+            },
+            "candidate_policy_evidence": {
+              "type": "object",
+              "required": [
+                "correct_progress_rate", "regression_rate", "repeated_failure_rate",
+                "confidence_interval", "regression_confidence_interval",
+                "repeated_failure_confidence_interval", "sample_count", "holdout_count"
+              ],
+              "properties": {
+                "correct_progress_rate": {"type": "number", "minimum": 0, "maximum": 1},
+                "regression_rate": {"type": "number", "minimum": 0, "maximum": 1},
+                "repeated_failure_rate": {"type": "number", "minimum": 0, "maximum": 1},
+                "confidence_interval": {
+                  "type": "array", "minItems": 2, "maxItems": 2,
+                  "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "regression_confidence_interval": {
+                  "type": "array", "minItems": 2, "maxItems": 2,
+                  "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "repeated_failure_confidence_interval": {
+                  "type": "array", "minItems": 2, "maxItems": 2,
+                  "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "sample_count": {"type": "integer", "minimum": 1},
+                "holdout_count": {"type": "integer", "minimum": 1}
+              },
+              "additionalProperties": false
+            },
+            "candidate_policy_compatibility": {
+              "type": "object",
+              "required": [
+                "behavior_policy_contract_hash",
+                "candidate_generator_contract_hash",
+                "dp_control_implementation_version",
+                "dp_control_implementation_hash",
+                "candidate_policy_mapping_hash"
+              ],
+              "properties": {
+                "behavior_policy_contract_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                },
+                "candidate_generator_contract_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                },
+                "dp_control_implementation_version": {
+                  "type": "string", "minLength": 1, "maxLength": 64
+                },
+                "dp_control_implementation_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                },
+                "candidate_policy_mapping_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "additionalProperties": false
+            },
+            "effect": {
+              "type": "number"
+            },
+            "confidence_interval": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "number"
+              }
+            },
+            "minimum_samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minimum_holdout_samples": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minimum_effect": {
+              "type": "number",
+              "minimum": 0
+            },
+            "regressions": {
+              "type": "array"
+            },
+            "holdout_trajectory_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "holdout_outcomes": {
+              "type": "array"
+            },
+            "holdout_evaluations": {
+              "type": "array"
+            },
+            "holdout_evaluators": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "holdout_max_not_applicable_fraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "control_max_not_applicable_fraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "treatment_max_not_applicable_fraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "decision": {
+              "enum": [
+                "pass",
+                "fail"
+              ]
+            },
+            "receipt_hash": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "event_origins": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "namespace_id",
+              "application_instance_id",
+              "event_id",
+              "interaction_id"
+            ],
+            "properties": {
+              "namespace_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "application_instance_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "event_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "interaction_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "sharing_promotion_decision": {
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "criterion": {
+      "type": "object",
+      "required": [
+        "evaluator_version",
+        "minimum_samples",
+        "minimum_effect"
+      ],
+      "properties": {
+        "evaluator_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "minimum_samples": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "minimum_effect": {
+          "type": "number",
+          "minimum": 0
+        },
+        "confidence_rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "profile_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "sharing_scope": {
+      "enum": [
+        "agent_private",
+        "application_shared",
+        "cross_application"
+      ]
+    },
+    "adoption": {
+      "type": "object",
+      "required": [
+        "mode",
+        "authorized"
+      ],
+      "properties": {
+        "mode": {
+          "const": "explicit"
+        },
+        "authorized": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -11,15 +11,14 @@ from runtime_contract.guards import (
     nested_scope as _contract_nested_scope,
 )
 from runtime_contract.handlers import enforcement_for_guard, validate_enforcement
+from runtime_contract.paths import runtime_asset_root
 from resolver.common import (
     _stable_json, _thaw, dp_trusted_guard_pack_path, load_yaml, sha256,
     sha256_bytes,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = runtime_asset_root()
 LOCAL_CONTRACT_ROOT = ROOT / "contracts"
-if not LOCAL_CONTRACT_ROOT.exists():
-    LOCAL_CONTRACT_ROOT = Path(__file__).resolve().parents[1] / "contracts"
 
 class GuardPackIntegrityError(ValueError):
     pass

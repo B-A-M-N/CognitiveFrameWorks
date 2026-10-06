@@ -25,7 +25,7 @@ from typing import Any, Callable, Mapping
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "contracts" / "real-agent-benchmark-v1.json"
 TASK_ROOT = Path(__file__).resolve().parent / "real-agent-benchmark-tasks"
-AGENT_VISIBLE_TASK_FIELDS = frozenset({"task_family", "instruction", "workspace"})
+AGENT_VISIBLE_TASK_FIELDS = frozenset({"task_id", "task_family", "instruction", "workspace"})
 
 
 class BenchmarkBudgetExceeded(RuntimeError):
@@ -155,6 +155,10 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                 workspace = root / family_id / str(trial)
                 workspace.mkdir(parents=True)
                 task = task_module.create_task(workspace, trial=trial, holdout=trial >= int(trials_per_cell * (1 - holdout_fraction)))
+                # Stable task identity pairs the same task across treatment
+                # cells while keeping every trial's runtime authority scope
+                # distinct. It does not expose cohort assignment.
+                task["task_id"] = f"{contract['benchmark_id']}-{family_id}-{trial}"
                 task["workspace"] = str(workspace)
                 started = time.monotonic()
                 failure_category = None
@@ -167,7 +171,23 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                         max_cost=float(limits["max_monetary_cost_per_trial"]),
                         max_elapsed_seconds=float(limits["max_elapsed_seconds_per_trial"]),
                     )
-                    evaluation = task_module.evaluate({"task": task, "trajectory": trajectory}, workspace)
+                    host_receipts = [receipt for turn in trajectory
+                                     for receipt in ((turn.get("response") or {}).get(
+                                         "host_action_receipts") or ())]
+                    treatment_exposure = [dict((turn.get("response") or {}).get(
+                        "treatment_exposure") or {}) for turn in trajectory
+                        if isinstance((turn.get("response") or {}).get(
+                            "treatment_exposure"), Mapping)]
+                    runtime_behavioral_telemetry = [dict((turn.get("response") or {}).get(
+                        "dp_behavioral_record")) for turn in trajectory
+                        if isinstance((turn.get("response") or {}).get(
+                            "dp_behavioral_record"), Mapping)]
+                    evaluation = task_module.evaluate({
+                        "task": task, "trajectory": trajectory,
+                        "host_action_receipts": host_receipts,
+                        "treatment_exposure": treatment_exposure,
+                        "runtime_behavioral_telemetry": runtime_behavioral_telemetry,
+                    }, workspace)
                 except BenchmarkBudgetExceeded as exc:
                     trajectory, usage = [], {"model_calls": 0, "external_tokens": 0, "monetary_cost": 0.0}
                     evaluation = {"completion_success": False, "evidence_quality": 0.0, "regression_rate": 1.0, "metrics": {}, "failure_category": "resource_limit", "error": str(exc)}
@@ -183,6 +203,14 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                     "token_overhead": usage["external_tokens"],
                     **evaluation,
                 }
+                # These fields are created by the host adapter and joined by
+                # the independent task evaluator. They are not agent answer
+                # fields and never contain model self-reported use metadata.
+                row["host_action_receipts"] = host_receipts if trajectory else []
+                row["host_action_count"] = len(row["host_action_receipts"])
+                row["treatment_exposure"] = treatment_exposure if trajectory else []
+                row["runtime_behavioral_telemetry"] = (
+                    runtime_behavioral_telemetry if trajectory else [])
                 # A trial whose agent produced no usable output is an
                 # infrastructure failure, not behavioral evidence. Recording it
                 # separately stops a flaky backend from being scored as the

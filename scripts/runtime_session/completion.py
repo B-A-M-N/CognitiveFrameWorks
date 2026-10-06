@@ -36,11 +36,11 @@ class CompletionMethods:
         self._require_host(capability)
         if disposition not in {"BLOCKED", "FAILED", "HANDOFF"}:
             raise ValueError("termination disposition must be BLOCKED, FAILED or HANDOFF")
-        if self.termination_disposition == "SUCCEEDED":
+        if self.lifecycle_workflow.termination_disposition == "SUCCEEDED":
             raise PermissionError("a completed task cannot be re-terminated")
         resolved_refs: list[str] = []
         for ref in evidence_refs:
-            record = self.ledger.get(str(ref))
+            record = self.evidence.ledger.get(str(ref))
             if record is None or record.invalidated:
                 continue
             resolved_refs.append(str(ref))
@@ -57,28 +57,28 @@ class CompletionMethods:
             cause_id=cause_id, reason=reason, claim_digest=claim_digest,
             evidence_refs=tuple(sorted(resolved_refs)),
             issued_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            session_nonce=self.session_nonce, authority_revision=self.authority_revision,
+            session_nonce=self.identity_authority.identity.session_nonce, authority_revision=self.identity_authority.revisions.authority_revision,
             last_verified_state=last_verified_state,
             unresolved_blockers=tuple(sorted(str(item) for item in unresolved_blockers)))
-        self.termination_disposition = disposition
-        self.termination_permit = permit
-        if self.convergence is not None:
-            self.convergence.terminate(disposition=disposition, reason=reason)
+        self.lifecycle_workflow.termination_disposition = disposition
+        self.lifecycle_workflow.termination_permit = permit
+        if self.attempts.controller is not None:
+            self.attempts.controller.terminate(disposition=disposition, reason=reason)
             self._record_convergence(f"termination:{disposition}")
         self._journal("task_terminated", disposition=disposition, reason=reason,
                       cause_id=cause_id, claim_digest=claim_digest,
                       evidence_refs=list(permit.evidence_refs),
                       last_verified_state=last_verified_state,
                       unresolved_blockers=list(permit.unresolved_blockers))
-        # behavior-event.schema.json forbids extra top-level fields, so causal
+        # runtime-event.schema.json forbids extra top-level fields, so causal
         # lineage travels in the bounded payload rather than a new column.
         event = {"category": "blocker", "event_type": "task_terminated",
                  "subject": self.bundle.policy.subject_ref,
                  "payload": {"summary": reason, "result_class": disposition,
                              # cause lineage travels in the bounded `reason`
-                             # field; the payload schema is closed.
+                             # field; the runtime-event payload stays bounded.
                              "reason": cause_id}}
-        # A blocker may legitimately have no evidence refs; the schema requires
+        # A blocker may legitimately have no evidence refs; the contract requires
         # a non-empty list when the field is present, so omit it rather than
         # inventing a reference.
         if permit.evidence_refs:
@@ -88,16 +88,16 @@ class CompletionMethods:
     def finish_task_terminated(self, output: Optional[Dict[str, Any]] = None,
                                *, permit: Optional[TerminationPermit] = None) -> Dict[str, Any]:
         """Finalize a blocked/failed/handoff task using its TerminationPermit."""
-        permit = permit or self.termination_permit
+        permit = permit or self.lifecycle_workflow.termination_permit
         if permit is None or not isinstance(permit, TerminationPermit):
             raise PermissionError("termination requires a host-issued TerminationPermit")
         if permit.task_id != self.bundle.task_id or permit.policy_hash != self.bundle.pinned["policy_hash"]:
             raise PermissionError("termination permit is not bound to this task/policy")
-        if permit.session_nonce != self.session_nonce or permit is not self.termination_permit:
+        if permit.session_nonce != self.identity_authority.identity.session_nonce or permit is not self.lifecycle_workflow.termination_permit:
             raise PermissionError("termination permit is not bound to this runtime session")
-        if permit.disposition != self.termination_disposition:
+        if permit.disposition != self.lifecycle_workflow.termination_disposition:
             raise PermissionError("termination permit disposition disagrees with the runtime")
-        if permit.authority_revision != self.authority_revision:
+        if permit.authority_revision != self.identity_authority.revisions.authority_revision:
             raise PermissionError("termination permit predates a later authority revision")
         return self._render_output({
             **(dict(output) if output else {}),
@@ -121,10 +121,13 @@ class CompletionMethods:
         }
         canonical_kind = "static_visual" if kind == "visual_static" else kind
         required = set(defaults.get(canonical_kind, ()))
-        for statework in self.bundle.stateworks:
-            metadata = statework.get("flow_metadata") or {}
-            completion = metadata.get("completion") or {}
-            claim_classes = completion.get("claim_classes") or {}
+        workflow_contracts = self.bundle.pinned.get(
+            "workflow_completion_claim_classes") or {}
+        if not isinstance(workflow_contracts, Mapping):
+            raise ValueError("pinned workflow completion contract is malformed")
+        for claim_classes in workflow_contracts.values():
+            if not isinstance(claim_classes, Mapping):
+                raise ValueError("pinned workflow completion claim classes are malformed")
             item = claim_classes.get(canonical_kind)
             if isinstance(item, Mapping):
                 required.update(str(value) for value in item.get("evidence_kinds") or ())
@@ -144,9 +147,18 @@ class CompletionMethods:
             if criterion is None or not refs:
                 raise ValueError(f"criterion {criterion_id!r} lacks host-attested evidence")
             expected_kinds = self._criterion_evidence_kinds(str(criterion.get("kind") or ""))
-            self.ledger.resolve(
+            self.evidence.ledger.resolve(
                 list(refs), subject_ref=subject_ref,
                 allowed_kinds=expected_kinds or None)
+            required_boundaries = tuple(criterion.get("required_boundaries") or ())
+            if required_boundaries:
+                covered_boundaries = set(self.evidence.ledger.covered_boundary_ids(
+                    refs, subject_ref=subject_ref))
+                missing = sorted(set(required_boundaries) - covered_boundaries)
+                if missing:
+                    raise ValueError(
+                        f"criterion {criterion_id!r} lacks host evidence covering boundaries: "
+                        + ", ".join(missing))
     def record_completion_claim(self, subject: Optional[str], evidence_refs: List[str],
                                 *, boundary_type: str = "completion",
                                 boundary_target: str = "task",
@@ -220,17 +232,17 @@ class CompletionMethods:
                             "result_class": "blocked"}})
             return GateDecision.BLOCK
         if any(not record["resolved"] and (subject is None or record["subject"] == subject)
-               for record in self.contradictions.values()):
+               for record in self.evidence.contradictions.values()):
             self._emit_runtime({"category": "blocker", "event_type": "completion_blocked_by_contradiction",
                        "subject": subject, "evidence_refs": evidence_refs,
                        "payload": {"summary": "relevant operator contradiction is unresolved",
                                    "result_class": "reinspection required"}})
             return GateDecision.REQUIRE_REINSPECTION
         try:
-            resolved = self.ledger.resolve(
+            resolved = self.evidence.ledger.resolve(
                 list(evidence_refs), subject_ref=subject,
                 allowed_kinds={"boundary_evidence", "completion_boundary"})
-            boundary_records = [self.ledger.get(ref) for ref in evidence_refs]
+            boundary_records = [self.evidence.ledger.get(ref) for ref in evidence_refs]
             if any(record is None or not record.claim_digest or not record.invocation_id
                    for record in boundary_records):
                 raise ValueError("completion evidence is not bound to a claim")
@@ -268,15 +280,15 @@ class CompletionMethods:
                                "completion_criterion_coverage": (
                                    len(required_criterion_ids & claim_criterion_ids)
                                    / max(1, len(required_criterion_ids)))}})
-        object.__setattr__(self, "_completion_permit", CompletionPermit(
+        self.evidence.issue_completion_permit(CompletionPermit(
             task_id=self.bundle.task_id,
             policy_hash=self.bundle.pinned["policy_hash"],
             subject_ref=subject,
             claim_digest=claim_digest or "",
             evidence_refs=tuple(evidence_refs),
             issued_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            session_nonce=self.session_nonce,
-            authority_revision=self.authority_revision,
+            session_nonce=self.identity_authority.identity.session_nonce,
+            authority_revision=self.identity_authority.revisions.authority_revision,
             boundary_type=boundary_type, boundary_target=boundary_target,
             expected_validator=expected_validator,
             goal_contract_hash=expected_goal_hash,
@@ -284,8 +296,8 @@ class CompletionMethods:
             criterion_evidence_refs=tuple(claim.criterion_evidence_refs)))
         self._journal("completion_permit_issued", claim_digest=claim_digest,
                       evidence_refs=list(evidence_refs), subject_ref=subject,
-                      issued_at=self._completion_permit.issued_at,
-                      authority_revision=self.authority_revision,
+                      issued_at=self.evidence.completion_permit.issued_at,
+                      authority_revision=self.identity_authority.revisions.authority_revision,
                       boundary_type=boundary_type,
                       boundary_target=boundary_target,
                       expected_validator=expected_validator,
@@ -304,42 +316,50 @@ class CompletionMethods:
             signal_schema=contracts.get("signal_schema"),
             signal_registry=contracts.get("signal_registry"))
         signal_id = envelope["signal_id"]
-        with self._behavior_signal_lock:
-            prior = self.signal_seen.get(signal_id)
+        with self.behavior.signal_lock:
+            prior = self.behavior.signal_seen.get(signal_id)
             if prior and prior != envelope:
                 raise ValueError(f"conflicting signal envelope {signal_id!r}")
             if prior == envelope:
                 return
-            cursor = self._behavior_signal_cursor + 1
+            cursor = self.behavior.signal_cursor + 1
             recorded = deepcopy(envelope)
             # Persist the delivery journal before publishing it to in-memory
             # consumers. A restart can therefore replay an unacknowledged
             # signal without mutating the audit history.
             self._journal("behavior_signal_recorded", delivery_cursor=cursor,
                           envelope=recorded)
-            self.signal_seen[signal_id] = recorded
-            self.signals.append(deepcopy(recorded))
-            self._behavior_signal_journal.append((cursor, recorded))
-            self._behavior_signal_cursor = cursor
+            self.behavior.signal_seen[signal_id] = recorded
+            self.behavior.signals.append(deepcopy(recorded))
+            self.behavior.signal_journal.append((cursor, recorded))
+            self.behavior.signal_cursor = cursor
         self._emit_runtime({"category": "decision", "event_type": "signal_emitted",
                    "subject": envelope.get("subject_ref"),
                    "payload": {"summary": envelope["signal_type"][:512],
-                               "result_class": envelope["required_action"][:64]}})
+                               "result_class": envelope["required_action"][:64],
+                               "cause_id": envelope["cause_id"],
+                               "recovery_epoch_ids": sorted({
+                                   str(item["recovery_epoch_id"])
+                                   for item in (self.behavior.external_projection.get(
+                                       "target_leases") or ())
+                                   if isinstance(item, Mapping)
+                                   and isinstance(item.get("recovery_epoch_id"), str)
+                               })[:16]}})
 
     def peek_behavior_signals(self, *, after_cursor: int | None = None,
                               maximum: int = 32) -> BehaviorSignalBatch:
         """Return a bounded batch of unacknowledged signals without consuming it."""
         if type(maximum) is not int or not 1 <= maximum <= 32:
             raise ValueError("behavior signal batch size must be between one and 32")
-        with self._behavior_signal_lock:
-            cursor = (self._behavior_signal_ack_cursor if after_cursor is None
+        with self.behavior.signal_lock:
+            cursor = (self.behavior.signal_ack_cursor if after_cursor is None
                       else after_cursor)
-            if type(cursor) is not int or cursor < self._behavior_signal_ack_cursor:
+            if type(cursor) is not int or cursor < self.behavior.signal_ack_cursor:
                 raise ValueError("behavior signal cursor precedes the acknowledged cursor")
-            if cursor > self._behavior_signal_cursor:
+            if cursor > self.behavior.signal_cursor:
                 raise ValueError("behavior signal cursor exceeds the journal")
             selected = [(item_cursor, envelope)
-                        for item_cursor, envelope in self._behavior_signal_journal
+                        for item_cursor, envelope in self.behavior.signal_journal
                         if item_cursor > cursor][:maximum]
             next_cursor = selected[-1][0] if selected else cursor
             return BehaviorSignalBatch(
@@ -352,17 +372,17 @@ class CompletionMethods:
         """Durably acknowledge a committed signal batch; repeated ACKs are safe."""
         if type(through_cursor) is not int or through_cursor < 0:
             raise ValueError("behavior signal acknowledgement cursor is invalid")
-        with self._behavior_signal_lock:
-            if through_cursor <= self._behavior_signal_ack_cursor:
+        with self.behavior.signal_lock:
+            if through_cursor <= self.behavior.signal_ack_cursor:
                 return
-            if through_cursor > self._behavior_signal_cursor:
+            if through_cursor > self.behavior.signal_cursor:
                 raise ValueError("cannot acknowledge behavior signals beyond the journal")
             self._journal("behavior_signal_acknowledged",
                           through_cursor=through_cursor)
-            self._behavior_signal_ack_cursor = through_cursor
-            self._behavior_signal_journal = [
+            self.behavior.signal_ack_cursor = through_cursor
+            self.behavior.signal_journal = [
                 (cursor, envelope)
-                for cursor, envelope in self._behavior_signal_journal
+                for cursor, envelope in self.behavior.signal_journal
                 if cursor > through_cursor
             ]
     def _render_output(self, output: Optional[Dict[str, Any]] = None,
@@ -374,7 +394,7 @@ class CompletionMethods:
             raise ValueError("final output must be a dictionary")
         contracts = self.bundle.pinned.get("contracts", {})
         decision = _sispis_calibration().calibrate(
-            self.signals,
+            self.behavior.signals,
             calibration=contracts.get("sispis_calibration"),
             signal_schema=contracts.get("signal_schema"),
             signal_registry=contracts.get("signal_registry"))
@@ -386,12 +406,12 @@ class CompletionMethods:
         if run_final_hooks:
             for hook in self.final_hooks:
                 hook(result)
-        if complete and self.lifecycle is not None:
-            self.lifecycle.on_completion()
-            self.active_lifecycle = set(self.lifecycle.active)
-            self.lifecycle_counts = dict(self.lifecycle.counts)
-            self.lifecycle.on_response_complete()
-            self.active_lifecycle = set(self.lifecycle.active)
+        if complete and self.lifecycle_workflow.lifecycle is not None:
+            self.lifecycle_workflow.lifecycle.on_completion()
+            self.lifecycle_workflow.active_lifecycle = set(self.lifecycle_workflow.lifecycle.active)
+            self.lifecycle_workflow.lifecycle_counts = dict(self.lifecycle_workflow.lifecycle.counts)
+            self.lifecycle_workflow.lifecycle.on_response_complete()
+            self.lifecycle_workflow.active_lifecycle = set(self.lifecycle_workflow.lifecycle.active)
         return result
     def preview_output(self, output: Optional[Dict[str, Any]] = None,
                        **kwargs: Any) -> Dict[str, Any]:
@@ -404,7 +424,7 @@ class CompletionMethods:
                     *, permit: Optional[CompletionPermit] = None,
                     **kwargs: Any) -> Dict[str, Any]:
         """Finalize only with a current completion permit and closed segments."""
-        permit = permit or self.completion_permit
+        permit = permit or self.evidence.completion_permit
         if permit is None:
             raise PermissionError("task finalization requires a validated completion permit")
         if not self._authoritative_state_ready():
@@ -413,15 +433,15 @@ class CompletionMethods:
             raise PermissionError("pinned policy has been immediately revoked")
         if (permit.task_id != self.bundle.task_id
                 or permit.policy_hash != self.bundle.pinned["policy_hash"]
-                or permit.session_nonce != self.session_nonce
-                or permit is not self.completion_permit):
+                or permit.session_nonce != self.identity_authority.identity.session_nonce
+                or permit is not self.evidence.completion_permit):
             raise PermissionError("completion permit is not bound to this runtime session")
-        if permit.authority_revision != self.authority_revision:
+        if permit.authority_revision != self.identity_authority.revisions.authority_revision:
             raise PermissionError("completion permit predates a later authority revision")
         try:
-            self.ledger.resolve(list(permit.evidence_refs), subject_ref=permit.subject_ref,
+            self.evidence.ledger.resolve(list(permit.evidence_refs), subject_ref=permit.subject_ref,
                                 allowed_kinds={"boundary_evidence", "completion_boundary"})
-            boundary_records = [self.ledger.get(ref) for ref in permit.evidence_refs]
+            boundary_records = [self.evidence.ledger.get(ref) for ref in permit.evidence_refs]
             if any(record is None or record.invalidated or not record.claim_digest
                    or not record.invocation_id for record in boundary_records):
                 raise ValueError("completion permit evidence is no longer current")
@@ -435,11 +455,13 @@ class CompletionMethods:
                     raise ValueError("completion permit evidence claim binding changed")
         except ValueError as exc:
             raise PermissionError(f"completion permit evidence is invalid: {exc}") from exc
-        if any(not record["resolved"] for record in self.contradictions.values()):
+        if any(not record["resolved"] for record in self.evidence.contradictions.values()):
             raise PermissionError("cannot finalize with unresolved operator contradictions")
-        if len(self.execution_segments) == 1 and self.current_segment.statework_id is None:
-            self._segment_status[self.current_segment.segment_id] = SegmentStatus.COMPLETED
-        if any(status != SegmentStatus.COMPLETED for status in self._segment_status.values()):
+        if len(self.lifecycle_workflow.execution_segments) == 1 and self.lifecycle_workflow.current_segment.statework_id is None:
+            self.lifecycle_workflow.set_segment_status(
+                self.lifecycle_workflow.current_segment.segment_id,
+                SegmentStatus.COMPLETED)
+        if any(status != SegmentStatus.COMPLETED for status in self.lifecycle_workflow.statuses.values()):
             raise PermissionError("cannot finalize before every execution segment completes")
         goal_contract = self.bundle.pinned.get("goal_contract") or {}
         required_criterion_ids = {
@@ -459,13 +481,13 @@ class CompletionMethods:
             subject_ref = str(statework.get("subject_ref") or permit.subject_ref)
             contract_hash = str(statework.get("workflow_contract_hash") or "")
             complete = False
-            if self.state_authority is not None and contract_hash:
-                snapshot = self.state_authority.inspect_workflow(
+            if self.identity_authority.authorities.state_authority is not None and contract_hash:
+                snapshot = self.identity_authority.authorities.state_authority.inspect_workflow(
                     statework_id=statework_id, subject_ref=subject_ref,
                     contract_hash=contract_hash)
                 complete = bool(snapshot.completed)
             else:
-                workflow_fact = next((item for item in self.metacognitive_state.workflows
+                workflow_fact = next((item for item in self.behavior.metacognitive.workflows
                                       if item.statework_id == statework_id
                                       and item.subject_ref == subject_ref), None)
                 complete = bool(workflow_fact and workflow_fact.completed)

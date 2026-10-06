@@ -40,13 +40,14 @@ class RetryHypothesisGateV2:
     @staticmethod
     def before_retry(session: Any, request: Any,
                      enforcement: Mapping[str, Any]) -> Optional[Any]:
-        controller = getattr(session, "convergence", None)
+        attempts = getattr(session, "attempts", None)
+        controller = getattr(attempts, "controller", None)
         if controller is None:
             # No host convergence state: fail closed to reinspection rather
             # than granting an unbounded retry loop.
             return "require_reinspection"
         attempt_ref = str(getattr(request, "arguments", {}).get("attempt_ref") or "")
-        descriptor = getattr(session, "attempt_descriptors", {}).get(attempt_ref)
+        descriptor = getattr(attempts, "descriptors", {}).get(attempt_ref)
         if descriptor is None:
             # Tool identity is not causal identity. Retrying requires a
             # host-created descriptor that binds cause, premise, and plan.
@@ -76,7 +77,7 @@ class ContradictionReinspectionGateV1:
     def gate(session: Any, request: Any, _enforcement: Mapping[str, Any]) -> Optional[Any]:
         if any(not record["resolved"] and
                (record.get("subject") in {None, request.subject_ref})
-               for record in session.contradictions.values()):
+               for record in session.evidence.contradictions.values()):
             # Avoid importing the runtime enum into this contract package;
             # the caller maps this sentinel to its GateDecision type.
             return "require_reinspection"

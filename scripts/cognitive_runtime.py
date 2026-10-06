@@ -8,7 +8,7 @@ from runtime import (CompletionClaim, GateDecision, RuntimeSession,
 from runtime_contract.actions import (ActionDescriptor, HostExecutionContext,
                                        effective_action_registry)
 from runtime_contract.advisor import BehavioralAdvisor
-from resolve_runtime import RuntimeBundle, TaskRequest, resolve
+from resolver.api import RuntimeBundle, TaskRequest, resolve
 from runtime_host.session_registry import HOST_SESSION_REGISTRY as _HOST_SESSION_REGISTRY
 from runtime_host.handles import AgentSessionHandle, HostSessionHandle, RuntimeTaskHandle
 from runtime_host.host_api import (CognitiveRuntime, _register_host_session,

@@ -1,0 +1,29 @@
+# ANCHOR — Runtime Capsule
+
+State continuity, checkpoints, object identity, epistemic classification,
+recovery discipline. Runs when work is multi-turn or stateful.
+
+## Baseline
+- Open: record task state, object identities, and evidence classification
+  before risky work. Later stages may add state but must not reorder life
+  cycle: closeout always runs after FUSE/WARD/FLOW/DOX-closeout.
+
+## Checkpoints
+- After each artifact: reclassify what is Verified / Inferred / Assumed /
+  Unknown based on fresh evidence only.
+- A user-reported observation is evidence; it downgrades prior states, it
+  does not prove a root cause.
+
+## Recovery
+- Same strategy fails twice → reset to last known-good state; do not stack
+  patches on a broken attempt.
+- Reopen is a reopen: a success criterion contradicted by a new observation
+  returns the item to Active.
+- Containment/override is an external runtime action, never an analysis
+  state.
+
+## Signals
+recovery_started, state_downgrade, reopen, classification_change
+
+Emit in the canonical envelope only (shared/signal.schema.json); never
+compute SISPIS scoring here.

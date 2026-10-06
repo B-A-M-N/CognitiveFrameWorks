@@ -1,0 +1,54 @@
+{
+  "command": [
+    "scripts/acceptance-real-agent-benchmark.py"
+  ],
+  "evidence_class": "real_agent_behavioral",
+  "mandatory_for_release": true,
+  "manifest_version": "1.0.0",
+  "notes": "A passing result requires an external real-agent report; this manifest is not behavioral evidence by itself.",
+  "qualification_id": "real-agent-behavioral-v1",
+  "required_evidence": [
+    "actual_agent_execution",
+    "task_specific_evaluators",
+    "independent_holdouts",
+    "preregistered_metrics",
+    "bounded_attempts_tokens_cost_time",
+    "treatment_exposure"
+  ],
+  "requires_arguments": [
+    "--agent-command"
+  ],
+  "result_contract": {
+    "path": "contracts/qualification-results/real-agent-behavioral-v1.result.json",
+    "required_fields": [
+      "qualification_id",
+      "status",
+      "source_commits",
+      "benchmark_hash",
+      "report_path",
+      "completed_at",
+      "transfer_report_hash",
+      "transfer_decision",
+      "host_verified_profile_hash"
+    ],
+    "status_values": [
+      "not_run",
+      "pass",
+      "fail",
+      "blocked"
+    ]
+  },
+  "transfer_command": [
+    "scripts/acceptance-real-agent-transfer.py"
+  ],
+  "transfer_requirements": [
+    "validated_profile_learned_by_source_agent",
+    "same_models_and_task_distribution",
+    "control_cell",
+    "explicitly_adopted_recipient_cell",
+    "unrelated_holdout_cell",
+    "regression_bound",
+    "external_agent_command",
+    "host_managed_signing_authority"
+  ]
+}

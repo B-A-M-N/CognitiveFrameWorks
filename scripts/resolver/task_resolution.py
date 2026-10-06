@@ -12,6 +12,10 @@ from runtime_contract.advisor import (
     BehavioralAdvisor,
 )
 from runtime_contract.actions import action_contract_hash, effective_action_registry
+from runtime_contract.composite_snapshot import (
+    CFWPolicySnapshot, CompositeCognitiveRuntimeSnapshot,
+)
+from runtime_contract.component_control import build_task_behavior_contract
 from runtime_contract.handlers import enforcement_for_guard, handler_registry_hash
 from runtime_contract.routing import (
     applicable_adjustments, assign_experiment_cohort, comparison_context_hash,
@@ -20,11 +24,12 @@ from runtime_contract.routing import (
 from runtime_contract.statework_provider import DEFAULT_STATEWORK_ROOT
 from runtime_contract.task import SystemOnePolicy, TaskRequest
 from runtime_contract.validators import validator_registry_hash
+from runtime_contract.paths import runtime_asset_root
 from runtime_contract.workflow_port import (
     WorkflowPlanner,
 )
 from resolver.build_manifest import runtime_behavior_hash, runtime_build_manifest
-from resolver.common import _load_json, _stable_json, load_yaml, sha256, sha256_bytes
+from resolver.common import _load_json, _stable_json, _thaw, load_yaml, sha256, sha256_bytes
 from resolver.components import expand, load_pipeline
 from resolver.guards import (
     load_guard_pack, semantic_guard_hash,
@@ -41,10 +46,8 @@ from resolver.task_guards import resolve_task_guards
 from resolver.task_advice import resolve_task_advice
 from resolver.task_kernel import compose_task_kernel
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = runtime_asset_root()
 LOCAL_CONTRACT_ROOT = ROOT / "contracts"
-if not LOCAL_CONTRACT_ROOT.exists():
-    LOCAL_CONTRACT_ROOT = Path(__file__).resolve().parents[1] / "contracts"
 
 
 def _load_document(path: Path, loader: Callable[[Path], Any]) -> Any:
@@ -61,6 +64,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             allow_missing_required: bool = False,
             missing_required: Optional[List[str]] = None,
             requested_flows: Optional[Dict[str, str]] = None,
+            requested_statework_ids: Optional[Iterable[str]] = None,
             subject_ref: Optional[str] = None,
             phase: Optional[str] = None,
             operation: Optional[str] = None,
@@ -114,6 +118,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         shared_workflow_memberships = tuple(dict(item)
                                             for item in request.shared_workflow_memberships)
         statework_subject_refs = dict(request.statework_subject_refs)
+        requested_statework_ids = tuple(request.requested_statework_ids)
         policy_revocation_revision = request.policy_revocation_revision
         revocation_mode = request.revocation_mode
         routing_experiment_plan = dict(request.routing_experiment_plan)
@@ -153,6 +158,13 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         shared_workflow_membership = None
         shared_workflow_memberships = ()
         statework_subject_refs = {}
+        if requested_statework_ids is None:
+            requested_statework_ids = ()
+        elif isinstance(requested_statework_ids, (tuple, list, set, frozenset)):
+            requested_statework_ids = tuple(requested_statework_ids)
+        else:
+            raise ValueError(
+                "requested_statework_ids must be a sequence of StateWork IDs")
         policy_revocation_revision = 0
         revocation_mode = "deferred"
         routing_experiment_plan = {}
@@ -171,6 +183,13 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     model = model_id
     task_id = str(task_id)
     agent_id = str(agent_id or "agent")
+    if (len(requested_statework_ids) > 32
+            or any(not isinstance(item, str) or not item.strip() or len(item) > 128
+                   for item in requested_statework_ids)
+            or len(requested_statework_ids) != len(set(requested_statework_ids))):
+        raise ValueError(
+            "requested_statework_ids must contain at most 32 unique bounded IDs")
+    requested_statework_ids = tuple(sorted(requested_statework_ids))
     goal_contract_dict = goal_contract.to_dict() if goal_contract is not None else {}
     goal_contract_hash = goal_contract.contract_hash if goal_contract is not None else ""
     if not isinstance(system_one_policy, SystemOnePolicy):
@@ -214,6 +233,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         trigger=trigger,
         observation_context=observation_context,
         requested_flows=requested_flows,
+        requested_statework_ids=requested_statework_ids,
         statework_subject_refs=statework_subject_refs,
         packet_store=packet_store,
         allow_missing_required=allow_missing_required,
@@ -345,11 +365,23 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         profile=profile,
         stages=stages,
         aliases=aliases,
-        stateworks=enriched_stateworks,
+        required_components=list(workflow_plan.component_requirements),
+        enhanced_components=list(workflow_plan.component_enhancements),
         routing_adjustments=routing_adjustments,
     )
     kernel_ordered = task_kernel.ordered
     kernel_instructions = task_kernel.instructions
+    cfw_base_kernel = compose_task_kernel(
+        profile=profile,
+        stages=stages,
+        aliases=aliases,
+        required_components=[],
+        enhanced_components=[],
+        routing_adjustments=(),
+    )
+    task_behavior_contract = build_task_behavior_contract({
+        stage.split("_", 1)[0].lower() for stage in kernel_ordered
+    })
 
     task_guards = resolve_task_guards(
         pack=routing_pack_for_context,
@@ -363,7 +395,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         routing_adjustments=routing_adjustments,
         statework_registry_version=statework_registry.get("version"),
         statework_available=statework_available,
-        behavior_contract_path=LOCAL_CONTRACT_ROOT / "behavior-event.schema.json",
+        runtime_event_contract_path=LOCAL_CONTRACT_ROOT / "runtime-event.schema.json",
         load_document=_load_document,
         load_json=_load_json,
     )
@@ -385,12 +417,12 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     sispis_calibration_hash = sha256(cal_path) if cal_path.exists() else ""
     signal_schema_path = ROOT / "shared" / "signal.schema.json"
     signal_registry_path = ROOT / "shared" / "signal-registry.json"
-    behavior_event_schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
+    runtime_event_schema_path = LOCAL_CONTRACT_ROOT / "runtime-event.schema.json"
     policy_documents: Dict[str, Any] = {
         "sispis_calibration": _load_document(cal_path, load_yaml),
         "signal_schema": _load_document(signal_schema_path, _load_json),
         "signal_registry": _load_document(signal_registry_path, _load_json),
-        "behavior_event_schema": _load_document(behavior_event_schema_path, _load_json),
+        "runtime_event_schema": _load_document(runtime_event_schema_path, _load_json),
         "validator_registry_hash": validator_registry_hash(),
         "handler_registry_hash": handler_registry_hash(),
         "action_contract_hash": action_contract_hash(effective_actions),
@@ -398,12 +430,12 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "routing_profile": routing_profile,
         "routing_experiment": routing_experiment,
     }
-    behavior_schema = policy_documents["behavior_event_schema"]
-    behavior_schema_version = str(
-        behavior_schema.get("properties", {}).get("schema_version", {}).get("const", ""))
-    if not behavior_schema_version:
-        raise SnapshotIntegrityError("behavior-event schema has no pinned schema_version")
-    policy_documents["behavior_event_schema_version"] = behavior_schema_version
+    runtime_event_schema = policy_documents["runtime_event_schema"]
+    runtime_event_schema_version = str(
+        runtime_event_schema.get("properties", {}).get("schema_version", {}).get("const", ""))
+    if not runtime_event_schema_version:
+        raise SnapshotIntegrityError("runtime-event schema has no pinned schema_version")
+    policy_documents["runtime_event_schema_version"] = runtime_event_schema_version
     policy_documents["runtime_build_manifest"] = runtime_build_manifest(effective_actions)
     policy_documents["runtime_build_manifest_hash"] = (
         policy_documents["runtime_build_manifest"]["manifest_hash"])
@@ -440,6 +472,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         packet = sw.get("handoff") or (sw.get("emits") or [""])[0]
         handoff_plan.append({"producer": sw.get("id"), "packet": packet})
     core_capsules = injected_capsules_for(kernel_ordered)
+    cfw_policy_capsules = injected_capsules_for(cfw_base_kernel.ordered)
     capsules = {stage: (text, sha256_bytes(text.encode("utf-8")))
                 for stage, text in core_capsules.items()}
     capsules.update(statework_capsules)
@@ -453,6 +486,72 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
                  rule_hash=semantic_guard_hash(guard),
                  status_at_resolution=guard.get("status", "active"))
         for guard in unique_guards
+    )
+    cfw_policy_snapshot = CFWPolicySnapshot(contract={
+        "framework_version": framework_version,
+        "component_catalog_hash": pipeline_hash,
+        "startup_preset": shape,
+        "components": list(cfw_base_kernel.ordered),
+        "component_policy_hash": hashlib.sha256(_stable_json({
+            "kernel": cfw_base_kernel.ordered,
+            "instructions": cfw_base_kernel.instructions,
+        }).encode("utf-8")).hexdigest(),
+        # DP guard policy is part of the composite runtime identity. Keep the
+        # CFW contract limited to guards owned by the framework kernel.
+        "hard_guards": [
+            GuardPin(
+                guard_key=guard.get("key") or guard["id"],
+                rule_hash=semantic_guard_hash(guard),
+                status_at_resolution=guard.get("status", "active"),
+            ).to_dict()
+            for guard in pack.get("always_on", [])
+        ],
+        "action_contract_hash": policy_documents["action_contract_hash"],
+        "capsule_hashes": {
+            stage: sha256_bytes(text.encode("utf-8"))
+            for stage, text in sorted(cfw_policy_capsules.items())
+        },
+        "runtime_contract_hashes": {
+            "runtime_kernel_hash": kernel_hash,
+            "sispis_calibration_hash": sispis_calibration_hash,
+            "signal_schema_hash": sha256(signal_schema_path),
+            "signal_registry_hash": sha256(signal_registry_path),
+            "runtime_event_schema_hash": sha256(runtime_event_schema_path),
+            "runtime_behavior_hash": policy_documents["runtime_behavior_hash"],
+            "validator_registry_hash": policy_documents["validator_registry_hash"],
+            "handler_registry_hash": policy_documents["handler_registry_hash"],
+        },
+    })
+    csw_registry_hash = (str(workflow_plan.registry.get("hash") or "")
+                         if workflow_plan.available else "")
+    workflow_plan_hash = (hashlib.sha256(_stable_json({
+        "registry_hash": csw_registry_hash,
+        "execution_order": workflow_plan.execution_order,
+        "active_workflows": workflow_plan.active_workflows,
+        "completion_claim_classes": _thaw(workflow_plan.completion_claim_classes),
+        "capsule_hashes": {stage: digest for stage, (_text, digest)
+                           in sorted(workflow_plan.capsules.items())},
+    }).encode("utf-8")).hexdigest() if workflow_plan.available else "")
+    model_harness_toolset_hash = hashlib.sha256(_stable_json({
+        "model": model, "model_id": model_id, "provider_id": provider_id,
+        "model_revision": model_revision,
+        "model_capability_hash": model_capability_hash,
+        "harness": harness, "harness_version": harness_version, "toolset": toolset,
+    }).encode("utf-8")).hexdigest()
+    laya_identity_hash = (
+        hashlib.sha256(_stable_json(system_one_policy_dict).encode("utf-8")).hexdigest()
+        if system_one_policy.mode != "disabled" else "")
+    composite_snapshot = CompositeCognitiveRuntimeSnapshot(
+        cfw_policy_hash=cfw_policy_snapshot.policy_hash,
+        csw_registry_hash=csw_registry_hash,
+        csw_workflow_plan_hash=workflow_plan_hash,
+        cfw_task_behavior_contract_hash=task_behavior_contract["contract_hash"],
+        dp_policy_contract_hash=(
+            str(pack.get("semantic_hash") or "")
+            if pack.get("guard_pack_status") == "valid" else ""),
+        laya_identity_hash=laya_identity_hash,
+        host_goal_contract_hash=goal_contract_hash,
+        model_harness_toolset_hash=model_harness_toolset_hash,
     )
     effective_policy = EffectivePolicy(
         profile=shape, kernel=tuple(kernel_ordered), capsules=capsule_pins,
@@ -471,8 +570,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         goal_contract_hash=goal_contract_hash,
         signal_schema_hash=sha256(signal_schema_path),
         signal_registry_hash=sha256(signal_registry_path),
-        behavior_event_schema_hash=sha256(behavior_event_schema_path),
-        behavior_event_schema_version=behavior_schema_version,
+        runtime_event_schema_hash=sha256(runtime_event_schema_path),
+        runtime_event_schema_version=runtime_event_schema_version,
         runtime_behavior_hash=policy_documents["runtime_behavior_hash"],
         validator_registry_hash=policy_documents["validator_registry_hash"],
         handler_registry_hash=policy_documents["handler_registry_hash"],
@@ -546,6 +645,8 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         application_instance_id=application_instance_id,
         frozen_at=frozen_at,
         policy_hash=policy_hash,
+        cfw_policy_snapshot=cfw_policy_snapshot,
+        composite_snapshot=composite_snapshot,
         subject_ref=subject_ref,
         goal_contract=goal_contract_dict,
         goal_contract_hash=goal_contract_hash,
@@ -574,6 +675,7 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         shared_workflow_membership=shared_workflow_membership,
         shared_workflow_memberships=tuple(shared_workflow_memberships),
         statework_subject_refs=statework_subject_refs,
+        workflow_completion_claim_classes=workflow_plan.completion_claim_classes,
         policy_revocation_revision=policy_revocation_revision,
         revocation_mode=revocation_mode,
         contracts=policy_documents,
@@ -620,11 +722,22 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         },
         pinned=snapshot.to_dict(),
         policy=effective_policy,
+        cfw_policy_snapshot=cfw_policy_snapshot,
+        composite_snapshot=composite_snapshot,
         capsule_hashes=capsule_hashes,
         injected_capsules=tuple(capsules.items()),
         instruction_words=instruction_words,
         execution_plan=execution_plan,
         statework_root=str(cow_root.resolve()),
         action_registry=effective_actions,
+        workflow_port=task_workflows.workflow_port,
+        workflow_runtime_identity=task_workflows.runtime_identity,
+        workflow_task_context={
+            key: task_workflows.task_context.get(key)
+            for key in ("task_shape", "domains", "phase", "operation", "trigger",
+                        "current_state", "requested_statework_ids",
+                        "statework_subject_refs")
+        },
+        workflow_route_contract_digests=workflow_plan.route_contract_digests,
     )
     return bundle

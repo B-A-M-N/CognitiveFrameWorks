@@ -15,7 +15,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from runtime_contract.actions import ActionDescriptor, ActionObjectiveBinding, AgentActionRequest
 from runtime_contract.behavioral_fusion import fuse_progress_relation
-from runtime_contract.evidence import EvidenceAttestation, EvidenceRecord, StateSegment
+from runtime_contract.evidence import (
+    EvidenceAttestation, EvidenceRecord, StateSegment, _normalize_boundary_ids,
+)
 from runtime_contract.handlers import handler_for_enforcement
 from runtime_contract.stateworks import SegmentStatus
 from runtime_contract.system_one import ActivityFact, SystemOneJudgment
@@ -37,30 +39,31 @@ class EvidenceMethods:
         """Emit an event through a host-owned identity channel."""
         event = dict(event)
         event.setdefault("agent_id", self.bundle.pinned.get("agent_id", "agent"))
-        event.setdefault("agent_instance_id", self.agent_instance_id)
-        event.setdefault("session_id", self.session_id)
-        event.setdefault("attempt_id", self.attempt_id)
-        event.setdefault("segment_id", self.current_segment.segment_id)
+        event.setdefault("agent_instance_id", self.identity_authority.identity.agent_instance_id)
+        event.setdefault("session_id", self.identity_authority.identity.session_id)
+        event.setdefault("attempt_id", self.identity_authority.identity.attempt_id)
+        event.setdefault("segment_id", self.lifecycle_workflow.current_segment.segment_id)
         event.setdefault("behavioral_subject", event.get("subject") or
-                         self.bundle.policy.subject_ref or f"agent:{self.agent_instance_id}")
+                         self.bundle.policy.subject_ref or f"agent:{self.identity_authority.identity.agent_instance_id}")
         for key in ("interaction_id", "parent_session_id", "delegator_agent_id",
                     "delegate_agent_id", "delegation_id", "role"):
-            if getattr(self, key) is not None:
-                event.setdefault(key, getattr(self, key))
+            value = getattr(self.identity_authority.identity, key)
+            if value is not None:
+                event.setdefault(key, value)
         event["actor_id"] = actor_id
         # ``emit`` intentionally rejects privileged identities.  This private
         # path performs the same validation while allowing a trusted adapter
         # to attribute an operator observation correctly.
         HostTelemetry.validate_event(
             event, task_id=self.bundle.task_id,
-            expected_schema_hash=self.bundle.policy.behavior_event_schema_hash,
-            expected_schema_version=self.bundle.policy.behavior_event_schema_version)
-        if self._emit:
-            owner = getattr(self._emit, "__self__", None)
+            expected_schema_hash=self.bundle.policy.runtime_event_schema_hash,
+            expected_schema_version=self.bundle.policy.runtime_event_schema_version)
+        if self.telemetry_state.emit:
+            owner = getattr(self.telemetry_state.emit, "__self__", None)
             if isinstance(owner, HostTelemetry):
                 owner._emit_host_event(event)
             else:
-                self._emit(event)
+                self.telemetry_state.emit(event)
         return event.get("event_id", "")
     def _journal(self, event_type: str, **fields: Any) -> None:
         """Commit SQLite/WAL authority first, then derive NDJSON.
@@ -69,21 +72,21 @@ class EvidenceMethods:
         projection and may temporarily lag after a crash without changing
         authorization or resume semantics.
         """
-        if self.journal_path is None and self.journal_db_path is None:
+        if self.telemetry_state.journal_path is None and self.telemetry_state.journal_db_path is None:
             return
         record = {"timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                  "task_id": self.bundle.task_id, "session_nonce": self.session_nonce,
-                  "session_id": self.session_id,
-                  "agent_instance_id": self.agent_instance_id,
-                  "attempt_id": self.attempt_id,
+                  "task_id": self.bundle.task_id, "session_nonce": self.identity_authority.identity.session_nonce,
+                  "session_id": self.identity_authority.identity.session_id,
+                  "agent_instance_id": self.identity_authority.identity.agent_instance_id,
+                  "attempt_id": self.identity_authority.identity.attempt_id,
                   "policy_hash": self.bundle.pinned["policy_hash"],
                   "event_type": event_type, **fields}
         encoded = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        journal_parent = (self.journal_path or self.journal_db_path).parent
+        journal_parent = (self.telemetry_state.journal_path or self.telemetry_state.journal_db_path).parent
         journal_parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         os.chmod(journal_parent, 0o700)
-        if self.journal_db_path is not None:
-            with sqlite3.connect(self.journal_db_path) as database:
+        if self.telemetry_state.journal_db_path is not None:
+            with sqlite3.connect(self.telemetry_state.journal_db_path) as database:
                 database.execute("PRAGMA journal_mode=WAL")
                 database.execute("PRAGMA synchronous=FULL")
                 database.execute(
@@ -92,14 +95,14 @@ class EvidenceMethods:
                 database.execute("INSERT INTO authority_events(event_json) VALUES (?)",
                                  (encoded,))
                 database.commit()
-            os.chmod(self.journal_db_path, 0o600)
-            if self.journal_path is not None:
-                with sqlite3.connect(self.journal_db_path) as database:
+            os.chmod(self.telemetry_state.journal_db_path, 0o600)
+            if self.telemetry_state.journal_path is not None:
+                with sqlite3.connect(self.telemetry_state.journal_db_path) as database:
                     rows = database.execute(
                         "SELECT event_json FROM authority_events ORDER BY seq").fetchall()
                 fd, temporary = tempfile.mkstemp(
-                    dir=str(self.journal_path.parent),
-                    prefix=f".{self.journal_path.name}.", suffix=".tmp")
+                    dir=str(self.telemetry_state.journal_path.parent),
+                    prefix=f".{self.telemetry_state.journal_path.name}.", suffix=".tmp")
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as stream:
                         for (event_json,) in rows:
@@ -107,26 +110,32 @@ class EvidenceMethods:
                         stream.flush()
                         os.fsync(stream.fileno())
                     os.chmod(temporary, 0o600)
-                    os.replace(temporary, self.journal_path)
+                    os.replace(temporary, self.telemetry_state.journal_path)
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
-                os.chmod(self.journal_path, 0o600)
-        elif self.journal_path is not None:
+                os.chmod(self.telemetry_state.journal_path, 0o600)
+        elif self.telemetry_state.journal_path is not None:
             # Legacy/test-only sessions without a database retain a simple
             # journal. Normal start() always provisions the SQLite authority.
-            with self.journal_path.open("a", encoding="utf-8") as stream:
+            with self.telemetry_state.journal_path.open("a", encoding="utf-8") as stream:
                 stream.write(encoded + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.chmod(self.journal_path, 0o600)
+            os.chmod(self.telemetry_state.journal_path, 0o600)
     def _record_attestation(self, *, evidence_type: str, subject_ref: Optional[str],
                             issuer: str, event: Dict[str, Any],
                             invocation_id: Optional[str], content: Any,
                             claim_digest: Optional[str] = None,
                             schema_id: Optional[str] = None,
-                            validator_id: Optional[str] = None) -> str:
+                            validator_id: Optional[str] = None,
+                            covered_boundary_ids: Iterable[str] = ()) -> str:
+        covered_boundary_ids = _normalize_boundary_ids(covered_boundary_ids)
         event = dict(event)
+        if covered_boundary_ids:
+            payload = dict(event.get("payload") or {})
+            payload["covered_boundary_ids"] = list(covered_boundary_ids)
+            event["payload"] = payload
         event_id = event.setdefault("event_id", f"evt-{uuid.uuid4()}")
         self._host_event(event)
         observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -140,9 +149,10 @@ class EvidenceMethods:
             content_digest=hashlib.sha256(
                 json.dumps(content, sort_keys=True, separators=(",", ":"), default=str)
                 .encode("utf-8")).hexdigest(),
-            claim_digest=claim_digest, schema=schema_id, validator=validator_id)
-        evidence_id = self.ledger.record_attestation(attestation,
-                                                     writer_token=self._ledger_token)
+            claim_digest=claim_digest, schema=schema_id, validator=validator_id,
+            covered_boundary_ids=covered_boundary_ids)
+        evidence_id = self.evidence.ledger.record_attestation(attestation,
+                                                     writer_token=self.evidence._writer_token)
         self._journal("evidence_attested", evidence_id=evidence_id,
                       evidence_type=evidence_type, subject_ref=subject_ref,
                       invocation_id=invocation_id,
@@ -153,7 +163,10 @@ class EvidenceMethods:
                       claim_digest=attestation.claim_digest,
                       schema=attestation.schema,
                       validator=attestation.validator,
-                      invalidated=attestation.invalidated)
+                      invalidated=attestation.invalidated,
+                      **({"covered_boundary_ids": list(
+                          attestation.covered_boundary_ids)}
+                         if attestation.covered_boundary_ids else {}))
         return evidence_id
     def _record_typed_authority(self, capability: _HostCapability, evidence_type: str,
                                 issuer: str, validator: str, schema_id: str,
@@ -212,7 +225,8 @@ class EvidenceMethods:
     def _record_repository_evidence(self, capability: _HostCapability,
                                     packet: Mapping[str, Any],
                                     validation: Mapping[str, Any], *,
-                                    subject_ref: Optional[str] = None) -> str:
+                                    subject_ref: Optional[str] = None,
+                                    covered_boundary_ids: Iterable[str] = ()) -> str:
         self._require_host(capability)
         if not isinstance(validation, Mapping) or validation.get("valid") is not True:
             raise ValueError("repository evidence requires a passing post-mutation validation result")
@@ -226,11 +240,12 @@ class EvidenceMethods:
                    "payload": {"summary": "post-mutation repository validation", "result_class": "validated"}},
             invocation_id=None, content={"packet": dict(packet), "validation": dict(validation)},
             schema_id="repository-evidence-packet.schema.json",
-            validator_id="repository-evidence-v1")
+            validator_id="repository-evidence-v1",
+            covered_boundary_ids=covered_boundary_ids)
     def record_evidence(self, *_: Any, **__: Any) -> str:
         raise PermissionError("agents cannot mint evidence attestations")
     def _require_host(self, capability: _HostCapability) -> None:
-        if capability is not self._host_capability:
+        if capability is not self.identity_authority._host_capability:
             raise PermissionError("evidence ingestion requires the host capability")
     def _bind_action_objective(
             self, capability: _HostCapability,
@@ -240,18 +255,16 @@ class EvidenceMethods:
         self._require_host(capability)
         request = self._request(action)
         criteria = tuple(criterion_ids)
-        known = {item.criterion_id for item in self.metacognitive_state.criteria}
+        known = {item.criterion_id for item in self.behavior.metacognitive.criteria}
         if not set(criteria).issubset(known):
             raise ValueError("objective binding references an unknown task criterion")
-        if artifact_revision is not None and artifact_revision != self.metacognitive_state.artifact_revision:
+        if artifact_revision is not None and artifact_revision != self.behavior.metacognitive.artifact_revision:
             raise ValueError("objective binding references a stale artifact revision")
         binding = ActionObjectiveBinding(
             action_digest=request.digest, purpose_class=purpose_class,
             criterion_ids=criteria, cause_id=cause_id,
             artifact_revision=artifact_revision)
-        self._action_objective_bindings[binding.binding_digest] = binding
-        while len(self._action_objective_bindings) > 512:
-            self._action_objective_bindings.pop(next(iter(self._action_objective_bindings)))
+        self.actions.add_objective_binding(binding)
         self._journal("action_objective_binding_issued",
                       binding=binding.to_dict(), subject_ref=request.subject_ref)
         return binding
@@ -277,7 +290,7 @@ class EvidenceMethods:
             if experiment.get("routing_cohort") in {"control", "treatment", "holdout"}
             else self.bundle.pinned.get("policy_hash")
         )
-        self.route_decisions[decision_id] = {
+        self.actions.route_decisions[decision_id] = {
             "decision_id": decision_id, "route": route, "route_type": route_type,
             "policy_hash": self.bundle.pinned.get("policy_hash"),
             "selection_reason": selection_reason,
@@ -294,7 +307,7 @@ class EvidenceMethods:
             "evaluator_hash": experiment.get("target_evaluator_hash"),
         }
         self._journal("route_decision_recorded", decision_id=decision_id,
-                      decision=dict(self.route_decisions[decision_id]))
+                      decision=dict(self.actions.route_decisions[decision_id]))
         route_payload = {"summary": route, "route": route, "route_type": route_type,
                          "route_decision_id": decision_id,
                          "policy_hash": self.bundle.pinned.get("policy_hash"),
@@ -306,11 +319,11 @@ class EvidenceMethods:
             "intervention_assigned": intervention_assigned,
             "intervention_executed": intervention_executed,
             "effective_policy_hash": self.bundle.pinned.get("policy_hash"),
-            "parent_decision_ref": self.parent_decision_ref,
-            "shared_evidence_refs": list(self.shared_evidence_refs),
-            "delegation_topology": self.delegation_topology,
-            "premise_digest": self.premise_digest,
-            "failure_attribution": self.failure_attribution,
+            "parent_decision_ref": self.identity_authority.identity.parent_decision_ref,
+            "shared_evidence_refs": list(self.identity_authority.identity.shared_evidence_refs),
+            "delegation_topology": self.identity_authority.identity.delegation_topology,
+            "premise_digest": self.identity_authority.identity.premise_digest,
+            "failure_attribution": self.identity_authority.identity.failure_attribution,
         }.items() if value is not None})
         self._host_event({
             "event_id": decision_id, "category": "decision", "event_type": event_type,
@@ -321,21 +334,21 @@ class EvidenceMethods:
                                 route_decision_id: str, evaluator_id: str,
                                 evidence_refs: List[str]) -> str:
         self._require_host(capability)
-        decision = self.route_decisions.get(route_decision_id)
+        decision = self.actions.route_decisions.get(route_decision_id)
         if decision is None:
             raise ValueError("route outcome requires a current host route decision")
         experiment = self.bundle.guard_pack.get("routing_experiment") or {}
         expected_evaluator = experiment.get("target_evaluator") or "route-success-v1"
         if evaluator_id != expected_evaluator:
             raise ValueError(f"unknown route evaluator {evaluator_id!r}")
-        resolved = self.ledger.resolve(list(evidence_refs), subject_ref=self.bundle.policy.subject_ref)
+        resolved = self.evidence.ledger.resolve(list(evidence_refs), subject_ref=self.bundle.policy.subject_ref)
         # Tri-state: absence of success evidence is NOT failure evidence.
         outcome = "NOT_APPLICABLE"
         for ref in resolved:
-            record = self.ledger.get(ref["ref"])
+            record = self.evidence.ledger.get(ref["ref"])
             if record is None or record.kind != "validation_result":
                 continue
-            invocation = self.host_invocations.get(record.invocation_id or "", {})
+            invocation = self.actions.host_invocations.get(record.invocation_id or "", {})
             actual = invocation.get("actual_result") or {}
             status = str(actual.get("status") or actual.get("result") or "").lower()
             if status in {"pass", "passed", "success", "ok"}:
@@ -367,32 +380,32 @@ class EvidenceMethods:
         }.items() if value is not None})
         # An outcome needs an origin and an intended subject: "task-123 got a
         # retry failure" is ambiguous when several agents share that task.
-        self.route_outcomes[event_id] = {
+        self.actions.route_outcomes[event_id] = {
             "event_id": event_id,
             "route_decision_id": route_decision_id,
             "evaluator_id": evaluator_id,
             "outcome": outcome,
             "evidence_refs": list(evidence_refs),
             "origin": {
-                "agent_instance_id": self.agent_instance_id,
-                "session_id": self.session_id,
-                "attempt_id": self.attempt_id,
-                "delegation_id": self.delegation_id,
-                "interaction_id": self.interaction_id,
-                "parent_decision_ref": self.parent_decision_ref,
-                "premise_digest": self.premise_digest,
-                "failure_attribution": self.failure_attribution,
+                "agent_instance_id": self.identity_authority.identity.agent_instance_id,
+                "session_id": self.identity_authority.identity.session_id,
+                "attempt_id": self.identity_authority.identity.attempt_id,
+                "delegation_id": self.identity_authority.identity.delegation_id,
+                "interaction_id": self.identity_authority.identity.interaction_id,
+                "parent_decision_ref": self.identity_authority.identity.parent_decision_ref,
+                "premise_digest": self.identity_authority.identity.premise_digest,
+                "failure_attribution": self.identity_authority.identity.failure_attribution,
             },
             "target": {
-                "scope": (self.shared_workflow_membership or {}).get("workflow_id")
+                "scope": (self.identity_authority.authorities.shared_workflow_membership or {}).get("workflow_id")
                           and "shared_workflow" or "agent_private",
-                "workflow_id": (self.shared_workflow_membership or {}).get("workflow_id"),
-                "interaction_id": self.interaction_id,
-                "agent_instance_id": self.agent_instance_id,
+                "workflow_id": (self.identity_authority.authorities.shared_workflow_membership or {}).get("workflow_id"),
+                "interaction_id": self.identity_authority.identity.interaction_id,
+                "agent_instance_id": self.identity_authority.identity.agent_instance_id,
             },
         }
         self._journal("route_outcome_recorded", event_id=event_id,
-                      outcome=dict(self.route_outcomes[event_id]))
+                      outcome=dict(self.actions.route_outcomes[event_id]))
         self._host_event({
             "event_id": event_id, "category": "decision", "event_type": "route_outcome",
             "subject": self.bundle.policy.subject_ref,
@@ -467,7 +480,7 @@ class EvidenceMethods:
     def _host_blocker_evidence(self, evidence_ref: str) -> EvidenceAttestation:
         if not isinstance(evidence_ref, str) or not evidence_ref.strip():
             raise ValueError("blocker changes require an evidence reference")
-        record = self.ledger.get(evidence_ref)
+        record = self.evidence.ledger.get(evidence_ref)
         if record is None or record.invalidated:
             raise ValueError("blocker changes require current host-attested evidence")
         expected_subject = self.bundle.policy.subject_ref
@@ -491,11 +504,11 @@ class EvidenceMethods:
                         "acceptance_criteria", ())}
         if declared and any(item not in declared for item in criteria):
             raise ValueError("blocker references an unknown acceptance criterion")
-        self.metacognitive_state.record_blocker(
+        self.behavior.metacognitive.record_blocker(
             blocker_id, summary, criteria, evidence_ref=evidence_ref)
         self._journal("metacognitive_blocker_recorded",
                       blocker_id=blocker_id[:128], evidence_ref=evidence_ref,
-                      snapshot=self.metacognitive_state.snapshot())
+                      snapshot=self.behavior.metacognitive.snapshot())
         self._emit_runtime({
             "category": "blocker", "event_type": "host_blocker_recorded",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -508,14 +521,14 @@ class EvidenceMethods:
         if not isinstance(blocker_id, str) or not blocker_id.strip() or len(blocker_id) > 128:
             raise ValueError("blocker ID must be bounded non-empty text")
         record = self._host_blocker_evidence(evidence_ref)
-        existing = next((item for item in self.metacognitive_state.blockers
+        existing = next((item for item in self.behavior.metacognitive.blockers
                          if item.blocker_id == blocker_id), None)
         if existing is None:
             raise ValueError("cannot clear an unknown metacognitive blocker")
-        self.metacognitive_state.clear_blocker(blocker_id)
+        self.behavior.metacognitive.clear_blocker(blocker_id)
         self._journal("metacognitive_blocker_cleared", blocker_id=blocker_id[:128],
                       evidence_ref=evidence_ref,
-                      snapshot=self.metacognitive_state.snapshot())
+                      snapshot=self.behavior.metacognitive.snapshot())
         self._emit_runtime({
             "category": "blocker", "event_type": "host_blocker_cleared",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -526,7 +539,8 @@ class EvidenceMethods:
                             *, invocation_id: Optional[str] = None,
                             result_digest: Optional[str] = None,
                             action_request_id: Optional[str] = None,
-                            actual_result: Optional[Mapping[str, Any]] = None) -> str:
+                            actual_result: Optional[Mapping[str, Any]] = None,
+                            covered_boundary_ids: Iterable[str] = ()) -> str:
         """Record a tool result from the host execution channel."""
         self._require_host(capability)
         invocation_id = invocation_id or f"invocation-{uuid.uuid4()}"
@@ -540,7 +554,7 @@ class EvidenceMethods:
             raise ValueError("tool-result evidence_refs must contain at most eight host references")
         supporting_evidence: list[EvidenceRecord] = []
         for evidence_ref in dict.fromkeys(raw_evidence_refs):
-            record = self.ledger.get(evidence_ref)
+            record = self.evidence.ledger.get(evidence_ref)
             if (record is None or record.invalidated
                     or record.subject_ref != subject_ref):
                 raise ValueError("tool-result evidence reference is missing, stale, or cross-subject")
@@ -554,7 +568,7 @@ class EvidenceMethods:
             if record.kind in supported_progress_kinds))
         supporting_refs = tuple(record.evidence_id for record in supporting_evidence
                                 if record.kind in supported_progress_kinds)
-        pending = (self._pending_action_requests.get(action_request_id or "")
+        pending = (self.actions.pending_action_requests.get(action_request_id or "")
                    if action_request_id else None)
         if action_request_id and pending is None:
             raise ValueError("tool result references an unknown action_request_id")
@@ -567,8 +581,9 @@ class EvidenceMethods:
                                "result_class": result_class[:64]}},
             invocation_id=invocation_id,
             content={"tool_type": tool_type, "result_class": result_class,
-                     "result_digest": result_digest or ""})
-        self.host_invocations[invocation_id] = {
+                     "result_digest": result_digest or ""},
+            covered_boundary_ids=covered_boundary_ids)
+        self.actions.host_invocations[invocation_id] = {
             "tool_type": tool_type, "result_class": result_class,
             "subject_ref": subject_ref, "evidence_id": evidence_id,
             "action_request_id": action_request_id,
@@ -593,21 +608,21 @@ class EvidenceMethods:
             changed = None
         evidence_kinds = tuple(dict.fromkeys(("tool_result",) + supporting_kinds))
         candidate = None
-        if not self.external_behavior_authority:
+        if not self.behavior.is_external:
             if pending is not None and isinstance(pending.get("candidate"), ActivityFact):
                 candidate = replace(
                     pending["candidate"], result_class=result_class[:64],
                     artifact_changed=changed, evidence_kinds=evidence_kinds)
-                candidate = self.metacognitive_state.commit_candidate(
+                candidate = self.behavior.metacognitive.commit_candidate(
                     candidate,
                     verification_relation=("required_verification"
                                            if pending.get("relation") == "required_verification"
                                            else None))
                 retry_candidate = pending.get("retry_candidate")
                 if isinstance(retry_candidate, ActivityFact):
-                    self.metacognitive_state.commit_candidate(retry_candidate)
+                    self.behavior.metacognitive.commit_candidate(retry_candidate)
             else:
-                candidate = self.metacognitive_state.record_activity(
+                candidate = self.behavior.metacognitive.record_activity(
                     "tool_result", source="host_observed",
                     action_class=(descriptor.action_class if descriptor else tool_type[:64]),
                     host_declared_relation=(pending.get("relation", "ambiguous")
@@ -619,11 +634,11 @@ class EvidenceMethods:
                                             if descriptor else ()),
                     evidence_kinds=evidence_kinds)
             self._journal("system_one_projection_changed",
-                          snapshot=self.metacognitive_state.snapshot())
-        if (not self.external_behavior_authority and self.convergence is not None
+                          snapshot=self.behavior.metacognitive.snapshot())
+        if (not self.behavior.is_external and self.attempts.controller is not None
                 and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"):
             lane = str((pending or {}).get("accounting_lane") or "UNCLASSIFIED")
-            state = self.convergence.record_committed_action(
+            state = self.attempts.controller.record_committed_action(
                 cause_id="primary-objective", lane=lane)
             self._record_convergence("committed_action")
             self._emit_runtime({
@@ -642,14 +657,14 @@ class EvidenceMethods:
                 self._record_support_action_event(
                     evidence_id=evidence_id, subject_ref=subject_ref,
                     support_count=state.support_actions_since_goal_progress)
-        if (not self.external_behavior_authority
+        if (not self.behavior.is_external
                 and self._system_one_policy().mode != "disabled"):
             self._system_one_query(
                 questions=("progress_relation",), candidate=candidate,
                 subject_ref=subject_ref,
                 action_request_id=action_request_id,
                 action_invocation_id=invocation_id)
-            decision = next((item for item in reversed(tuple(self.system_one_decisions.values()))
+            decision = next((item for item in reversed(tuple(self.behavior.system_one_decisions.values()))
                              if item.get("action_invocation_id") == invocation_id), None)
             judgment_data = dict((decision or {}).get("judgment") or {})
             try:
@@ -660,8 +675,8 @@ class EvidenceMethods:
             criterion_id = next((item for item in (descriptor.affected_criterion_ids
                                                     if descriptor else ())
                                  if any(row.criterion_id == item and row.status != "satisfied"
-                                        for row in self.metacognitive_state.criteria)), None)
-            criterion = next((row for row in self.metacognitive_state.criteria
+                                        for row in self.behavior.metacognitive.criteria)), None)
+            criterion = next((row for row in self.behavior.metacognitive.criteria
                               if row.criterion_id == criterion_id), None)
             host_progress_class = str(result_data.get("progress_class") or "")
             fused_progress = fuse_progress_relation(
@@ -680,7 +695,7 @@ class EvidenceMethods:
                             "model_influenced": fused_progress.model_influenced,
                             "source_decision_id": fused_progress.decision_id or ""}})
         if action_request_id:
-            self._pending_action_requests.pop(action_request_id, None)
+            self.actions.take_pending_request(action_request_id)
         self._complete_action(capability)
         return evidence_id
     def _record_support_action_event(self, *, evidence_id: str,
@@ -694,21 +709,22 @@ class EvidenceMethods:
                         "support_actions_since_goal_progress": support_count}})
     def _complete_action(self, capability: _HostCapability) -> None:
         self._require_host(capability)
-        if self.lifecycle is not None:
-            prior = set(self.active_lifecycle)
-            self.lifecycle.on_action_complete()
-            self.active_lifecycle = set(self.lifecycle.active)
-            self.lifecycle_counts = dict(self.lifecycle.counts)
+        if self.lifecycle_workflow.lifecycle is not None:
+            prior = set(self.lifecycle_workflow.active_lifecycle)
+            self.lifecycle_workflow.lifecycle.on_action_complete()
+            self.lifecycle_workflow.active_lifecycle = set(self.lifecycle_workflow.lifecycle.active)
+            self.lifecycle_workflow.lifecycle_counts = dict(self.lifecycle_workflow.lifecycle.counts)
             self._emit_lifecycle_activations(prior)
     def record_tool_result(self, *_: Any, **__: Any) -> str:
         raise PermissionError("tool evidence must come from the host execution adapter")
     def _record_validator_result(self, capability: _HostCapability, validator_id: str,
                                  invocation_id: str, result: Mapping[str, Any],
                                  subject_ref: Optional[str] = None,
-                                 *, claim_digest: Optional[str] = None) -> str:
+                                 *, claim_digest: Optional[str] = None,
+                                 covered_boundary_ids: Iterable[str] = ()) -> str:
         """Mint completion evidence only for a registered host validator."""
         self._require_host(capability)
-        invocation = self.host_invocations.get(invocation_id)
+        invocation = self.actions.host_invocations.get(invocation_id)
         if invocation is None:
             raise ValueError("validator requires a completed host invocation")
         if not isinstance(result, Mapping):
@@ -746,13 +762,16 @@ class EvidenceMethods:
                      "tool_evidence_id": invocation["evidence_id"],
                      "result": typed_result},
             claim_digest=claim_digest, schema_id=f"validator-result:{evidence_type}",
-            validator_id=validator_id)
-        if not self.external_behavior_authority:
-            self.metacognitive_state.record_activity(
+            validator_id=validator_id,
+            covered_boundary_ids=(covered_boundary_ids or
+                (self.evidence.ledger.get(invocation["evidence_id"]).covered_boundary_ids
+                 if self.evidence.ledger.get(invocation["evidence_id"]) is not None else ())))
+        if not self.behavior.is_external:
+            self.behavior.metacognitive.record_activity(
                 "validation", source="validator", result_class=evidence_type,
                 progress_class="VALIDATION_EVIDENCE", evidence_kinds=(evidence_type,))
-        if not self.external_behavior_authority and self.convergence is not None:
-            self.convergence.record_progress(
+        if not self.behavior.is_external and self.attempts.controller is not None:
+            self.attempts.controller.record_progress(
                 cause_id="primary-objective",
                 progress_digest=hashlib.sha256(json.dumps({
                     "validator_id": validator_id, "evidence_id": evidence_id,
@@ -787,13 +806,13 @@ class EvidenceMethods:
                     return GateDecision.REQUIRE_REINSPECTION
         statework = next((item for item in self.bundle.stateworks
                           if item.get("id") == statework_id), None)
-        if statework is None or statework_id not in self.active_statework_ids:
+        if statework is None or statework_id not in self.lifecycle_workflow.active_statework_ids:
             self._emit_runtime({"category": "blocker", "event_type": "inactive_statework_transition",
                        "subject": subject_ref,
                        "payload": {"summary": str(statework_id)[:128],
                                    "result_class": "blocked"}})
             return GateDecision.BLOCK
-        if self.state_authority is None or not all(callable(getattr(self.state_authority, name, None))
+        if self.identity_authority.authorities.state_authority is None or not all(callable(getattr(self.identity_authority.authorities.state_authority, name, None))
                 for name in ("inspect_workflow", "resolve_legacy_step")):
             self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_unavailable",
                        "subject": subject_ref,
@@ -804,7 +823,7 @@ class EvidenceMethods:
         if not contract_hash:
             raise ValueError(f"StateWork {statework_id!r} has no pinned workflow contract")
         try:
-            snapshot = self.state_authority.inspect_workflow(
+            snapshot = self.identity_authority.authorities.state_authority.inspect_workflow(
                 statework_id=statework_id, subject_ref=subject_ref,
                 contract_hash=contract_hash)
         except Exception as exc:
@@ -820,7 +839,7 @@ class EvidenceMethods:
                                    "result_class": "re-observation required"}})
             return GateDecision.REQUIRE_REINSPECTION
         try:
-            step_id = self.state_authority.resolve_legacy_step(
+            step_id = self.identity_authority.authorities.state_authority.resolve_legacy_step(
                 statework_id=statework_id, subject_ref=subject_ref,
                 contract_hash=contract_hash, to_state=output_state,
                 trigger=trigger)
@@ -840,7 +859,7 @@ class EvidenceMethods:
         """Apply one engine-neutral workflow step through CSW authority."""
         statework = next((item for item in self.bundle.stateworks
                           if item.get("id") == statework_id), None)
-        if statework is None or statework_id not in self.active_statework_ids:
+        if statework is None or statework_id not in self.lifecycle_workflow.active_statework_ids:
             self._emit_runtime({"category": "blocker", "event_type": "inactive_statework_transition",
                        "subject": subject_ref,
                        "payload": {"summary": str(statework_id)[:128],
@@ -851,7 +870,7 @@ class EvidenceMethods:
             return GateDecision.BLOCK
         if not self._membership_current(statework_id, subject_ref):
             return GateDecision.BLOCK
-        authority = self.state_authority
+        authority = self.identity_authority.authorities.state_authority
         if authority is None or not callable(getattr(authority, "inspect_workflow", None)):
             self._emit_runtime({"category": "blocker", "event_type": "workflow_authority_unavailable",
                        "subject": subject_ref,
@@ -868,7 +887,7 @@ class EvidenceMethods:
             revision = int(snapshot.revision)
             if expected_revision is not None and revision != int(expected_revision):
                 raise ValueError("workflow revision changed; re-inspection required")
-            verified_evidence = self.ledger.resolve(
+            verified_evidence = self.evidence.ledger.resolve(
                 list(evidence_refs or ()), subject_ref=subject_ref)
             decision = authority.apply_workflow_step(
                 statework_id=statework_id, subject_ref=subject_ref,
@@ -899,9 +918,9 @@ class EvidenceMethods:
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         if prior_state is not None and next_state is not None:
             state_key = (statework_id, subject_ref)
-            self.statework_states[state_key] = str(next_state)
-            self.statework_entry_times[state_key] = timestamp
-            self.metacognitive_state.record_workflow_progress(
+            self.lifecycle_workflow.statework_states[state_key] = str(next_state)
+            self.lifecycle_workflow.statework_entry_times[state_key] = timestamp
+            self.behavior.metacognitive.record_workflow_progress(
                 statework_id=statework_id, subject_ref=subject_ref,
                 engine_kind=decision.engine_kind,
                 workflow_revision=decision.revision, step_id=decision.step_id,
@@ -910,14 +929,14 @@ class EvidenceMethods:
                 current_position=str(next_state), previous_position=str(prior_state),
                 evidence_refs=evidence_ids)
             prior_revision = sum(
-                1 for item in self.state_segments
+                1 for item in self.evidence.state_segments
                 if item.statework_id == statework_id and item.subject_ref == subject_ref)
             segment = StateSegment(
                 segment_id=f"segment-{uuid.uuid4()}", task_id=self.bundle.task_id,
                 subject_ref=subject_ref, input_state=str(prior_state),
                 output_state=str(next_state), evidence_refs=tuple(evidence_ids),
                 recorded_at=timestamp, statework_id=statework_id)
-            self.state_segments.append(segment)
+            self.evidence.state_segments.append(segment)
             self._journal("state_transition_allowed", statework_id=statework_id,
                           subject_ref=subject_ref, input_state=str(prior_state),
                           output_state=str(next_state), evidence_refs=evidence_ids,
@@ -925,7 +944,7 @@ class EvidenceMethods:
                           transition=metadata, progress_class="WORKFLOW_PROGRESS",
                           csw_progress_class=decision.progress_class)
         else:
-            self.metacognitive_state.record_workflow_progress(
+            self.behavior.metacognitive.record_workflow_progress(
                 statework_id=statework_id, subject_ref=subject_ref,
                 engine_kind=decision.engine_kind, step_id=decision.step_id,
                 workflow_revision=decision.revision, progress_class=decision.progress_class,
@@ -938,13 +957,13 @@ class EvidenceMethods:
                           completed=decision.completed, evidence_refs=evidence_ids,
                           work_class=decision.work_class,
                           domain_effect=decision.domain_effect, recorded_at=timestamp)
-        if self.convergence is not None:
+        if self.attempts.controller is not None:
             progress_digest = hashlib.sha256(json.dumps({
                 "statework_id": statework_id, "subject_ref": subject_ref,
                 "engine_kind": decision.engine_kind, "step_id": decision.step_id,
                 "revision": decision.revision,
             }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-            self.convergence.record_progress(
+            self.attempts.controller.record_progress(
                 cause_id="primary-objective", progress_digest=progress_digest,
                 progress_class="WORKFLOW_PROGRESS",
                 evidence_ref=evidence_ids[-1] if evidence_ids else None)
@@ -961,16 +980,16 @@ class EvidenceMethods:
         self._require_host(capability)
         if packet.get("task_id") != self.bundle.task_id:
             raise ValueError("handoff packet belongs to another task")
-        expected_subject = (self.current_segment.subject_ref
+        expected_subject = (self.lifecycle_workflow.current_segment.subject_ref
                             or self.bundle.policy.subject_ref)
         if not expected_subject or packet.get("subject_ref") != expected_subject:
             raise ValueError("handoff packet subject is not the active StateWork subject")
-        active_producer = self.current_segment.statework_id
+        active_producer = self.lifecycle_workflow.current_segment.statework_id
         if not self._authoritative_state_ready():
             raise PermissionError("shared StateWork authority is unavailable for handoff")
         if packet.get("producer") != active_producer:
             raise ValueError("handoff producer is not the active StateWork segment")
-        expected_packet = self.current_segment.output_packet
+        expected_packet = self.lifecycle_workflow.current_segment.output_packet
         if expected_packet and packet.get("packet_type") != expected_packet:
             raise ValueError("handoff packet does not match the active segment output")
         if not packet.get("observed_at"):
@@ -978,7 +997,7 @@ class EvidenceMethods:
         evidence_refs = packet.get("evidence_refs") or []
         if not evidence_refs:
             raise ValueError("host handoffs require observed evidence references")
-        self.ledger.resolve(list(evidence_refs), subject_ref=packet.get("subject_ref"))
+        self.evidence.ledger.resolve(list(evidence_refs), subject_ref=packet.get("subject_ref"))
         producer_workflow = next(
             (item for item in self.bundle.stateworks
              if item.get("id") == active_producer), None)
@@ -986,24 +1005,24 @@ class EvidenceMethods:
             raise PermissionError("handoff producer has no active workflow contract")
         contract_hash = str(producer_workflow.get("workflow_contract_hash") or "")
         workflow_complete = False
-        if self.state_authority is not None and contract_hash:
-            snapshot = self.state_authority.inspect_workflow(
+        if self.identity_authority.authorities.state_authority is not None and contract_hash:
+            snapshot = self.identity_authority.authorities.state_authority.inspect_workflow(
                 statework_id=str(active_producer), subject_ref=expected_subject,
                 contract_hash=contract_hash)
             workflow_complete = bool(snapshot.completed)
         else:
-            workflow_fact = next((item for item in self.metacognitive_state.workflows
+            workflow_fact = next((item for item in self.behavior.metacognitive.workflows
                                   if item.statework_id == active_producer
                                   and item.subject_ref == expected_subject), None)
             workflow_complete = bool(workflow_fact and workflow_fact.completed)
         if not workflow_complete:
             raise PermissionError("handoff requires the producer workflow to be complete")
-        if self._packet_store is None:
+        if self.lifecycle_workflow.packet_store is None:
             provider = resolve_runtime.statework_provider(
                 Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
             packet_root = resolve_runtime.runtime_state_dir() / "packets"
             safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.bundle.task_id)[:128] or "task"
-            self._packet_store = provider.packet_store(
+            self.lifecycle_workflow.packet_store = provider.packet_store(
                 None, storage_path=packet_root / f"{safe_task}.json")
         provider = resolve_runtime.statework_provider(
             Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
@@ -1016,10 +1035,10 @@ class EvidenceMethods:
             raise ValueError("freshness validation context is mandatory for this handoff packet")
         if freshness_contract is None:
             raise ValueError("packet registry must explicitly declare freshness semantics")
-        if observation_context is not None and not self._packet_store.validate_current(
+        if observation_context is not None and not self.lifecycle_workflow.packet_store.validate_current(
                 packet, observation_context=observation_context):
             raise ValueError("handoff packet is not current under the host observation")
-        packet_id = self._packet_store.put(packet)
+        packet_id = self.lifecycle_workflow.packet_store.put(packet)
         evidence_id = self._record_attestation(
             evidence_type="handoff", subject_ref=packet.get("subject_ref"),
             issuer="host:handoff",
@@ -1027,10 +1046,12 @@ class EvidenceMethods:
                    "event_type": "typed_handoff", "subject": packet.get("subject_ref"),
                    "payload": {"summary": packet.get("packet_type", "")[:512]}},
             invocation_id=None, content=packet)
-        self.handoffs[packet_id] = dict(packet)
-        self._segment_status[self.current_segment.segment_id] = SegmentStatus.COMPLETED
+        self.lifecycle_workflow.handoffs[packet_id] = dict(packet)
+        self.lifecycle_workflow.set_segment_status(
+            self.lifecycle_workflow.current_segment.segment_id,
+            SegmentStatus.COMPLETED)
         self._journal("handoff_attested", packet_id=packet_id,
-                      segment_id=self.current_segment.segment_id,
+                      segment_id=self.lifecycle_workflow.current_segment.segment_id,
                       producer=packet.get("producer"), subject_ref=packet.get("subject_ref"))
         self._emit_runtime({"category": "handoff", "event_type": "handoff_attested",
                    "subject": packet.get("subject_ref"), "evidence_refs": [evidence_id],
@@ -1041,19 +1062,19 @@ class EvidenceMethods:
     def consume_handoff(self, packet_id: str, *, expected_packet_type: str,
                         expected_subject_ref: str,
                         observation_context: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-        if self._packet_store is None:
+        if self.lifecycle_workflow.packet_store is None:
             provider = resolve_runtime.statework_provider(
                 Path(self.bundle.statework_root or resolve_runtime.DEFAULT_STATEWORK_ROOT))
             packet_root = resolve_runtime.runtime_state_dir() / "packets"
             safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.bundle.task_id)[:128] or "task"
-            self._packet_store = provider.packet_store(
+            self.lifecycle_workflow.packet_store = provider.packet_store(
                 None, storage_path=packet_root / f"{safe_task}.json")
-        packet = (self._packet_store.get_current(
+        packet = (self.lifecycle_workflow.packet_store.get_current(
             expected_packet_type, task_id=self.bundle.task_id,
             subject_ref=expected_subject_ref,
             observation_context=observation_context)
-                  if self._packet_store is not None else None)
-        if self.current_segment.input_packet and expected_packet_type != self.current_segment.input_packet:
+                  if self.lifecycle_workflow.packet_store is not None else None)
+        if self.lifecycle_workflow.current_segment.input_packet and expected_packet_type != self.lifecycle_workflow.current_segment.input_packet:
             raise ValueError("handoff packet does not match the active segment input")
         if packet is None:
             raise ValueError(f"unknown handoff packet {packet_id!r}")
@@ -1067,8 +1088,9 @@ class EvidenceMethods:
     def _record_operator_observation(self, capability: _HostCapability,
                                      subject_ref: str, invalidates: str) -> str:
         self._require_host(capability)
-        prior_evidence = self.ledger.get(invalidates)
-        object.__setattr__(self, "authority_revision", self.authority_revision + 1)
+        prior_evidence = self.evidence.ledger.get(invalidates)
+        self.identity_authority.revisions.observe_authority(
+            self.identity_authority.revisions.authority_revision + 1)
         if prior_evidence is not None:
             invalidation_timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             # Journal the authority mutation before exposing the contradiction
@@ -1076,36 +1098,36 @@ class EvidenceMethods:
             self._journal("evidence_invalidated", evidence_id=invalidates,
                           invalidated_by="host:operator", subject_ref=subject_ref,
                           timestamp=invalidation_timestamp,
-                          authority_revision=self.authority_revision)
-            self.ledger.invalidate(invalidates, writer_token=self._ledger_token)
-        if (self._completion_permit is not None
+                          authority_revision=self.identity_authority.revisions.authority_revision)
+            self.evidence.ledger.invalidate(invalidates, writer_token=self.evidence._writer_token)
+        if (self.evidence.completion_permit is not None
                 and (prior_evidence is None
-                     or invalidates in self._completion_permit.evidence_refs
-                     or self._completion_permit.subject_ref == subject_ref)):
+                     or invalidates in self.evidence.completion_permit.evidence_refs
+                     or self.evidence.completion_permit.subject_ref == subject_ref)):
             self._journal("completion_permit_revoked",
-                          claim_digest=self._completion_permit.claim_digest,
-                          authority_revision=self.authority_revision)
-            object.__setattr__(self, "_completion_permit", None)
+                          claim_digest=self.evidence.completion_permit.claim_digest,
+                          authority_revision=self.identity_authority.revisions.authority_revision)
+            self.evidence.revoke_completion_permit()
         contradiction_id = f"contradiction-{uuid.uuid4()}"
         timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        self.contradictions[contradiction_id] = {
+        self.evidence.contradictions[contradiction_id] = {
             "id": contradiction_id, "subject": subject_ref, "invalidates": invalidates,
             "resolved": False, "timestamp": timestamp}
         self._journal("contradiction_recorded", contradiction_id=contradiction_id,
                       subject_ref=subject_ref, invalidates=invalidates,
                       timestamp=timestamp,
-                      authority_revision=self.authority_revision)
+                      authority_revision=self.identity_authority.revisions.authority_revision)
         event_id = self._host_event({"event_id": contradiction_id, "category": "contradiction",
                                      "event_type": "operator_observed", "subject": subject_ref,
                                      "invalidates": invalidates}, actor_id="operator")
-        self.ledger.record_attestation(EvidenceAttestation(
+        self.evidence.ledger.record_attestation(EvidenceAttestation(
             evidence_id=event_id, task_id=self.bundle.task_id,
             subject_ref=subject_ref, evidence_type="contradiction",
             issuer="host:operator", source_event_id=event_id,
             invocation_id=None, observed_at=timestamp,
             content_digest=hashlib.sha256(
                 json.dumps({"invalidates": invalidates}, sort_keys=True).encode("utf-8")
-            ).hexdigest()), writer_token=self._ledger_token)
+            ).hexdigest()), writer_token=self.evidence._writer_token)
         return contradiction_id
     def host_record_observation(self, *_: Any, **__: Any) -> str:
         raise PermissionError("use the host ingress channel for observations")
@@ -1121,11 +1143,11 @@ class EvidenceMethods:
         raise PermissionError("operator observations must enter through the host channel")
     def resolve_contradiction(self, contradiction_id: str,
                               fresh_evidence_refs: List[str]) -> GateDecision:
-        record = self.contradictions.get(contradiction_id)
+        record = self.evidence.contradictions.get(contradiction_id)
         if record is None or record["resolved"]:
             return GateDecision.BLOCK
         try:
-            self.ledger.resolve(fresh_evidence_refs, subject_ref=record["subject"],
+            self.evidence.ledger.resolve(fresh_evidence_refs, subject_ref=record["subject"],
                                 fresh_after=record["timestamp"],
                                 allowed_kinds={"tool_result", "validation_result",
                                                "completion_boundary"})

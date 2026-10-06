@@ -1,0 +1,306 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cognitivestatework.dev/schemas/statework-manifest.schema.json",
+  "title": "CognitiveStateWork manifest",
+  "description": "Versioned, engine-neutral StateWork bundle manifest. Extension vocabulary is data owned by the bundle; executable engines and validators are host-trusted registrations.",
+  "type": "object",
+  "required": [
+    "id",
+    "domain",
+    "purpose",
+    "version",
+    "name",
+    "entrypoint",
+    "triggers",
+    "phase_tags",
+    "inputs",
+    "emits",
+    "context_budget",
+    "flow_selection"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,63}$"
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 240
+    },
+    "name": {
+      "type": "string"
+    },
+    "entrypoint": {
+      "type": "string"
+    },
+    "triggers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "match": {
+      "type": "object",
+      "properties": {
+        "required_any": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "secondary": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "phase_tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+      }
+    },
+    "behavior_tags": {
+      "description": "Bounded advisory vocabulary used by DigitalPsychology to rank only CSW-eligible StateWorks. Tags never grant workflow or transition authority.",
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "required": [
+        "required",
+        "optional"
+      ],
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "optional": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "emits": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "advisory_entrypoint": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "context_budget": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "specialists": {
+          "type": "object",
+          "required": [
+            "required",
+            "optional"
+          ],
+          "properties": {
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "optional": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "exclusive_group": {
+      "type": "string"
+    },
+    "handoff": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "bundle_schema_version": {
+      "const": 2
+    },
+    "engine": {
+      "type": "object",
+      "required": [
+        "kind",
+        "contract",
+        "contract_version"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "contract_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false
+    },
+    "composition": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "mode": {
+          "enum": [
+            "composable",
+            "exclusive"
+          ]
+        },
+        "requires": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "contracts": {
+      "type": "object",
+      "properties": {
+        "packets": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "integrations": {
+      "type": "object",
+      "patternProperties": {
+        "^[a-z][a-z0-9_.-]{0,63}$": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "array",
+              "uniqueItems": true,
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "enhancements": {
+              "type": "array",
+              "uniqueItems": true,
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "flow_selection": {
+      "type": "object",
+      "required": [
+        "fallback",
+        "ambiguity",
+        "no_match"
+      ],
+      "properties": {
+        "fallback": {
+          "enum": [
+            "required",
+            "optional",
+            "forbidden"
+          ]
+        },
+        "ambiguity": {
+          "const": "error"
+        },
+        "no_match": {
+          "enum": [
+            "inactive",
+            "blocked"
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

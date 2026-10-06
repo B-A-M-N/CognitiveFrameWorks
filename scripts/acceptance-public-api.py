@@ -16,7 +16,6 @@ def main() -> int:
         os.environ["XDG_RUNTIME_DIR"] = runtime_dir
         runtime = CognitiveRuntime(telemetry_disabled=True)
         request = TaskRequest(task_id="public-api", application_id="cfw-public-api",
-                              subject_ref="artifact:public",
                               shape="quick",
                               goal_contract=TaskGoalContract(
                                   objective="Verify the public runtime API can validate and finish a task.",

@@ -13,7 +13,10 @@ from runtime_contract.convergence import AttemptDescriptor
 from runtime_contract.evidence import TerminationPermit
 from runtime_contract.statework_provider import DEFAULT_STATEWORK_ROOT, statework_provider
 from runtime_session.lifecycle import (
-    ActionPreparation, ChildPolicyEpoch, RouteReplanRecommendation,
+    ActionPreparation,
+)
+from runtime_session.standalone_route_policy import (
+    ChildPolicyEpoch, RouteReplanRecommendation,
 )
 
 class _HostCapability:
@@ -37,7 +40,7 @@ class HostIngress:
                               ) -> ActionObjectiveBinding:
         """Bind one exact action to host-accepted task criteria."""
         if purpose_class == "REQUIRED_VERIFICATION" and artifact_revision is None:
-            artifact_revision = self._session.metacognitive_state.artifact_revision
+            artifact_revision = self._session.behavior.metacognitive.artifact_revision
         return self._session._bind_action_objective(
             self._capability, action, purpose_class=purpose_class,
             criterion_ids=criterion_ids, cause_id=cause_id,
@@ -77,12 +80,14 @@ class HostIngress:
                            *, invocation_id: Optional[str] = None,
                            result_digest: Optional[str] = None,
                            action_request_id: Optional[str] = None,
-                           actual_result: Optional[Mapping[str, Any]] = None) -> str:
+                           actual_result: Optional[Mapping[str, Any]] = None,
+                           covered_boundary_ids: Iterable[str] = ()) -> str:
         return self._session._record_tool_result(
             self._capability, tool_type, result_class, subject_ref,
             invocation_id=invocation_id, result_digest=result_digest,
             action_request_id=action_request_id,
-            actual_result=actual_result)
+            actual_result=actual_result,
+            covered_boundary_ids=covered_boundary_ids)
 
     def record_tool_outcome(self, tool_type: str, result_class: str,
                             subject_ref: Optional[str] = None, **kwargs: Any) -> str:
@@ -140,12 +145,12 @@ class HostIngress:
 
     def rank_legal_routes(
             self, legal_children: Mapping[str, Any], *,
-            state_revision: int, target_statework_id: str,
+            state_revision: int, target_workflow_id: str,
             route_preference: Optional[str] = None,
             preference_source: str = "metacognition") -> Optional[RouteReplanRecommendation]:
         return self._session._rank_legal_routes(
             self._capability, legal_children=legal_children,
-            state_revision=state_revision, target_statework_id=target_statework_id,
+            state_revision=state_revision, target_workflow_id=target_workflow_id,
             route_preference=route_preference, preference_source=preference_source)
 
     def create_child_policy_epoch(
@@ -167,10 +172,12 @@ class HostIngress:
     def record_validator_result(self, validator_id: str, invocation_id: str,
                                 result: Mapping[str, Any],
                                 subject_ref: Optional[str] = None,
-                                *, claim_digest: Optional[str] = None) -> str:
+                                *, claim_digest: Optional[str] = None,
+                                covered_boundary_ids: Iterable[str] = ()) -> str:
         return self._session._record_validator_result(
             self._capability, validator_id, invocation_id, result, subject_ref,
-            claim_digest=claim_digest)
+            claim_digest=claim_digest,
+            covered_boundary_ids=covered_boundary_ids)
 
     def record_operator_observation(self, subject_ref: str, invalidates: str) -> str:
         return self._session._record_operator_observation(
@@ -189,9 +196,11 @@ class HostIngress:
 
     def record_repository_evidence(self, packet: Mapping[str, Any],
                                    validation: Mapping[str, Any],
-                                   subject_ref: Optional[str] = None) -> str:
+                                   subject_ref: Optional[str] = None, *,
+                                   covered_boundary_ids: Iterable[str] = ()) -> str:
         return self._session._record_repository_evidence(
-            self._capability, packet, validation, subject_ref=subject_ref)
+            self._capability, packet, validation, subject_ref=subject_ref,
+            covered_boundary_ids=covered_boundary_ids)
 
     def record_rollback_plan(self, plan: Mapping[str, Any],
                              subject_ref: Optional[str] = None) -> str:
@@ -258,6 +267,11 @@ class StateAuthority(Protocol):
 
     def workflow_contract_identity(self, statework_id: str,
                                    contract_hash: str) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def workflow_authority_identity(self, *, statework_id: str,
+                                    subject_ref: str, contract_hash: str) -> Any:
+        """Return CSW's immutable identity for one bound workflow scope."""
         raise NotImplementedError
 
     def inspect_workflow(self, *, statework_id: str, subject_ref: str,
@@ -338,7 +352,7 @@ class SharedWorkflowMembershipAuthority:
                                   default=str).encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(signature, expected):
             return False
-        if grant.get("member_agent_id") != session.agent_instance_id:
+        if grant.get("member_agent_id") != session.identity_authority.identity.agent_instance_id:
             return False
         if operation not in set(grant.get("allowed_operations") or ()):
             return False

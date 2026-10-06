@@ -25,6 +25,14 @@ _spec.loader.exec_module(preflight)
 PreflightError = preflight.PreflightError
 
 
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def _response(answer: dict, **overrides):
     payload = {"answer": json.dumps(answer), "complete": True,
                "usage": {"input_tokens": 1, "output_tokens": 1}}
@@ -105,6 +113,36 @@ def test_adapter_specs_cover_every_evaluator_contract():
         spec = module._fields_for({"task_family": family_id})
         missing = sorted(field for field in required if field not in spec)
         assert not missing, f"{family_id} spec omits {missing}"
+
+
+def test_canary_uses_multi_turn_agent_runner_for_host_action_roundtrip(
+        tmp_path, monkeypatch):
+    class FakeBenchmark:
+        @staticmethod
+        def run_agent(command, task, **limits):
+            assert limits["max_model_calls"] == 6
+            assert task["task_id"] == "canary-code_repair-0"
+            (Path(task["workspace"]) / "fixed.py").write_text(
+                "def add(a, b):\n    return a + b\n")
+            return ([
+                {"turn": 0, "response": {"complete": False,
+                                          "host_action_receipts": [{"executed": True}]}},
+                {"turn": 1, "response": _response({"status": "fixed"})},
+            ], {"model_calls": 2, "external_tokens": 2, "monetary_cost": 0.0})
+
+    monkeypatch.setattr(preflight, "_load_benchmark", lambda: FakeBenchmark)
+    result = preflight.run_canaries(
+        agent_command=("agent-host",),
+        families=({"id": "code_repair", "task_file": "code_repair.py"},),
+        limits={"max_elapsed_seconds_per_trial": 180,
+                "max_model_calls_per_trial": 6,
+                "max_external_tokens_per_trial": 20_000,
+                "max_monetary_cost_per_trial": 1.0},
+    )
+
+    assert result == [{"task_family": "code_repair", "trial": 0,
+                       "attempt": 1, "required_fields": [],
+                       "completion_success": True}]
 
 
 # -- post-matrix tripwires ----------------------------------------------
@@ -265,6 +303,9 @@ def test_resource_limit_rows_count_as_infrastructure():
 
 
 def test_adapter_marks_an_empty_reply_as_infrastructure():
-    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
-    assert "infrastructure_failure" in source
-    assert "agent produced no output (infrastructure failure)" in source
+    adapter = _load("cohort_adapter_infrastructure", ROOT / "scripts" / "cohort" / "agent_codex.py")
+    with pytest.raises(ValueError, match="no JSONL events"):
+        adapter.parse_codex_jsonl("")
+    response = adapter._infrastructure_failure(RuntimeError("Codex returned no output"))
+    assert response["infrastructure_failure"] is True
+    assert response["usage_source"] == "missing"

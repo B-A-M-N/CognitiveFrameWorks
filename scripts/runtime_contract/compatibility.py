@@ -12,11 +12,11 @@ def _major(version: Any) -> int:
 
 
 def validate_compatibility(*, statework_registry_version: Any,
-                            behavior_event_version: Any,
+                            runtime_event_version: Any,
                             guard_pack_version: Any) -> None:
     expected = {
         "StateWork": (statework_registry_version, 2),
-        "behavior-event": (behavior_event_version, 2),
+        "runtime-event": (runtime_event_version, 1),
         "guard-pack": (guard_pack_version, 1),
     }
     failures = [f"{name}={version!r} (expected major {major})"

@@ -6,7 +6,7 @@ The beta runtime pins these contract families together:
 |---|---|
 | CognitiveFrameWorks | 1.4.x |
 | CognitiveStateWork protocol | 1.0.x |
-| behavior-event schema | 2.1.x |
+| CFW runtime-event schema | 1.0.x |
 | guard-pack schema | 1.1.x |
 | DigitalPsychology registry/receipt schemas | 1.0.x |
 

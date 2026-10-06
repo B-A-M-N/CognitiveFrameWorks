@@ -7,7 +7,6 @@ from types import MappingProxyType
 from typing import Any, Dict, Mapping, Optional
 
 from runtime_contract.actions import ActionDescriptor
-from runtime_session.resolver_bridge import resolve_runtime
 from runtime_contract.component_control import (
     COMPONENT_BASELINE_MODES, COMPONENT_IDS, ComponentOverlay,
     PreparedComponentOverlay,
@@ -105,70 +104,6 @@ class ActionPreparation:
     action_digest: str = ""
     authority: str = "cfw_action_gate"
     reason_codes: tuple[str, ...] = ()
-@dataclass(frozen=True)
-class RouteReplanRecommendation:
-    """A source-attributed recommendation among host-resolved child bundles."""
-
-    route: str
-    decision_id: str
-    source: str
-    source_state_digest: str
-    request_digest: str
-    sequence: int
-    confidence: float
-    state_revision: int
-    target_statework_id: str
-    source_metacognitive_revision: int
-    legal_routes_digest: str
-    policy_hash: str
-    legal_children: Mapping[str, resolve_runtime.RuntimeBundle] = field(repr=False)
-    semantic_decision_ref: Optional[str] = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "legal_children",
-                           MappingProxyType(dict(self.legal_children)))
-@dataclass(frozen=True)
-class PolicyEpochRecord:
-    epoch_index: int
-    parent_policy_hash: str
-    child_policy_hash: str
-    reason: str
-    route_type: str
-    selected_route: str
-    decision_source: str
-    decision_ref: Optional[str]
-    semantic_decision_ref: Optional[str]
-    state_revision: int
-
-    @property
-    def system_one_decision_ref(self) -> str:
-        """Compatibility accessor for callers reading older route records."""
-        return self.semantic_decision_ref or ""
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"epoch_index": self.epoch_index,
-                "parent_policy_hash": self.parent_policy_hash,
-                "child_policy_hash": self.child_policy_hash,
-                "reason": self.reason, "route_type": self.route_type,
-                "selected_route": self.selected_route,
-                "decision_source": self.decision_source,
-                "decision_ref": self.decision_ref,
-                "semantic_decision_ref": self.semantic_decision_ref,
-                "state_revision": self.state_revision}
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "PolicyEpochRecord":
-        data = dict(value)
-        if "system_one_decision_ref" in data:
-            legacy_ref = data.pop("system_one_decision_ref")
-            data.setdefault("decision_source", "semantic_advisory")
-            data.setdefault("decision_ref", legacy_ref)
-            data.setdefault("semantic_decision_ref", legacy_ref)
-        return cls(**data)
-@dataclass(frozen=True)
-class ChildPolicyEpoch:
-    record: PolicyEpochRecord
-    bundle: resolve_runtime.RuntimeBundle = field(repr=False)
 class LifecycleController:
     """Execute pipeline activation metadata at its declared lifecycle point."""
 
@@ -439,6 +374,19 @@ class LifecycleController:
             return bool(context.get("untrusted"))
         if predicate == "task.nontrivial":
             return context.get("task_complexity") in {"standard", "complex"}
+        if predicate == "artifact.flow_triggered":
+            return context.get("flow_triggered") is True
+        if predicate == "artifact.high_change_amplification":
+            score = context.get("change_amplification_score", 0.0)
+            cross_boundary = context.get("cross_boundary", False)
+            shared_contract = context.get("shared_contract", False)
+            responsibility_expansion = context.get("responsibility_expansion", False)
+            owners = context.get("modified_owner_count", 0)
+            fanout = context.get("fanout", 0)
+            return (score >= 0.7
+                    or (cross_boundary and owners >= 2 and fanout >= 3)
+                    or (shared_contract and owners >= 2 and fanout >= 4)
+                    or (responsibility_expansion and fanout >= 3))
         if predicate.endswith(".any"):
             return True
         return False
@@ -515,12 +463,45 @@ class LifecycleController:
         self.action_index += 1
         self.action_active.clear()
 
+    @staticmethod
+    def _artifact_impact_context(impact_facts: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+        if impact_facts is None:
+            return {}
+        allowed = {
+            "cross_boundary", "shared_contract", "responsibility_expansion",
+            "modified_owner_count", "fanout", "change_amplification_score",
+        }
+        if not isinstance(impact_facts, Mapping) or set(impact_facts) - allowed:
+            raise ValueError("artifact impact facts are malformed")
+        context = dict(impact_facts)
+        for name in ("cross_boundary", "shared_contract", "responsibility_expansion"):
+            if name in context and type(context[name]) is not bool:
+                raise ValueError(f"artifact impact fact {name} must be boolean")
+        for name in ("modified_owner_count", "fanout"):
+            value = context.get(name, 0)
+            if type(value) is not int or not 0 <= value <= 256:
+                raise ValueError(f"artifact impact fact {name} is out of bounds")
+            context[name] = value
+        score = context.get("change_amplification_score", 0.0)
+        if (isinstance(score, bool) or not isinstance(score, (int, float))
+                or not 0.0 <= float(score) <= 1.0):
+            raise ValueError("artifact change amplification score must be between zero and one")
+        context["change_amplification_score"] = float(score)
+        for name in ("cross_boundary", "shared_contract", "responsibility_expansion"):
+            context.setdefault(name, False)
+        return context
+
     def on_artifact(self, *, flow_triggered: bool = False,
                     durable_contract_changed: bool = False,
-                    state_changed: bool = True) -> None:
+                    state_changed: bool = True,
+                    impact_facts: Optional[Mapping[str, Any]] = None) -> None:
         self.artifact_active.clear()
-        if flow_triggered or self.component_mode("flow") == "elevated":
+        impact_context = self._artifact_impact_context(impact_facts)
+        if self.component_mode("flow") == "elevated":
             self.activate("flow", "artifact_trigger")
+        else:
+            self.activate_predicates("flow", "artifact", {
+                **impact_context, "flow_triggered": flow_triggered})
         if (durable_contract_changed
                 or self.component_mode("dox") == "elevated"):
             self.activate("dox_closeout", "durable_contract")

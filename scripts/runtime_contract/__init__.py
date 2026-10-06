@@ -15,6 +15,9 @@ from .component_control import (AppliedControlLease, ComponentControl, Component
                                 ExternalBehaviorProjection, PreparedComponentOverlay)
 from .task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
                   VerificationPolicy, SystemOnePolicy)
+from .composite_snapshot import (CFWPolicySnapshot,
+                                CompositeCognitiveRuntimeSnapshot)
+from .shared_csw_workflow_port import SharedCSWWorkflowPort
 
 __all__ = [
     "ActionDescriptor", "AgentActionRequest", "ConfirmationGrant", "HostExecutionContext",
@@ -28,4 +31,6 @@ __all__ = [
     "ExternalBehaviorProjection", "PreparedComponentOverlay",
     "TaskRequest",
     "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy", "SystemOnePolicy",
+    "CFWPolicySnapshot", "CompositeCognitiveRuntimeSnapshot",
+    "SharedCSWWorkflowPort",
 ]

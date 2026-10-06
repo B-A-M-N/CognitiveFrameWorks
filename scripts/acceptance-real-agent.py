@@ -437,12 +437,12 @@ def main() -> int:
                 if index >= max_attempts:
                     raise RuntimeError(
                         f"closed-loop cohort assignment did not reach both populations in {max_attempts} attempts")
-            from lib.feedback_loop import load_events  # noqa: E402
+            from lib.runtime_event_adapter import load_cfw_runtime_events  # noqa: E402
             from lib.routing_profiles import derive_profiles, promote_profile  # noqa: E402
             telemetry_root = Path(state) / "cognitiveframeworks" / "telemetry"
             events = []
             for path in sorted(telemetry_root.glob("*.ndjson")):
-                events.extend(load_events(path))
+                events.extend(load_cfw_runtime_events(path))
             aggregate_module = load("routing_aggregate", DP_ROOT / "scripts" / "aggregate-profiles.py")
             contexts = aggregate_module.load_task_context(telemetry_root)
             learned = derive_profiles(events, contexts, minimum_samples=args.trials,

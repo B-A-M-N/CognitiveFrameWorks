@@ -1,0 +1,36 @@
+{
+  "command": [
+    "pytest",
+    "-q",
+    "tests/test_telemetry_exporter.py",
+    "tests/test_real_agent_bounds.py"
+  ],
+  "evidence_class": "operational_performance",
+  "mandatory_for_release": true,
+  "manifest_version": "1.0.0",
+  "notes": "This gate records bounded behavior and resource accounting; sustained production soak remains a separate deployment qualification.",
+  "qualification_id": "operational-performance-v1",
+  "required_evidence": [
+    "durable_telemetry_cursor",
+    "bounded_delivery_memory",
+    "partial_line_recovery",
+    "process_group_cancellation",
+    "model_call_token_cost_time_limits"
+  ],
+  "result_contract": {
+    "path": "contracts/qualification-results/operational-performance-v1.result.json",
+    "required_fields": [
+      "qualification_id",
+      "status",
+      "source_commits",
+      "resource_profile",
+      "completed_at"
+    ],
+    "status_values": [
+      "not_run",
+      "pass",
+      "fail",
+      "blocked"
+    ]
+  }
+}

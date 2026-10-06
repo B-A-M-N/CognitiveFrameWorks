@@ -22,10 +22,12 @@ for value in (str(ROOT / "scripts"), str(DP), str(COW / "scripts")):
     if value not in sys.path:
         sys.path.insert(0, value)
 
+from lib.versions import BEHAVIOR_EVENT_SCHEMA_VERSION
+
 
 def event(index: int, event_id: str, *, throttle: bool = False) -> dict:
     return {
-        "schema_version": "2.7.0", "event_id": event_id,
+        "schema_version": BEHAVIOR_EVENT_SCHEMA_VERSION, "event_id": event_id,
         "timestamp": "2026-09-24T12:00:00Z", "task_id": f"task-{index}",
         "agent_id": f"agent-{index}", "agent_instance_id": f"agent-{index}",
         "session_id": "session", "attempt_id": "attempt-1",

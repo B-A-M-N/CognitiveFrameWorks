@@ -233,8 +233,8 @@ def _preflight_sources(statework_root: Path) -> None:
         except Exception as exc:
             raise InstallSafetyError(f"StateWork registry compilation failed: {exc}") from exc
     for artifact in (ROOT / "scripts" / "runtime.py", ROOT / "scripts" / "resolve-runtime.py",
-                     ROOT / "scripts" / "cognitive_runtime.py", ROOT / "contracts",
-                     ROOT / "shared"):
+                     ROOT / "scripts" / "cognitive_runtime.py", ROOT / "scripts" / "resolver",
+                     ROOT / "scripts" / "runtime_session", ROOT / "contracts", ROOT / "shared"):
         if not artifact.exists() or artifact.is_symlink():
             missing.append(str(artifact))
     if missing:
@@ -421,6 +421,8 @@ def _main_impl() -> int:
         for filename in ("runtime.py", "resolve-runtime.py", "cognitive_runtime.py",
                          "digital_psychology_adapter.py"):
             shutil.copy2(ROOT / "scripts" / filename, scripts_dst / filename)
+        shutil.copytree(ROOT / "scripts" / "resolver", scripts_dst / "resolver")
+        shutil.copytree(ROOT / "scripts" / "runtime_session", scripts_dst / "runtime_session")
         shutil.copytree(ROOT / "scripts" / "runtime_host",
                         scripts_dst / "runtime_host")
         shutil.copytree(ROOT / "scripts" / "runtime_contract",
@@ -442,8 +444,12 @@ def _main_impl() -> int:
             bundled_scripts.mkdir(parents=True, exist_ok=True)
             for filename in ("__init__.py", "control_plane.py", "errors.py",
                              "workflow_engines.py", "flow_selectors.py", "resources.py",
-                             "evidence.py", "registry.py", "bundles.py", "contracts.py",
-                             "cfw_authority.py",
+                             "evidence.py", "repository_truth.py", "registry.py",
+                             "compile-registry.py",
+                             "bundles.py", "contracts.py", "composition_rules.py",
+                             "state_store.py", "selection_store.py", "transition_engine.py",
+                             "workflow_controller.py", "workflow_authority.py",
+                             "standalone_host.py", "workflow_planner.py", "cfw_authority.py",
                              "validate-repository-truth.py", "operator_projection.py"):
                 source_script = statework_root / "scripts" / filename
                 if source_script.exists():

@@ -15,6 +15,10 @@ class PlannedWorkflows:
     execution_order: Tuple[Dict[str, Any], ...]
     active_workflows: Tuple[Dict[str, Any], ...]
     capsules: Mapping[str, Tuple[str, str]]
+    component_requirements: Tuple[str, ...]
+    component_enhancements: Tuple[str, ...]
+    route_contract_digests: Mapping[str, str]
+    completion_claim_classes: Mapping[str, Mapping[str, Mapping[str, Any]]]
     registry: Mapping[str, str]
     available: bool
 
@@ -34,6 +38,16 @@ def resolve_provider_workflows(
     chain = tuple(dict(item) for item in result.execution_order)
     active = tuple(dict(item) for item in result.active_workflows)
     capsules = dict(result.capsules)
+    component_requirements = tuple(result.component_requirements)
+    component_enhancements = tuple(result.component_enhancements)
+    route_contract_digests = dict(result.route_contract_digests)
+    if (len(component_requirements) > 64 or len(component_enhancements) > 64
+            or len(set(component_requirements)) != len(component_requirements)
+            or len(set(component_enhancements)) != len(component_enhancements)):
+        raise ValueError("WorkflowPlanner returned invalid normalized component requirements")
+    if (result.registry_hash and (len(result.registry_hash) != 64
+            or any(char not in "0123456789abcdef" for char in result.registry_hash))):
+        raise ValueError("WorkflowPlanner returned an invalid workflow registry hash")
     chain_ids = [str(item.get("id") or "") for item in chain]
     active_ids = [str(item.get("id") or "") for item in active]
     if (any(not item_id for item_id in chain_ids + active_ids)
@@ -62,5 +76,9 @@ def resolve_provider_workflows(
         execution_order=chain,
         active_workflows=active,
         capsules=capsules,
-        registry={"version": result.registry_version},
+        component_requirements=component_requirements,
+        component_enhancements=component_enhancements,
+        route_contract_digests=route_contract_digests,
+        completion_claim_classes=result.completion_claim_classes,
+        registry={"version": result.registry_version, "hash": result.registry_hash},
         available=bool(result.registry_version))

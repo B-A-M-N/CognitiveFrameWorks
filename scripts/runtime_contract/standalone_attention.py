@@ -20,10 +20,13 @@ class StandaloneAttentionPolicy:
     @classmethod
     def select(cls, criteria: Sequence[CriterionState], *,
                retry_counts: Mapping[str, int],
-               last_action_sequence: Mapping[str, int]) -> tuple[str, ...]:
+               last_action_sequence: Mapping[str, int],
+               redirect_counts: Mapping[str, int] | None = None) -> tuple[str, ...]:
+        redirects = redirect_counts or {}
         runnable = cls.runnable(criteria)
         ordered = sorted(runnable, key=lambda item: (
-            retry_counts.get(item.criterion_id, 0) >= cls.RETRY_YIELD_THRESHOLD,
+            max(retry_counts.get(item.criterion_id, 0),
+                redirects.get(item.criterion_id, 0)) >= cls.RETRY_YIELD_THRESHOLD,
             last_action_sequence.get(item.criterion_id, 0),
             retry_counts.get(item.criterion_id, 0),
             item.criterion_id,

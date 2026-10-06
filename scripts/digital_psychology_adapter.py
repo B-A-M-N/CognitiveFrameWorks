@@ -43,7 +43,7 @@ class PreparedBehaviorDirectiveBatch:
 # CFW's supported actuation-projection contract. DP reports its own version in
 # the projection payload; an unknown version is rejected at the boundary rather
 # than discovered during the first behavioral intervention.
-CFW_BEHAVIOR_PROJECTION_VERSION = "2.0.0"
+CFW_BEHAVIOR_PROJECTION_VERSION = "2.1.0"
 CFW_ADAPTER_PROTOCOL_VERSION = "1.2.0"
 
 
@@ -55,9 +55,17 @@ class CFWBehaviorAdapter:
     behavior_projection_version = CFW_BEHAVIOR_PROJECTION_VERSION
 
     def __init__(self, session: RuntimeSession, agent_handle: Any) -> None:
-        required_session_fields = ("bundle", "signals", "injected", "active_statework_ids")
+        required_session_fields = (
+            "bundle", "identity_authority", "behavior", "lifecycle_workflow",
+            "injected",
+        )
         if any(not hasattr(session, field) for field in required_session_fields):
             raise TypeError("CFW behavior adapter requires a started RuntimeSession")
+        if (not hasattr(session.identity_authority, "identity")
+                or not hasattr(session.identity_authority, "authorities")
+                or not hasattr(session.lifecycle_workflow, "active_statework_ids")
+                or not hasattr(session.behavior, "external_projection")):
+            raise TypeError("CFW RuntimeSession is missing a required state aggregate")
         if (not callable(getattr(session, "enable_external_behavior_authority", None))
                 or not callable(getattr(session, "apply_external_behavior_projection", None))
                 or not callable(getattr(session, "synchronize_external_behavior_projection", None))
@@ -79,21 +87,76 @@ class CFWBehaviorAdapter:
     def available_component_ids(self) -> tuple[str, ...]:
         return tuple(self._session.available_component_ids())
 
+    def task_behavior_contract(self) -> Mapping[str, Any]:
+        contract = getattr(self._session, "task_behavior_contract", None)
+        if not callable(contract):
+            raise RuntimeError("CFW runtime lacks its task behavior contract")
+        value = contract()
+        if not isinstance(value, Mapping):
+            raise RuntimeError("CFW returned a malformed task behavior contract")
+        return dict(value)
+
+    def composite_runtime_snapshot(self) -> Mapping[str, Any]:
+        """Expose the host-composed task identity to DP over the private port."""
+        snapshot = getattr(self._session.bundle, "composite_snapshot", None)
+        serializer = getattr(snapshot, "to_dict", None)
+        value = serializer() if callable(serializer) else None
+        if not isinstance(value, Mapping):
+            raise RuntimeError("CFW runtime lacks its composite task snapshot")
+        return dict(value)
+
+    def workflow_authority_identities(self) -> Mapping[str, Mapping[str, str]]:
+        """Return CSW identities for the StateWorks attached to this CFW task."""
+        authority = self._session.identity_authority.authorities.state_authority
+        if authority is None:
+            return {}
+        provider = getattr(authority, "workflow_authority_identity", None)
+        if not callable(provider):
+            raise RuntimeError(
+                "CFW StateAuthority does not expose stable workflow authority identities")
+        pinned_subjects = dict(self._session.bundle.pinned.get(
+            "statework_subject_refs") or {})
+        result: dict[str, Mapping[str, str]] = {}
+        for statework in self._session.bundle.stateworks:
+            if not isinstance(statework, Mapping):
+                raise RuntimeError("CFW task contains a malformed StateWork binding")
+            statework_id = statework.get("id")
+            subject_ref = (statework.get("subject_ref")
+                           or pinned_subjects.get(statework_id)
+                           or self._session.bundle.policy.subject_ref)
+            contract_hash = statework.get("workflow_contract_hash")
+            if (not isinstance(statework_id, str) or not statework_id
+                    or not isinstance(subject_ref, str) or not subject_ref
+                    or not isinstance(contract_hash, str) or not contract_hash):
+                raise RuntimeError(
+                    "CFW task omitted a pinned StateWork scope or contract hash")
+            identity = provider(statework_id=statework_id,
+                                subject_ref=subject_ref,
+                                contract_hash=contract_hash)
+            if callable(getattr(identity, "to_dict", None)):
+                identity = identity.to_dict()
+            if (not isinstance(identity, Mapping)
+                    or any(not isinstance(key, str) or not isinstance(value, str)
+                           for key, value in identity.items())):
+                raise RuntimeError("CFW StateAuthority returned a malformed workflow identity")
+            result[statework_id] = dict(identity)
+        return result
+
     @property
     def lifecycle_revision(self) -> int:
         return self._session.external_behavior_revision
 
     def authority_identity(self) -> Mapping[str, str]:
         """Stable identity for a CFW execution and its immutable component set."""
-        execution = getattr(self._session, "execution_identity", None)
+        identity_state = self._session.identity_authority.identity
+        execution = identity_state.execution_identity
         if execution is not None and callable(getattr(execution, "to_dict", None)):
             identity = execution.to_dict()
         else:
             identity = {
-                "session_id": str(getattr(self._session, "session_id", "")),
-                "agent_instance_id": str(getattr(
-                    self._session, "agent_instance_id", "")),
-                "attempt_id": str(getattr(self._session, "attempt_id", "")),
+                "session_id": str(identity_state.session_id),
+                "agent_instance_id": str(identity_state.agent_instance_id),
+                "attempt_id": str(identity_state.attempt_id),
                 "task_id": str(getattr(self._session.bundle, "task_id", "")),
             }
         identity = {key: value for key, value in identity.items() if value is not None}
@@ -117,9 +180,11 @@ class CFWBehaviorAdapter:
             "pipeline_manifest_version": PIPELINE_MANIFEST_VERSION,
             "pipeline_manifest_hash": PIPELINE_MANIFEST_HASH,
         }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        task_contract = self.task_behavior_contract()
         capability_hash = hashlib.sha256(json.dumps({
             "component_contract_hash": component_contract_hash,
             "behavior_projection_version": self.behavior_projection_version,
+            "task_behavior_contract_hash": task_contract["contract_hash"],
         }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         return {"adapter_kind": "cfw-component-runtime",
                 "authority_id": "cfw-execution:" + scope_hash,
@@ -127,11 +192,12 @@ class CFWBehaviorAdapter:
                 "behavior_projection_version": self.behavior_projection_version,
                 "scope": scope_hash,
                 "scope_hash": scope_hash, "capability_hash": capability_hash,
-                "component_contract_hash": component_contract_hash}
+                "component_contract_hash": component_contract_hash,
+                "task_behavior_contract_hash": task_contract["contract_hash"]}
 
     @property
     def applied_behavior_projection(self) -> Mapping[str, Any] | None:
-        projection = self._session.external_behavior_projection
+        projection = self._session.behavior.external_projection
         return dict(projection) if projection else None
 
     @property
@@ -225,8 +291,9 @@ class CFWBehaviorAdapter:
             raise ValueError("CFW directive IDs must be unique")
         return PreparedBehaviorDirectiveBatch(
             directives=normalized,
-            prior_behavior_projection=(dict(self._session.external_behavior_projection)
-                                       if self._session.external_behavior_projection else None),
+            prior_behavior_projection=(
+                dict(self._session.behavior.external_projection)
+                if self._session.behavior.external_projection else None),
         )
 
     def apply_behavior_projection(self, prepared: PreparedBehaviorDirectiveBatch,
@@ -369,8 +436,7 @@ class CFWBehaviorAdapter:
         suffix = context[last_end + len(closing):]
         return (context[:first].rstrip() + "\n\n" + block + suffix).strip()
 
-    @classmethod
-    def _validate_directive(cls, value: Mapping[str, Any]) -> dict[str, Any]:
+    def _validate_directive(self, value: Mapping[str, Any]) -> dict[str, Any]:
         fields = {"directive_id", "operation", "target", "value", "cause",
                   "expected_effect", "scope", "expires_after_actions", "intervention_id",
                   "expires_at_action"}
@@ -409,6 +475,10 @@ class CFWBehaviorAdapter:
                     and raw_value != COMPONENT_HARD_FLOOR_MODES[component_id]):
                 raise PermissionError(
                     f"DigitalPsychology cannot lower the {component_id.upper()} hard floor")
+            if raw_value in self.task_behavior_contract()["suppression_modes"].get(
+                    component_id, ()):
+                raise PermissionError(
+                    f"DigitalPsychology cannot lower the {component_id.upper()} task baseline floor")
         elif operation == "set_control":
             if target == "recovery_level":
                 try:

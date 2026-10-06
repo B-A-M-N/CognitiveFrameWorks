@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 import uuid
@@ -10,13 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from runtime_contract.paths import runtime_state_dir
-from runtime_contract.telemetry import behavior_schema_contract
+from runtime_contract.paths import runtime_asset_root, runtime_state_dir
+from runtime_contract.telemetry import runtime_event_schema_contract
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = runtime_asset_root()
 LOCAL_CONTRACT_ROOT = ROOT / "contracts"
-if not LOCAL_CONTRACT_ROOT.exists():
-    LOCAL_CONTRACT_ROOT = Path(__file__).resolve().parents[1] / "contracts"
 
 OPTIONAL_EVENT_FIELDS = {
     "parent_event", "subject", "input_state", "output_state", "evidence_refs",
@@ -28,13 +27,10 @@ OPTIONAL_EVENT_FIELDS = {
     "goal_contract_hash",
 }
 
-_BEHAVIOR_SCHEMA_VALIDATOR = None
+_RUNTIME_EVENT_SCHEMA_VALIDATOR = None
 
 class HostTelemetry:
-    """Wires the host runtime into the DP event plane without importing DP
-    code: emits schema-shaped events to a per-task NDJSON store (0600). The
-    resolver/doctor must never import DigitalPsychology; this adapter only
-    writes JSON lines in the DP event schema."""
+    """Emit CFW-owned neutral runtime events to a per-task NDJSON store."""
 
     def __init__(self, task_id: str, store: Optional[Path] = None,
                  *, expected_schema_hash: Optional[str] = None,
@@ -75,14 +71,15 @@ class HostTelemetry:
         self.delegate_agent_id = delegate_agent_id
         self.delegation_id = delegation_id
         self.role = role
-        schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
-        schema, self.schema_hash, self.schema_version = behavior_schema_contract(schema_path)
+        schema_path = LOCAL_CONTRACT_ROOT / "runtime-event.schema.json"
+        schema, self.schema_hash, self.schema_version = runtime_event_schema_contract(
+            schema_path)
         if expected_schema_hash and expected_schema_hash != self.schema_hash:
             raise ValueError(
-                "pinned behavior-event schema hash does not match the host artifact")
+                "pinned runtime-event schema hash does not match the CFW artifact")
         if expected_schema_version and expected_schema_version != self.schema_version:
             raise ValueError(
-                "pinned behavior-event schema version does not match the host artifact")
+                "pinned runtime-event schema version does not match the CFW artifact")
         digest = hashlib.sha256(task_id.encode("utf-8")).hexdigest()[:24]
         root = runtime_state_dir().resolve()
         if store is None:
@@ -194,23 +191,55 @@ class HostTelemetry:
 
     @staticmethod
     def _validate(event: Dict[str, Any]) -> None:
-        global _BEHAVIOR_SCHEMA_VALIDATOR
+        encoded = json.dumps(event, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if len(encoded) > 64 * 1024:
+            raise ValueError("runtime telemetry event exceeds its 64 KiB bound")
+        HostTelemetry._validate_metadata(event.get("payload") or {})
+        global _RUNTIME_EVENT_SCHEMA_VALIDATOR
         try:
             import jsonschema
             from jsonschema import Draft202012Validator, FormatChecker
-            schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
-            if _BEHAVIOR_SCHEMA_VALIDATOR is None:
-                if not schema_path.exists():
-                    raise ValueError("behavior-event schema is unavailable")
-                schema = json.loads(schema_path.read_text(encoding="utf-8"))
-                _BEHAVIOR_SCHEMA_VALIDATOR = Draft202012Validator(
+            schema_path = LOCAL_CONTRACT_ROOT / "runtime-event.schema.json"
+            if _RUNTIME_EVENT_SCHEMA_VALIDATOR is None:
+                schema, _schema_hash, _schema_version = runtime_event_schema_contract(
+                    schema_path)
+                _RUNTIME_EVENT_SCHEMA_VALIDATOR = Draft202012Validator(
                     schema, format_checker=FormatChecker())
-            errors = sorted(_BEHAVIOR_SCHEMA_VALIDATOR.iter_errors(event),
+            errors = sorted(_RUNTIME_EVENT_SCHEMA_VALIDATOR.iter_errors(event),
                             key=lambda error: list(error.path))
             if errors:
-                raise ValueError(f"telemetry violates behavior-event.schema.json: {errors[0].message}")
+                raise ValueError(f"telemetry violates runtime-event.schema.json: {errors[0].message}")
         except ImportError as exc:
             raise ValueError("jsonschema is required for canonical telemetry validation") from exc
+
+    @staticmethod
+    def _validate_metadata(value: Any, *, depth: int = 0) -> None:
+        if depth > 8:
+            raise ValueError("runtime telemetry metadata exceeds its nesting bound")
+        if value is None or isinstance(value, (bool, str)):
+            if isinstance(value, str) and len(value) > 4096:
+                raise ValueError("runtime telemetry metadata string exceeds its bound")
+            return
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("runtime telemetry metadata number is not finite")
+            if abs(value) > 1e12:
+                raise ValueError("runtime telemetry metadata number exceeds its bound")
+            return
+        if isinstance(value, list):
+            if len(value) > 256:
+                raise ValueError("runtime telemetry metadata list exceeds its bound")
+            for item in value:
+                HostTelemetry._validate_metadata(item, depth=depth + 1)
+            return
+        if isinstance(value, dict):
+            if len(value) > 64 or any(not isinstance(key, str) or len(key) > 256
+                                      for key in value):
+                raise ValueError("runtime telemetry metadata object exceeds its bound")
+            for item in value.values():
+                HostTelemetry._validate_metadata(item, depth=depth + 1)
+            return
+        raise ValueError("runtime telemetry metadata contains an unsupported value")
 
     @classmethod
     def validate_event(cls, event: Dict[str, Any], *, task_id: str,
@@ -224,10 +253,10 @@ class HostTelemetry:
         forbidden = set(event) - allowed
         if forbidden:
             raise ValueError(f"telemetry envelope has forbidden fields: {sorted(forbidden)}")
-        schema_path = LOCAL_CONTRACT_ROOT / "behavior-event.schema.json"
-        _schema, actual_hash, actual_version = behavior_schema_contract(schema_path)
+        schema_path = LOCAL_CONTRACT_ROOT / "runtime-event.schema.json"
+        _schema, actual_hash, actual_version = runtime_event_schema_contract(schema_path)
         if actual_hash != expected_schema_hash or actual_version != expected_schema_version:
-            raise ValueError("pinned behavior-event schema changed during the task")
+            raise ValueError("pinned runtime-event schema changed during the task")
         if event.get("schema_version") not in (None, actual_version):
             raise ValueError("telemetry event schema_version disagrees with the pinned schema")
         canonical = {

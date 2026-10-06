@@ -9,6 +9,7 @@ from runtime_contract.metacognition import (
 )
 from runtime_contract.system_one import BehavioralJudge
 from runtime_contract.system_one_state import SystemOneStateProjector
+from runtime_session.standalone_route_policy import StandaloneRoutePolicy
 
 
 @dataclass
@@ -16,6 +17,7 @@ class StandaloneBehaviorAuthority:
     """CFW-owned metacognition and optional semantic provider services."""
 
     system_one_judge: Optional[BehavioralJudge] = None
+    route_policy: StandaloneRoutePolicy = field(default_factory=StandaloneRoutePolicy)
     system_one_projector: SystemOneStateProjector = field(
         default_factory=SystemOneStateProjector)
     metacognitive_controller: MetacognitiveController = field(

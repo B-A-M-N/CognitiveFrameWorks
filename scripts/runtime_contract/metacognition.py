@@ -1,15 +1,20 @@
 """Provider-independent, host-owned metacognitive working state."""
 from __future__ import annotations
 
-from collections import deque
-from dataclasses import dataclass, replace
 import hashlib
 import json
-from typing import Any, Mapping, Optional, Sequence
+from collections import deque
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Any, ClassVar
 
-from .system_one import (ActivityFact, AttemptSemanticDescriptor, CriterionState,
-                         WorkflowProgressFact)
 from .standalone_attention import StandaloneAttentionPolicy
+from .system_one import (
+    ActivityFact,
+    AttemptSemanticDescriptor,
+    CriterionState,
+    WorkflowProgressFact,
+)
 
 
 @dataclass(frozen=True)
@@ -17,7 +22,7 @@ class BlockerFact:
     blocker_id: str
     summary: str
     criterion_ids: tuple[str, ...] = ()
-    evidence_ref: Optional[str] = None
+    evidence_ref: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {"blocker_id": self.blocker_id, "summary": self.summary,
@@ -31,7 +36,7 @@ class CriterionEvidenceBinding:
     evidence_ref: str
     evidence_kind: str
     authority: str
-    artifact_revision: Optional[str] = None
+    artifact_revision: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("criterion_id", "evidence_ref", "evidence_kind"):
@@ -48,11 +53,11 @@ class CriterionEvidenceBinding:
 class SemanticSignals:
     """Independent semantic observations; they carry no execution mode or authority."""
 
-    action_relation: Optional[str] = None
-    progress_relation: Optional[str] = None
-    equivalent_retry: Optional[bool] = None
-    possible_goal_drift: Optional[bool] = None
-    route_preference: Optional[str] = None
+    action_relation: str | None = None
+    progress_relation: str | None = None
+    equivalent_retry: bool | None = None
+    possible_goal_drift: bool | None = None
+    route_preference: str | None = None
     source_decisions: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -68,12 +73,12 @@ class SemanticSignals:
 class SemanticSignalRecord:
     question_family: str
     scenario: str
-    criterion_id: Optional[str]
-    cause_id: Optional[str]
+    criterion_id: str | None
+    cause_id: str | None
     candidate_digest: str
     metacognitive_revision: int
     value: Any
-    confidence: Optional[float]
+    confidence: float | None
     source_decision_id: str
 
     def to_dict(self) -> dict[str, object]:
@@ -87,11 +92,13 @@ class SemanticSignalRecord:
 
 class SemanticSignalStore:
     """Bounded task-local semantic signals with explicit decision scope."""
-    _FIELDS = {"action_relation": "action_relation",
-               "progress_relation": "progress_relation",
-               "retry_relation": "equivalent_retry",
-               "goal_drift": "possible_goal_drift",
-               "route_preference": "route_preference"}
+    _FIELDS: ClassVar[dict[str, str]] = {
+        "action_relation": "action_relation",
+        "progress_relation": "progress_relation",
+        "retry_relation": "equivalent_retry",
+        "goal_drift": "possible_goal_drift",
+        "route_preference": "route_preference",
+    }
 
     def __init__(self, *, limit: int = 128) -> None:
         if not 1 <= limit <= 512:
@@ -105,9 +112,9 @@ class SemanticSignalStore:
 
     def record(self, *, question_family: str, value: Any, scenario: str,
                candidate_digest: str, metacognitive_revision: int,
-               source_decision_id: str, criterion_id: Optional[str] = None,
-               cause_id: Optional[str] = None,
-               confidence: Optional[float] = None) -> None:
+               source_decision_id: str, criterion_id: str | None = None,
+               cause_id: str | None = None,
+               confidence: float | None = None) -> None:
         if question_family not in self._FIELDS:
             raise ValueError("semantic signal family is not registered")
         if not scenario or not source_decision_id or not candidate_digest:
@@ -130,10 +137,10 @@ class SemanticSignalStore:
         while len(self._records) > self.limit:
             self._records.pop(next(iter(self._records)))
 
-    def invalidate(self, *, question_families: Optional[set[str]] = None,
-                   scenario: Optional[str] = None, criterion_id: Optional[str] = None,
-                   cause_id: Optional[str] = None,
-                   candidate_digest: Optional[str] = None) -> int:
+    def invalidate(self, *, question_families: set[str] | None = None,
+                   scenario: str | None = None, criterion_id: str | None = None,
+                   cause_id: str | None = None,
+                   candidate_digest: str | None = None) -> int:
         removed = []
         for key, item in self._records.items():
             if question_families is not None and item.question_family not in question_families:
@@ -172,7 +179,7 @@ class SemanticSignalStore:
                             if row.get("confidence") is not None else None))
 
     def current(self, *, metacognitive_revision: int,
-                question_families: Optional[set[str]] = None) -> SemanticSignals:
+                question_families: set[str] | None = None) -> SemanticSignals:
         eligible = [item for item in self._records.values()
                     if item.metacognitive_revision == int(metacognitive_revision)
                     and (question_families is None
@@ -200,7 +207,7 @@ class VerificationObligation:
     criterion_id: str
     artifact_revision: int
     required_strength: str
-    evidence_kind: Optional[str] = None
+    evidence_kind: str | None = None
     status: str = "PENDING"
 
     def __post_init__(self) -> None:
@@ -240,7 +247,7 @@ class MetaDecision:
     reason: str
     active_criterion_ids: tuple[str, ...] = ()
     goal_reanchor_required: bool = False
-    semantic_attention_note: Optional[str] = None
+    semantic_attention_note: str | None = None
     source_decisions: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -261,7 +268,7 @@ class MetaDecision:
 class MetacognitiveController:
     """Make execution-focus decisions from CFW state and hard host policies."""
 
-    def evaluate(self, state: "MetacognitiveState", *,
+    def evaluate(self, state: MetacognitiveState, *,
                  support_actions_since_progress: int,
                  support_action_limit: int,
                  total_actions_since_progress: int,
@@ -271,23 +278,38 @@ class MetacognitiveController:
                  same_approach_retries: int,
                  max_same_approach_retries: int,
                  unresolved_contradiction: bool = False,
-                 semantic: Optional[SemanticSignals] = None,
-                 completion_readiness: Optional[CompletionReadiness] = None) -> MetaDecision:
+                 goal_contract_anchor_valid: bool = True,
+                 semantic: SemanticSignals | None = None,
+                 completion_readiness: CompletionReadiness | None = None) -> MetaDecision:
         active = state.active_attention_window()
         if unresolved_contradiction:
             return MetaDecision("REINSPECT", "unresolved operator contradiction", active)
+        if not goal_contract_anchor_valid:
+            return MetaDecision(
+                "REPLAN", "host goal contract is missing or no longer matches its pinned identity",
+                active, goal_reanchor_required=True)
         if recovery_epochs_since_progress >= max_recovery_epochs:
             if StandaloneAttentionPolicy.runnable(state.criteria):
                 return MetaDecision(
                     "REPLAN", "current recovery budget exhausted; yield to runnable criteria",
-                    active, goal_reanchor_required=True)
+                    active)
             return MetaDecision("BLOCKED", "hard recovery budget exhausted", active)
         if support_actions_since_progress >= support_action_limit:
-            return MetaDecision("REPLAN", "support-action budget reached", active,
-                                goal_reanchor_required=True)
+            if state.progress_redirect_guidance_pending or not state.progress_redirected:
+                return MetaDecision(
+                    "REPLAN", "support-action budget reached; redirect to an unfinished criterion",
+                    active)
+            return MetaDecision(
+                "DELIVER", "progress redirect issued; continue with a runnable criterion",
+                active)
         if total_actions_since_progress >= total_action_limit:
-            return MetaDecision("REPLAN", "committed-action budget reached without goal evidence",
-                                active, goal_reanchor_required=True)
+            if state.progress_redirect_guidance_pending or not state.progress_redirected:
+                return MetaDecision(
+                    "REPLAN", "committed-action budget reached without goal evidence",
+                    active)
+            return MetaDecision(
+                "DELIVER", "progress redirect issued; continue with a runnable criterion",
+                active)
         if same_approach_retries >= max_same_approach_retries:
             return MetaDecision("RECOVER", "repeated approach reached its hard limit", active)
         if state.blockers:
@@ -343,10 +365,16 @@ class MetacognitiveState:
         self._criteria: dict[str, CriterionState] = {}
         self._criterion_action_counts: dict[str, int] = {}
         self._criterion_retry_counts: dict[str, int] = {}
+        self._criterion_redirect_counts: dict[str, int] = {}
         self._criterion_last_action_sequence: dict[str, int] = {}
+        self._progress_redirect_epoch = 0
+        self._last_progress_redirect_action: str | None = None
+        self._last_progress_redirect_criterion: str | None = None
+        self._progress_redirect_yield_target: str | None = None
+        self._progress_redirect_guidance_pending = False
         self._blockers: dict[str, BlockerFact] = {}
         self._actions_since_goal_progress = 0
-        self._actions_since_artifact_change: Optional[int] = None
+        self._actions_since_artifact_change: int | None = None
         self._verification_actions_since_artifact_change = 0
         self._artifact_revision = 0
         self._verification_counts: dict[str, int] = {}
@@ -355,7 +383,7 @@ class MetacognitiveState:
         self._recovery_epochs = 0
         self._repeated_branch_count = 0
         self._logical_revision = 0
-        self._verification_requirements: dict[str, tuple[str, Optional[str]]] = {}
+        self._verification_requirements: dict[str, tuple[str, str | None]] = {}
         self._verification_obligations: dict[str, VerificationObligation] = {}
 
     @property
@@ -373,7 +401,83 @@ class MetacognitiveState:
     def active_attention_window(self) -> tuple[str, ...]:
         return StandaloneAttentionPolicy.select(
             self.criteria, retry_counts=self._criterion_retry_counts,
-            last_action_sequence=self._criterion_last_action_sequence)
+            last_action_sequence=self._criterion_last_action_sequence,
+            redirect_counts=self._criterion_redirect_counts)
+
+    @property
+    def progress_redirected(self) -> bool:
+        return any(self._criterion_redirect_counts.values())
+
+    @property
+    def progress_redirect_guidance_pending(self) -> bool:
+        return self._progress_redirect_guidance_pending
+
+    @property
+    def progress_redirect_epoch(self) -> int:
+        return self._progress_redirect_epoch
+
+    def record_progress_redirect(self, *, action_digest: str,
+                                 criterion_id: str | None,
+                                 max_redirects_per_criterion: int = 2) -> str:
+        """Emit bounded progress redirects, then yield the stuck criterion.
+
+        An identical action does not restate the same redirect. A changed
+        action may trigger one more redirect for the criterion; that second
+        redirect rotates it behind other runnable criteria and lets the new
+        action proceed.
+        """
+        if (not isinstance(action_digest, str) or not action_digest
+                or len(action_digest) > 128
+                or not 1 <= max_redirects_per_criterion <= 8):
+            raise ValueError("progress redirect identity or limit is invalid")
+        selected_criterion = (criterion_id if criterion_id in self._criteria
+                              else next(iter(self.active_attention_window()), ""))
+        key = selected_criterion or "__task__"
+        if (self._last_progress_redirect_action == action_digest
+                and self._last_progress_redirect_criterion == key):
+            return "repeat"
+        count = self._criterion_redirect_counts.get(key, 0)
+        if count >= max_redirects_per_criterion:
+            return "limit"
+        count += 1
+        self._criterion_redirect_counts[key] = count
+        self._last_progress_redirect_action = action_digest
+        self._last_progress_redirect_criterion = key
+        self._logical_revision += 1
+        if count >= max_redirects_per_criterion:
+            next_criteria = tuple(item for item in self.active_attention_window()
+                                  if item != key)
+            if next_criteria:
+                self._progress_redirect_yield_target = next_criteria[0]
+                self._progress_redirect_guidance_pending = True
+                return "yield"
+            return "limit"
+        self._progress_redirect_guidance_pending = True
+        return "redirect"
+
+    def consume_progress_redirect_yield(self, criterion_id: str | None) -> bool:
+        """Allow one action after attention has yielded to this criterion."""
+        if (not criterion_id or criterion_id != self._progress_redirect_yield_target):
+            return False
+        self._progress_redirect_yield_target = None
+        self._logical_revision += 1
+        return True
+
+    def take_progress_redirect_guidance(self) -> str | None:
+        """Consume one host-generated redirect notice for model-visible context."""
+        if not self._progress_redirect_guidance_pending:
+            return None
+        self._progress_redirect_guidance_pending = False
+        self._logical_revision += 1
+        return self._last_progress_redirect_criterion
+
+    def _reset_progress_redirects(self) -> None:
+        self._progress_redirect_epoch += 1
+        self._criterion_redirect_counts.clear()
+        self._last_progress_redirect_action = None
+        self._last_progress_redirect_criterion = None
+        self._progress_redirect_yield_target = None
+        self._progress_redirect_guidance_pending = False
 
     @property
     def workflows(self) -> tuple[WorkflowProgressFact, ...]:
@@ -403,7 +507,7 @@ class MetacognitiveState:
         return self._goal_directed_actions_since_goal_progress
 
     @property
-    def actions_since_artifact_change(self) -> Optional[int]:
+    def actions_since_artifact_change(self) -> int | None:
         return self._actions_since_artifact_change
 
     @property
@@ -453,6 +557,7 @@ class MetacognitiveState:
                     kind=str(item.get("kind") or "")[:64])
                 self._criterion_action_counts.setdefault(criterion_id, 0)
                 self._criterion_retry_counts.setdefault(criterion_id, 0)
+                self._criterion_redirect_counts.setdefault(criterion_id, 0)
                 self._criterion_last_action_sequence.setdefault(criterion_id, 0)
                 self._logical_revision += 1
             if current is None or criterion_id not in self._verification_requirements:
@@ -487,6 +592,12 @@ class MetacognitiveState:
                 "action_counts": dict(self._criterion_action_counts),
                 "retry_counts": dict(self._criterion_retry_counts),
                 "last_action_sequence": dict(self._criterion_last_action_sequence),
+                "redirect_counts": dict(self._criterion_redirect_counts),
+                "progress_redirect_epoch": self._progress_redirect_epoch,
+                "last_progress_redirect_action": self._last_progress_redirect_action,
+                "last_progress_redirect_criterion": self._last_progress_redirect_criterion,
+                "progress_redirect_yield_target": self._progress_redirect_yield_target,
+                "progress_redirect_guidance_pending": self._progress_redirect_guidance_pending,
             },
         }
 
@@ -587,15 +698,22 @@ class MetacognitiveState:
         self._failed_approaches.extend(failed)
         self._criteria = {item.criterion_id: item for item in criteria}
         attention = value.get("criterion_attention") or {}
+        prior_attention_fields = {"action_counts", "retry_counts", "last_action_sequence"}
+        redirect_attention_fields = prior_attention_fields | {
+            "redirect_counts", "progress_redirect_epoch",
+            "last_progress_redirect_action", "last_progress_redirect_criterion",
+            "progress_redirect_yield_target", "progress_redirect_guidance_pending",
+        }
         if not isinstance(attention, Mapping) or set(attention) not in (
-                {"action_counts", "retry_counts", "last_action_sequence"}, set()):
+                prior_attention_fields, redirect_attention_fields, set()):
             raise ValueError("malformed criterion attention snapshot")
         criterion_ids = set(self._criteria)
         restored_attention = {}
-        for name in ("action_counts", "retry_counts", "last_action_sequence"):
+        for name in ("action_counts", "retry_counts", "last_action_sequence",
+                     "redirect_counts"):
             source = attention.get(name) or {}
             if (not isinstance(source, Mapping) or len(source) > 256
-                    or not set(source).issubset(criterion_ids)
+                or not set(source).issubset(criterion_ids | {"__task__"})
                     or any(type(count) is not int or count < 0
                            for count in source.values())):
                 raise ValueError("malformed criterion attention counters")
@@ -608,6 +726,28 @@ class MetacognitiveState:
         self._criterion_last_action_sequence = {
             key: restored_attention["last_action_sequence"].get(key, 0)
             for key in criterion_ids}
+        self._criterion_redirect_counts = {
+            key: restored_attention["redirect_counts"].get(key, 0)
+            for key in criterion_ids}
+        if "__task__" in restored_attention["redirect_counts"]:
+            self._criterion_redirect_counts["__task__"] = restored_attention[
+                "redirect_counts"]["__task__"]
+        self._progress_redirect_epoch = int(attention.get("progress_redirect_epoch", 0) or 0)
+        if self._progress_redirect_epoch < 0:
+            raise ValueError("malformed progress redirect epoch")
+        self._last_progress_redirect_action = (
+            str(attention["last_progress_redirect_action"])
+            if attention.get("last_progress_redirect_action") else None)
+        self._last_progress_redirect_criterion = (
+            str(attention["last_progress_redirect_criterion"])
+            if attention.get("last_progress_redirect_criterion") else None)
+        yield_target = attention.get("progress_redirect_yield_target")
+        if yield_target is not None and (
+                not isinstance(yield_target, str) or yield_target not in criterion_ids):
+            raise ValueError("malformed progress redirect yield target")
+        self._progress_redirect_yield_target = yield_target
+        self._progress_redirect_guidance_pending = (
+            attention.get("progress_redirect_guidance_pending") is True)
         self._blockers = {}
         for key, row in value["blockers"].items():
             if isinstance(row, Mapping):
@@ -640,7 +780,8 @@ class MetacognitiveState:
         self._verification_obligations = {}
         for raw in value.get("verification_obligations", ()):
             if not isinstance(raw, Mapping):
-                raise ValueError("malformed verification obligation snapshot")
+                raise ValueError(  # noqa: TRY004 - persisted snapshot structure is invalid
+                    "malformed verification obligation snapshot")
             obligation = VerificationObligation(
                 criterion_id=str(raw.get("criterion_id") or ""),
                 artifact_revision=int(raw.get("artifact_revision", -1)),
@@ -651,19 +792,19 @@ class MetacognitiveState:
             self._verification_obligations[obligation.criterion_id] = obligation
 
     def record_activity(self, activity_type: str, *, source: str = "host_observed",
-                        action_class: Optional[str] = None,
-                        host_declared_relation: Optional[str] = None,
-                        target_kind: Optional[str] = None,
-                        target_scope: Optional[str] = None,
-                        target_ref: Optional[str] = None,
-                        proposed_purpose: Optional[str] = None,
+                        action_class: str | None = None,
+                        host_declared_relation: str | None = None,
+                        target_kind: str | None = None,
+                        target_scope: str | None = None,
+                        target_ref: str | None = None,
+                        proposed_purpose: str | None = None,
                         proposed_purpose_source: str = "derived",
                         affected_criterion_ids: Sequence[str] = (),
-                        result_class: Optional[str] = None,
-                        artifact_changed: Optional[bool] = None,
-                        progress_class: Optional[str] = None,
+                        result_class: str | None = None,
+                        artifact_changed: bool | None = None,
+                        progress_class: str | None = None,
                         evidence_kinds: Sequence[str] = (),
-                        verification_relation: Optional[str] = None) -> ActivityFact:
+                        verification_relation: str | None = None) -> ActivityFact:
         candidate = self.make_candidate(
             activity_type, source=source, action_class=action_class,
             host_declared_relation=host_declared_relation, target_kind=target_kind,
@@ -676,17 +817,17 @@ class MetacognitiveState:
         return self.commit_candidate(candidate, verification_relation=verification_relation)
 
     def make_candidate(self, activity_type: str, *, source: str = "host_observed",
-                       action_class: Optional[str] = None,
-                       host_declared_relation: Optional[str] = None,
-                       target_kind: Optional[str] = None,
-                       target_scope: Optional[str] = None,
-                       target_ref: Optional[str] = None,
-                       proposed_purpose: Optional[str] = None,
+                       action_class: str | None = None,
+                       host_declared_relation: str | None = None,
+                       target_kind: str | None = None,
+                       target_scope: str | None = None,
+                       target_ref: str | None = None,
+                       proposed_purpose: str | None = None,
                        proposed_purpose_source: str = "derived",
                        affected_criterion_ids: Sequence[str] = (),
-                       result_class: Optional[str] = None,
-                       artifact_changed: Optional[bool] = None,
-                       progress_class: Optional[str] = None,
+                       result_class: str | None = None,
+                       artifact_changed: bool | None = None,
+                       progress_class: str | None = None,
                        evidence_kinds: Sequence[str] = ()) -> ActivityFact:
         """Build a candidate fact without changing history or any progress counter."""
         target_digest = (hashlib.sha256(target_ref.encode("utf-8")).hexdigest()
@@ -701,7 +842,7 @@ class MetacognitiveState:
             result_class=result_class, artifact_changed=artifact_changed,
             progress_class=progress_class, evidence_kinds=tuple(evidence_kinds[:8]))
     def commit_candidate(self, candidate: ActivityFact, *,
-                         verification_relation: Optional[str] = None) -> ActivityFact:
+                         verification_relation: str | None = None) -> ActivityFact:
         """Commit only a fact whose action/result has crossed its host boundary."""
         if not isinstance(candidate, ActivityFact):
             raise TypeError("metacognitive history accepts typed activity facts only")
@@ -760,6 +901,9 @@ class MetacognitiveState:
             for criterion_id in fact.affected_criterion_ids:
                 if criterion_id in self._criteria:
                     self._criterion_retry_counts[criterion_id] = 0
+            self._reset_progress_redirects()
+        elif artifact_changed is True:
+            self._reset_progress_redirects()
         if activity_type == "retry" and fact.result_class == "equivalent_retry":
             self._repeated_branch_count += 1
         if (activity_type == "action"
@@ -779,7 +923,7 @@ class MetacognitiveState:
 
     def verification_limit_exceeded(self, candidate: ActivityFact, *,
                                     relation: str, max_actions: int,
-                                    max_repeats: int) -> Optional[str]:
+                                    max_repeats: int) -> str | None:
         """Reject repeated verification of unchanged evidence targets."""
         if relation != "required_verification":
             return None
@@ -849,7 +993,7 @@ class MetacognitiveState:
 
     def record_blocker(self, blocker_id: str, summary: str,
                        criterion_ids: Sequence[str] = (), *,
-                       evidence_ref: Optional[str] = None) -> None:
+                       evidence_ref: str | None = None) -> None:
         if not blocker_id or not summary:
             raise ValueError("blockers require a bounded host identifier and summary")
         key = blocker_id[:128]
@@ -880,8 +1024,8 @@ class MetacognitiveState:
                                  step_id: str, progress_class: str,
                                  completed: bool, work_class: str,
                                  domain_effect: str,
-                                 current_position: Optional[str] = None,
-                                 previous_position: Optional[str] = None,
+                                 current_position: str | None = None,
+                                 previous_position: str | None = None,
                                  evidence_refs: Sequence[str] = ()) -> None:
         self.record_workflow(WorkflowProgressFact(
             statework_id=statework_id, subject_ref=subject_ref,
@@ -911,7 +1055,15 @@ class MetacognitiveState:
         self._logical_revision += 1
 
 
-__all__ = ["MetacognitiveState", "BlockerFact", "CriterionEvidenceBinding",
-           "SemanticSignals", "SemanticSignalRecord", "SemanticSignalStore",
-           "VerificationObligation", "CompletionReadiness",
-           "MetaDecision", "MetacognitiveController"]
+__all__ = [
+    "BlockerFact",
+    "CompletionReadiness",
+    "CriterionEvidenceBinding",
+    "MetaDecision",
+    "MetacognitiveController",
+    "MetacognitiveState",
+    "SemanticSignalRecord",
+    "SemanticSignalStore",
+    "SemanticSignals",
+    "VerificationObligation",
+]

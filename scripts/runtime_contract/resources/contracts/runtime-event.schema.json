@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cognitiveframeworks.dev/contracts/runtime-event.schema.json",
+  "title": "CognitiveFrameWorks runtime event",
+  "description": "Neutral bounded telemetry emitted by the CFW runtime. A downstream telemetry bridge may translate this envelope into its own event contract.",
+  "type": "object",
+  "required": [
+    "schema_version", "event_id", "timestamp", "namespace_id",
+    "application_id", "application_instance_id", "task_id", "agent_id",
+    "actor_id", "agent_instance_id", "session_id", "attempt_id",
+    "segment_id", "behavioral_subject", "category", "event_type"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "namespace_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "application_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "application_version": {"type": "string", "maxLength": 128},
+    "application_instance_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "task_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "agent_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "actor_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "agent_instance_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "session_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "attempt_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "segment_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "behavioral_subject": {"type": "string", "minLength": 1, "maxLength": 512},
+    "category": {"enum": ["observation", "assumption", "inference", "decision", "action", "tool_result", "validation", "correction", "contradiction", "retry", "state_transition", "handoff", "completion", "blocker"]},
+    "event_type": {"type": "string", "minLength": 1, "maxLength": 256},
+    "provider_id": {"type": "string", "maxLength": 256},
+    "model_id": {"type": "string", "maxLength": 256},
+    "model_revision": {"type": "string", "maxLength": 256},
+    "model_capability_hash": {"type": "string", "maxLength": 128},
+    "harness_id": {"type": "string", "maxLength": 256},
+    "harness_version": {"type": "string", "maxLength": 128},
+    "goal_contract_hash": {"type": "string", "maxLength": 128},
+    "parent_event": {"type": "string", "maxLength": 256},
+    "subject": {"type": ["string", "null"], "maxLength": 512},
+    "input_state": {"type": ["string", "null"], "maxLength": 256},
+    "output_state": {"type": ["string", "null"], "maxLength": 256},
+    "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 512}, "minItems": 1, "maxItems": 256},
+    "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+    "authority_source": {"type": ["string", "null"], "maxLength": 256},
+    "scope": {"type": ["string", "null"], "maxLength": 256},
+    "supersedes": {"type": "string", "maxLength": 256},
+    "invalidates": {"type": "string", "maxLength": 256},
+    "interaction_id": {"type": "string", "maxLength": 256},
+    "parent_session_id": {"type": "string", "maxLength": 256},
+    "delegator_agent_id": {"type": "string", "maxLength": 256},
+    "delegate_agent_id": {"type": "string", "maxLength": 256},
+    "delegation_id": {"type": "string", "maxLength": 256},
+    "role": {"type": "string", "maxLength": 128},
+    "payload": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": {"$ref": "#/$defs/metadata_value"}
+    }
+  },
+  "$defs": {
+    "metadata_value": {
+      "oneOf": [
+        {"type": "string", "maxLength": 4096},
+        {"type": "number", "minimum": -1000000000000, "maximum": 1000000000000},
+        {"type": "boolean"},
+        {"type": "null"},
+        {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/metadata_value"}},
+        {"type": "object", "maxProperties": 64, "additionalProperties": {"$ref": "#/$defs/metadata_value"}}
+      ]
+    }
+  },
+  "additionalProperties": false
+}

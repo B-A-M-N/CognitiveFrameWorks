@@ -1,0 +1,29 @@
+{
+  "completed_at": "2026-10-02T10:38:19Z",
+  "evidence_class": "operational_performance",
+  "qualification_id": "operational-performance-v1",
+  "resource_profile": {
+    "python_version": "3.11.15",
+    "tests_passed": 9,
+    "duration_seconds": 28.67,
+    "durable_telemetry_cursor": "pass",
+    "bounded_delivery_memory": "pass",
+    "partial_line_recovery": "pass",
+    "process_group_cancellation": "pass",
+    "model_call_token_cost_time_limits": {
+      "status": "pass",
+      "max_model_calls": 2,
+      "max_external_tokens": 4,
+      "observed_external_tokens": 5,
+      "max_monetary_cost": 0.5,
+      "observed_monetary_cost": 0.5,
+      "elapsed_limit_seconds": 0.001
+    }
+  },
+  "source_commits": {
+    "CognitiveFrameWorks": "a6bfe636fc05d5e6e056d020d0896501a027ec5f",
+    "CognitiveStateWork": "ca9ea0a6ecdab94115750168d1f643953c6fc67d",
+    "DigitalPsychology": "7584d03374487c2a86e2191b2111ea835e92b9ba"
+  },
+  "status": "pass"
+}

@@ -13,6 +13,7 @@ from runtime_contract.behavioral_fusion import fuse_retry_relation
 from runtime_contract.convergence import TERMINAL_DISPOSITIONS
 from runtime_contract.handlers import handler_for_enforcement
 from runtime_contract.system_one import ActivityFact
+from runtime_contract.task import task_goal_contract_mapping_hash
 from runtime_session.host_authority import _HostCapability
 from runtime_session.lifecycle import ActionPreflightResult, ActionPreparation, GateDecision
 
@@ -26,13 +27,13 @@ class ActionGateMethods:
         object grants no permission; ``before_action`` remains authoritative.
         """
         preferences: list[str] = []
-        constrained = (self.lifecycle is not None
-                       and self.lifecycle.component_mode("fuse") == "constrained")
+        constrained = (self.lifecycle_workflow.lifecycle is not None
+                       and self.lifecycle_workflow.lifecycle.component_mode("fuse") == "constrained")
         effective_state = self.effective_external_behavior_projection()
         focus = set(effective_state.get("focus_criteria") or ())
         if constrained:
             objective_routes = []
-            for route, descriptor in self.action_registry.items():
+            for route, descriptor in self.actions.action_registry.items():
                 if descriptor.goal_relation not in {
                         "advances_primary_goal", "removes_concrete_blocker",
                         "required_verification"}:
@@ -42,14 +43,14 @@ class ActionGateMethods:
                     continue
                 objective_routes.append(route)
             preferences.extend(sorted(objective_routes))
-        if not self.external_behavior_authority:
+        if not self.behavior.is_external:
             for adjustment in self.bundle.guard_pack.get("routing_adjustments", ()):
                 if (adjustment.get("route_type") == "tool_policy"
                         and adjustment.get("disposition") == "prefer"):
                     route = str(adjustment.get("route") or "")
-                    if route in self.action_registry and route not in preferences:
+                    if route in self.actions.action_registry and route not in preferences:
                         preferences.append(route)
-        eligible = [route for route in self.action_registry if route not in preferences]
+        eligible = [route for route in self.actions.action_registry if route not in preferences]
         return ActionStrategy(
             eligible_actions=tuple(preferences + eligible),
             priorities={route: index for index, route in enumerate(preferences)},
@@ -64,8 +65,8 @@ class ActionGateMethods:
             return ""
         preferred = [action for action, _priority in sorted(
             strategy["priorities"].items(), key=lambda pair: pair[1])]
-        constrained = (self.lifecycle is not None
-                       and self.lifecycle.component_mode("fuse") == "constrained")
+        constrained = (self.lifecycle_workflow.lifecycle is not None
+                       and self.lifecycle_workflow.lifecycle.component_mode("fuse") == "constrained")
         if not preferred and not constrained:
             return ""
         other = [action for action in strategy["eligible_actions"] if action not in preferred]
@@ -116,7 +117,7 @@ class ActionGateMethods:
                 }.get(name, name.split(".", 1)[0])).lower()
                 reason = name.rsplit(".", 1)[-1].replace("-", "_")
                 return decision, f"{owner}.{reason}"
-        confirmation = self.host_context.confirmation_for(request, self._consumed_grant_ids)
+        confirmation = self.identity_authority.identity.host_context.confirmation_for(request, self.actions.consumed_grant_ids)
         if descriptor.destructive and confirmation is None:
             return GateDecision.REQUIRE_CONFIRMATION, "ward.confirmation_required"
         if descriptor.untrusted:
@@ -126,16 +127,16 @@ class ActionGateMethods:
         authorities = set(descriptor.allowed_authorities or ())
         if descriptor.required_authority and not authorities:
             authorities = {descriptor.required_authority}
-        if authorities and self.host_context.principal not in authorities:
+        if authorities and self.identity_authority.identity.host_context.principal not in authorities:
             return GateDecision.REQUIRE_CONFIRMATION, "ward.authority_mismatch"
         if descriptor.required_capabilities and not set(descriptor.required_capabilities).issubset(
-                set(self.host_context.capabilities)):
+                set(self.identity_authority.identity.host_context.capabilities)):
             return GateDecision.REQUIRE_CONFIRMATION, "ward.capability_missing"
         if descriptor.mutability not in {"read", "inspect"}:
-            policy = self.host_context.protected_resources
-            if tuple(self.host_context.filesystem_scope) != policy.authorized_write_roots:
+            policy = self.identity_authority.identity.host_context.protected_resources
+            if tuple(self.identity_authority.identity.host_context.filesystem_scope) != policy.authorized_write_roots:
                 policy = ProtectedResourcePolicy(policy.protected_roots,
-                                                 tuple(self.host_context.filesystem_scope))
+                                                 tuple(self.identity_authority.identity.host_context.filesystem_scope))
             classification = policy.classify_write(request.arguments)
             if classification != "authorized":
                 reason = {
@@ -147,7 +148,7 @@ class ActionGateMethods:
                 return GateDecision.BLOCK, f"ward.{reason}"
         if any(not record["resolved"] and
                (record.get("subject") in {None, request.subject_ref})
-               for record in self.contradictions.values()):
+               for record in self.evidence.contradictions.values()):
             return GateDecision.REQUIRE_REINSPECTION, "owl.operator_contradiction"
         return GateDecision.ALLOW, "cfw.action_policy_allow"
     @staticmethod
@@ -169,18 +170,21 @@ class ActionGateMethods:
         for statework in self.bundle.stateworks:
             statework_id = str(statework.get("id") or "")
             bound_subject = str(statework.get("subject_ref") or subject or "")
-            state = self.statework_states.get((statework_id, bound_subject))
+            state = self.lifecycle_workflow.statework_states.get((statework_id, bound_subject))
             revision = None
-            if self.state_authority is not None and bound_subject:
+            engine = statework.get("engine") or {}
+            engine_kind = str(engine.get("kind") or statework.get("engine_kind") or "unknown")
+            if self.identity_authority.authorities.state_authority is not None and bound_subject:
                 try:
                     contract_hash = str(statework.get("workflow_contract_hash") or "")
                     if not contract_hash:
                         raise ValueError("StateWork has no pinned workflow contract identity")
-                    authoritative = self.state_authority.inspect_workflow(
+                    authoritative = self.identity_authority.authorities.state_authority.inspect_workflow(
                         statework_id=statework_id, subject_ref=bound_subject,
                         contract_hash=contract_hash)
                     state = authoritative.current_state
                     revision = authoritative.revision
+                    engine_kind = str(getattr(authoritative, "engine_kind", engine_kind))
                 except Exception as exc:
                     revision = None
                     state = f"unavailable:{type(exc).__name__}"
@@ -193,20 +197,20 @@ class ActionGateMethods:
             })
         return snapshots
     def _revocation_current(self) -> bool:
-        if self.policy_revocation_authority is None or not self.adopted_profile_hashes:
+        if self.identity_authority.authorities.policy_revocation_authority is None or not self.identity_authority.identity.adopted_profile_hashes:
             return True
         try:
-            snapshot = self.policy_revocation_authority.inspect(tuple(self.adopted_profile_hashes))
+            snapshot = self.identity_authority.authorities.policy_revocation_authority.inspect(tuple(self.identity_authority.identity.adopted_profile_hashes))
             revision = int(snapshot.get("revision", 0) or 0)
             revoked = set(snapshot.get("revoked_profile_hashes") or ())
             immediate = bool(snapshot.get("immediate"))
-            if not revoked.intersection(self.adopted_profile_hashes):
-                self.policy_revocation_revision = max(self.policy_revocation_revision, revision)
+            if not revoked.intersection(self.identity_authority.identity.adopted_profile_hashes):
+                self.identity_authority.revisions.observe_policy_revocation(revision)
                 return True
-            if self.revocation_mode == "immediate" or immediate:
+            if self.identity_authority.revisions.revocation_mode == "immediate" or immediate:
                 return False
             # Deferred: the pinned policy remains intact until the next task.
-            self.policy_revocation_revision = max(self.policy_revocation_revision, revision)
+            self.identity_authority.revisions.observe_policy_revocation(revision)
             return True
         except Exception as exc:
             self._emit_runtime({"category": "blocker", "event_type": "policy_revocation_unavailable",
@@ -222,9 +226,9 @@ class ActionGateMethods:
             "trace_version": "1.0.0",
             "task": {
                 "task_id": self.bundle.task_id,
-                "session_id": self.session_id,
-                "attempt_id": self.attempt_id,
-                "agent_instance_id": self.agent_instance_id,
+                "session_id": self.identity_authority.identity.session_id,
+                "attempt_id": self.identity_authority.identity.attempt_id,
+                "agent_instance_id": self.identity_authority.identity.agent_instance_id,
             },
             "policy": {
                 "policy_hash": self.bundle.pinned.get("policy_hash"),
@@ -239,35 +243,35 @@ class ActionGateMethods:
                 "expires_at": (advice_context or {}).get("expires_at"),
                 "adjustment_count": len(advice_sources or []),
             },
-            "route_decisions": [dict(value) for value in self.route_decisions.values()],
-            "route_outcomes": [dict(value) for value in self.route_outcomes.values()],
+            "route_decisions": [dict(value) for value in self.actions.route_decisions.values()],
+            "route_outcomes": [dict(value) for value in self.actions.route_outcomes.values()],
         }
     def _membership_for(self, statework_id: Optional[str]) -> Optional[Mapping[str, Any]]:
         if statework_id:
-            for membership in self.shared_workflow_memberships:
+            for membership in self.identity_authority.authorities.shared_workflow_memberships:
                 if membership.get("statework_id") == statework_id:
                     return membership
-            membership = self.shared_workflow_membership
+            membership = self.identity_authority.authorities.shared_workflow_membership
             if membership and membership.get("statework_id") == statework_id:
                 return membership
             return None
-        return self.shared_workflow_membership
+        return self.identity_authority.authorities.shared_workflow_membership
     def _membership_current(self, statework_id: Optional[str] = None,
                             subject_ref: Optional[str] = None) -> bool:
         membership = self._membership_for(
-            statework_id or self.current_segment.statework_id)
+            statework_id or self.lifecycle_workflow.current_segment.statework_id)
         if not membership:
             return True
-        if self.membership_authority is None:
+        if self.identity_authority.authorities.membership_authority is None:
             return False
         if subject_ref is not None and membership.get("subject_ref") != subject_ref:
             return False
-        return self.membership_authority.validate(
+        return self.identity_authority.authorities.membership_authority.validate(
             membership, session=self, operation="transition")
     def _authoritative_state_ready(self) -> bool:
-        if self.runtime_mode != "combined_enforcing":
+        if self.identity_authority.authorities.runtime_mode != "combined_enforcing":
             return True
-        if self.state_authority is None or not self.bundle.stateworks:
+        if self.identity_authority.authorities.state_authority is None or not self.bundle.stateworks:
             return False
         try:
             for statework in self.bundle.stateworks:
@@ -280,22 +284,20 @@ class ActionGateMethods:
                 if not contract_hash:
                     raise ValueError(f"StateWork {statework_id!r} has no pinned workflow contract")
                 key = (statework_id, subject)
-                inspect_workflow = getattr(self.state_authority, "inspect_workflow", None)
+                inspect_workflow = getattr(self.identity_authority.authorities.state_authority, "inspect_workflow", None)
                 if callable(inspect_workflow):
                     snapshot = inspect_workflow(
                         statework_id=statework_id, subject_ref=subject,
                         contract_hash=contract_hash)
                     current, revision = snapshot.current_state, snapshot.revision
                 else:
-                    legacy = self.state_authority.inspect(
+                    legacy = self.identity_authority.authorities.state_authority.inspect(
                         statework_id=statework_id, subject_ref=subject,
                         contract_hash=contract_hash)
                     current, revision = legacy.get("state"), legacy.get("revision", 0)
                 if current is not None:
-                    self.statework_states[key] = str(current)
-                object.__setattr__(
-                    self, "authority_revision",
-                    max(self.authority_revision, int(revision or 0)))
+                    self.lifecycle_workflow.statework_states[key] = str(current)
+                self.identity_authority.revisions.observe_authority(int(revision or 0))
             return True
         except Exception as exc:
             self._emit_runtime({"category": "blocker", "event_type": "state_authority_unavailable",
@@ -337,12 +339,12 @@ class ActionGateMethods:
         binding: Optional[ActionObjectiveBinding] = None
         if objective_binding is not None:
             self._require_host(capability)
-            binding = self._action_objective_bindings.pop(
-                objective_binding.binding_digest, None)
+            binding = self.actions.take_objective_binding(
+                objective_binding.binding_digest)
             if binding != objective_binding or binding.action_digest != request.digest:
                 raise PermissionError("objective binding is unissued, replayed, or for another action")
             if (binding.artifact_revision is not None
-                    and binding.artifact_revision != self.metacognitive_state.artifact_revision):
+                    and binding.artifact_revision != self.behavior.metacognitive.artifact_revision):
                 raise PermissionError("objective binding expired after an artifact revision change")
         action_request_id = f"action-request-{uuid.uuid4()}"
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
@@ -357,7 +359,12 @@ class ActionGateMethods:
         decision, gate_reason = self._decision_with_reason(request)
         strategy = self._action_strategy()
         candidate: Optional[ActivityFact] = None
-        host_relation = binding.goal_relation if binding else "ambiguous"
+        # Standalone hosts may not issue a per-action ObjectiveBinding. In
+        # that case, retain the relation already declared by the trusted host
+        # descriptor. Dropping it made registered completion validators look
+        # like ambiguous support work and could trigger goal reanchoring
+        # before the validator had a chance to establish criterion evidence.
+        host_relation = binding.goal_relation if binding else descriptor.goal_relation
         action_lane = "UNCLASSIFIED"
         hook_reasons = []
         for hook in self.tool_hooks:
@@ -379,7 +386,7 @@ class ActionGateMethods:
         # component-local gates but does not run its standalone global
         # behavioral controller. Objective accounting uses the host-issued
         # binding in either mode.
-        if decision == GateDecision.ALLOW and self.external_behavior_authority:
+        if decision == GateDecision.ALLOW and self.behavior.is_external:
             if binding is not None:
                 action_lane = {
                     "DIRECT_GOAL": "DIRECT",
@@ -388,11 +395,13 @@ class ActionGateMethods:
                     "DIAGNOSTIC": "SUPPORT",
                     "INCIDENTAL": "SUPPORT",
                 }[binding.purpose_class]
-        elif decision == GateDecision.ALLOW and not self.external_behavior_authority:
-            target_ref = next((request.arguments.get(key) for key in ("target", "path", "resource")
+        elif decision == GateDecision.ALLOW and not self.behavior.is_external:
+            target_ref = next((request.arguments.get(key) for key in (
+                "target", "path", "resource", "validator")
                                if isinstance(request.arguments.get(key), str)), None)
-            criterion_ids = binding.criterion_ids if binding else ()
-            candidate = self.metacognitive_state.make_candidate(
+            criterion_ids = (binding.criterion_ids if binding
+                             else descriptor.affected_criterion_ids)
+            candidate = self.behavior.metacognitive.make_candidate(
                 "action", source="host_observed",
                 action_class=descriptor.action_class or descriptor.tool_type,
                 host_declared_relation=host_relation,
@@ -412,7 +421,7 @@ class ActionGateMethods:
                     subject_ref=request.subject_ref, action_request_id=action_request_id,
                     descriptor=semantic_descriptor)
                 semantic_decision = next((item for item in reversed(
-                    tuple(self.system_one_decisions.values()))
+                    tuple(self.behavior.system_one_decisions.values()))
                     if item.get("action_request_id") == action_request_id), None)
                 if semantic_decision is not None:
                     semantic_relation = semantic_decision.get("fused_action_relation")
@@ -444,8 +453,16 @@ class ActionGateMethods:
                             "semantic_relation": str(semantic_relation),
                         }})
             verification = (goal.get("verification_policy") or {})
-            if host_relation == "required_verification":
-                violation = self.metacognitive_state.verification_limit_exceeded(
+            pinned_goal_hash = str(self.bundle.pinned.get("goal_contract_hash") or "")
+            goal_anchor_valid = (
+                goal.get("work_mode") != "delivery"
+                or bool(goal and pinned_goal_hash
+                        and task_goal_contract_mapping_hash(goal) == pinned_goal_hash))
+            if goal.get("work_mode") == "delivery" and not goal_anchor_valid:
+                decision = GateDecision.REQUIRE_GOAL_REANCHOR
+                gate_reason = "flow.goal_contract_identity_invalid"
+            if goal_anchor_valid and host_relation == "required_verification":
+                violation = self.behavior.metacognitive.verification_limit_exceeded(
                     candidate, relation=host_relation,
                     max_actions=int(verification.get(
                         "max_verification_actions_without_artifact_change", 2) or 2),
@@ -458,35 +475,62 @@ class ActionGateMethods:
                         "category": "blocker", "event_type": "verification_action_limited",
                         "subject": request.subject_ref,
                         "payload": {"summary": violation, "result_class": "blocked"}})
-            if (goal.get("work_mode") == "delivery" and self.convergence is not None
+            if (goal_anchor_valid and goal.get("work_mode") == "delivery"
+                    and self.attempts.controller is not None
                     and host_relation not in {
                         "advances_primary_goal", "removes_concrete_blocker",
                         "required_verification"}
-                    and self.convergence.needs_goal_reanchor(
+                    and self.attempts.controller.needs_goal_reanchor(
                         cause_id="primary-objective",
                         support_limit=int(verification.get(
                             "support_actions_before_goal_reanchor", 5) or 5),
                         total_action_limit=int(verification.get(
                             "max_committed_actions_without_goal_progress", 15) or 15))):
-                decision = GateDecision.REQUIRE_GOAL_REANCHOR
-                gate_reason = "flow.goal_progress_limit"
+                attention = self.behavior.metacognitive.active_attention_window()
+                focused_criterion = next(
+                    (item for item in criterion_ids if item in attention),
+                    next(iter(criterion_ids), next(iter(attention), None)))
+                yielded_action = self.behavior.metacognitive.consume_progress_redirect_yield(
+                    focused_criterion)
+                redirect = ("yield_allowance" if yielded_action else
+                            self.behavior.metacognitive.record_progress_redirect(
+                                action_digest=request.digest,
+                                criterion_id=focused_criterion))
+                self._emit_runtime({
+                    "category": "decision",
+                    "event_type": "progress_redirect_transition",
+                    "subject": request.subject_ref,
+                    "payload": {
+                        "summary": "bounded standalone progress redirect evaluated",
+                        "result_class": redirect,
+                        "criterion_id": focused_criterion or "",
+                        "progress_redirect_epoch": (
+                            self.behavior.metacognitive.progress_redirect_epoch),
+                    }})
+                if redirect == "redirect":
+                    decision = GateDecision.REQUIRE_CHANGED_HYPOTHESIS
+                    gate_reason = "flow.goal_progress_limit"
+                elif redirect == "repeat":
+                    decision = GateDecision.BLOCK
+                    gate_reason = "flow.progress_redirect_duplicate_action"
         if decision == GateDecision.ALLOW:
-            self._pending_action_requests[action_request_id] = {
+            pending_request = {
                 "descriptor": descriptor.__dict__.copy(),
                 "subject_ref": request.subject_ref,
-                "sequence": self.system_one_sequence,
+                "sequence": self.behavior.system_one_sequence,
                 "relation": host_relation,
                 "accounting_lane": action_lane,
                 "objective_binding": binding.to_dict() if binding else None,
                 "candidate": candidate,
             }
             attempt_ref = str(request.arguments.get("attempt_ref") or "")
-            if attempt_ref and attempt_ref in self._pending_retry_candidates:
-                self._pending_action_requests[action_request_id]["retry_candidate"] = (
-                    self._pending_retry_candidates.pop(attempt_ref))
+            if attempt_ref and attempt_ref in self.attempts.pending_retry_candidates:
+                pending_request["retry_candidate"] = self.attempts.take_pending_retry(
+                    attempt_ref)
+            self.actions.put_pending_request(action_request_id, pending_request)
             self._journal("action_request_prepared", action_request_id=action_request_id,
                           subject_ref=request.subject_ref, descriptor=descriptor.__dict__,
-                          relation=self._pending_action_requests[action_request_id]["relation"])
+                          relation=pending_request["relation"])
         self._emit_runtime({"category": "action", "event_type": "action_requested",
                    "subject": request.subject_ref,
                    "payload": {"summary": decision.value,
@@ -496,18 +540,18 @@ class ActionGateMethods:
                                "action_request_id": action_request_id,
                                "advice_priority": strategy["priorities"].get(request.binding_id),
                                "policy_hash": strategy["policy_hash"]}})
-        if self.lifecycle is not None:
-            prior = set(self.active_lifecycle)
-            self.lifecycle.on_action(decision, descriptor=descriptor)
-            self.active_lifecycle = set(self.lifecycle.active)
-            self.lifecycle_counts = dict(self.lifecycle.counts)
+        if self.lifecycle_workflow.lifecycle is not None:
+            prior = set(self.lifecycle_workflow.active_lifecycle)
+            self.lifecycle_workflow.lifecycle.on_action(decision, descriptor=descriptor)
+            self.lifecycle_workflow.active_lifecycle = set(self.lifecycle_workflow.lifecycle.active)
+            self.lifecycle_workflow.lifecycle_counts = dict(self.lifecycle_workflow.lifecycle.counts)
             self._emit_lifecycle_activations(prior)
-        confirmation = self.host_context.confirmation_for(request, self._consumed_grant_ids)
+        confirmation = self.identity_authority.identity.host_context.confirmation_for(request, self.actions.consumed_grant_ids)
         if decision == GateDecision.ALLOW and confirmation is not None:
-            self._consumed_grant_ids.add(confirmation.grant_id)
+            self.actions.consume_grant(confirmation.grant_id)
             self._journal("confirmation_consumed", grant_id=confirmation.grant_id)
         if decision != GateDecision.ALLOW:
-            self._pending_action_requests.pop(action_request_id, None)
+            self.actions.take_pending_request(action_request_id)
         reason_codes = tuple(dict.fromkeys(
             hook_reasons + [gate_reason]))
         return ActionPreparation(action_request_id, decision, descriptor, request.digest,
@@ -515,18 +559,18 @@ class ActionGateMethods:
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
         """Dispatch retry-specific structural handlers at the host boundary."""
         action = self._request(request)
-        if self.termination_disposition in TERMINAL_DISPOSITIONS:
+        if self.lifecycle_workflow.termination_disposition in TERMINAL_DISPOSITIONS:
             # A terminated task must not be revived by a retry request.
             return GateDecision.BLOCK
         attempt_ref = str(action.arguments.get("attempt_ref") or "")
-        attempt = self.attempt_descriptors.get(attempt_ref)
+        attempt = self.attempts.descriptors.get(attempt_ref)
         if attempt is None:
             return GateDecision.REQUIRE_REINSPECTION
-        semantic = self.attempt_semantics.get(attempt_ref)
+        semantic = self.attempts.semantics.get(attempt_ref)
         candidate = None
-        self._semantic_retry_same.discard(attempt_ref)
-        if not self.external_behavior_authority and semantic is not None:
-            candidate = self.metacognitive_state.make_candidate(
+        self.attempts.clear_semantic_retry(attempt_ref)
+        if not self.behavior.is_external and semantic is not None:
+            candidate = self.behavior.metacognitive.make_candidate(
                 "retry", source="host_observed",
                 action_class=semantic.planned_action_class,
                 host_declared_relation="ambiguous",
@@ -535,7 +579,7 @@ class ActionGateMethods:
                 proposed_purpose_source=semantic.source,
                 affected_criterion_ids=semantic.affected_criterion_ids)
             if self._system_one_policy().mode != "disabled":
-                state = self.convergence.state(attempt.cause_id) if self.convergence else None
+                state = self.attempts.controller.state(attempt.cause_id) if self.attempts.controller else None
                 deterministic_same = bool(state and
                     state.action_fingerprint == attempt.action_plan_digest
                     and state.hypothesis_fingerprint == attempt.premise_digest
@@ -546,7 +590,7 @@ class ActionGateMethods:
                     judgment = self._system_one_query(
                         questions=("retry_relation",), candidate=candidate,
                         subject_ref=action.subject_ref)
-                    decision = (self.system_one_decisions.get(judgment.request_id)
+                    decision = (self.behavior.system_one_decisions.get(judgment.request_id)
                                 if judgment else None)
                 retry_relation = fuse_retry_relation(
                     deterministic_same=deterministic_same, judgment=judgment,
@@ -555,7 +599,7 @@ class ActionGateMethods:
                 if retry_relation == "equivalent_retry" and not deterministic_same:
                     # Inference can collapse novelty to the already-recorded branch;
                     # it cannot create a new branch or reset any host budget.
-                    self._semantic_retry_same.add(attempt_ref)
+                    self.attempts.mark_semantic_retry(attempt_ref)
         try:
             for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
                 if enforcement.get("mode") != "structural":
@@ -564,11 +608,11 @@ class ActionGateMethods:
                 if handler and "before_retry" in getattr(handler, "hooks", ()):
                     result = handler.before_retry(self, action, enforcement)
                     if result == "block":
-                        if (self.convergence is not None
-                                and self.convergence.state(attempt.cause_id).disposition == "BLOCKED"):
-                            state = self.convergence.state(attempt.cause_id)
+                        if (self.attempts.controller is not None
+                                and self.attempts.controller.state(attempt.cause_id).disposition == "BLOCKED"):
+                            state = self.attempts.controller.state(attempt.cause_id)
                             self.request_termination(
-                                self._host_capability, disposition="BLOCKED",
+                                self.identity_authority._host_capability, disposition="BLOCKED",
                                 reason="Autonomous recovery limit reached without primary-goal progress.",
                                 cause_id=attempt.cause_id,
                                 evidence_refs=([state.last_failure_evidence_ref]
@@ -580,20 +624,20 @@ class ActionGateMethods:
                         return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
                     if result == "require_goal_reanchor":
                         return GateDecision.REQUIRE_GOAL_REANCHOR
-            retry_relation = ("equivalent_retry" if attempt_ref in self._semantic_retry_same
+            retry_relation = ("equivalent_retry" if attempt_ref in self.attempts.semantic_retry_same
                               else "different_fingerprint")
-            if not self.external_behavior_authority and candidate is not None:
-                self._pending_retry_candidates[attempt_ref] = replace(
-                    candidate, result_class=retry_relation)
+            if not self.behavior.is_external and candidate is not None:
+                self.attempts.record_pending_retry(
+                    attempt_ref, replace(candidate, result_class=retry_relation))
             return GateDecision.ALLOW
         finally:
-            self._semantic_retry_same.discard(attempt_ref)
+            self.attempts.clear_semantic_retry(attempt_ref)
 
     def _request(self, action: Mapping[str, Any] | AgentActionRequest) -> AgentActionRequest:
         return action if isinstance(action, AgentActionRequest) else AgentActionRequest.from_mapping(action)
     def _descriptor(self, action: Mapping[str, Any] | AgentActionRequest) -> ActionDescriptor:
         request = self._request(action)
-        descriptor = self.action_registry.get(request.binding_id)
+        descriptor = self.actions.action_registry.get(request.binding_id)
         if descriptor is None:
             # Unknown actions are not allowed to self-classify. The host can
             # explicitly register a safe descriptor when it knows the tool.

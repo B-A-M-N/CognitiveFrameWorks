@@ -17,7 +17,10 @@ def digest(path: Path) -> str:
 
 
 PAIRS = (
-    (ROOT / "contracts" / "behavior-event.schema.json", DP / "schemas" / "behavior-event.schema.json"),
+    (ROOT / "contracts" / "runtime-event.schema.json",
+     ROOT / "scripts" / "runtime_contract" / "contracts" / "runtime-event.schema.json"),
+    (ROOT / "contracts" / "runtime-event.schema.json",
+     ROOT / "scripts" / "runtime_contract" / "resources" / "contracts" / "runtime-event.schema.json"),
     (ROOT / "contracts" / "guard.schema.json", DP / "schemas" / "guard.schema.json"),
     (ROOT / "contracts" / "guard-pack.schema.json", DP / "schemas" / "guard-pack.schema.json"),
     (ROOT / "contracts" / "statework-manifest.schema.json", COW / "schemas" / "statework-manifest.schema.json"),

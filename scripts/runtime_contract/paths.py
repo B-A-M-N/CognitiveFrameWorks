@@ -32,3 +32,14 @@ def runtime_state_dir() -> Path:
         except OSError:
             continue
     raise OSError("no writable runtime state directory available for cognitiveframeworks snapshots")
+
+
+def runtime_asset_root() -> Path:
+    """Locate bundled runtime assets in a checkout or installed wheel."""
+    checkout = Path(__file__).resolve().parents[2]
+    if (checkout / "plugin.json").is_file():
+        return checkout
+    packaged = Path(__file__).resolve().parent / "resources"
+    if packaged.is_dir():
+        return packaged
+    return checkout

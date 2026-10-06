@@ -1,0 +1,117 @@
+# SISPIS-owned signal calibration.
+#
+# The ONLY place in the framework that maps a semantic canonical signal to
+# SISPIS entropy/intent/output-floor effects. OWL, ANCHOR, FUSE, FLOW, and
+# WARD emit canonical envelopes (`shared/signal.schema.json`) and never
+# compute SISPIS scoring. SISPIS receives the envelope, deduplicates by
+# `cause_id`, looks up `signal_type` in this table, applies the calibration,
+# then runs the decision gate.
+#
+# Semantics:
+#   entropy:            mapping of SISPIS entropy dimension -> 0..2 delta
+#   intent_weight:      weight added to W for this signal
+#   minimum_mode:       output floor (cannot be suppressed below this mode)
+#   required_action:    floor applied when envelope.required_action matches
+version: 1
+
+signals:
+  owl.verification_needed:
+    entropy:
+      ambiguity_of_framing: 1
+    intent_weight: 1
+
+  owl.approach_failed:
+    entropy:
+      downstream_impact: 2
+      tradeoff_density: 1
+    intent_weight: 1
+
+  owl.constraint_drift:
+    entropy:
+      ambiguity_of_framing: 1
+      downstream_impact: 1
+    intent_weight: 1
+
+  anchor.recovery_started:
+    entropy:
+      downstream_impact: 1
+    intent_weight: 1
+
+  fuse.retry_bound_exceeded:
+    entropy:
+      downstream_impact: 2
+      tradeoff_density: 1
+    intent_weight: 1
+
+  fuse.overclaimed_evidence:
+    entropy:
+      ambiguity_of_framing: 1
+
+  flow.operational_drag:
+    entropy:
+      tradeoff_density: 1
+      downstream_impact: 1
+    intent_weight: 1
+
+  ward.authority_risk:
+    entropy:
+      downstream_impact: 2
+    intent_weight: 1
+
+  ward.secret_exposure:
+    entropy:
+      downstream_impact: 2
+    intent_weight: 2
+
+  ward.confirmation_required:
+    entropy:
+      downstream_impact: 2
+    intent_weight: 2
+    minimum_mode: explanation
+
+  owl.user_observation_conflict:
+    entropy:
+      ambiguity_of_framing: 2
+      downstream_impact: 1
+    intent_weight: 2
+    minimum_mode: explanation
+
+  owl.circular_verification:
+    entropy:
+      ambiguity_of_framing: 1
+      downstream_impact: 2
+    intent_weight: 2
+
+  owl.cohesion_risk:
+    entropy:
+      tradeoff_density: 1
+      downstream_impact: 1
+    intent_weight: 1
+
+  fuse.conflicting_evidence_unrechecked:
+    entropy:
+      ambiguity_of_framing: 1
+      downstream_impact: 1
+    intent_weight: 1
+
+  flow.responsibility_concentration:
+    entropy:
+      tradeoff_density: 1
+      downstream_impact: 2
+    intent_weight: 2
+
+  flow.change_amplification:
+    entropy:
+      tradeoff_density: 1
+      downstream_impact: 1
+    intent_weight: 1
+
+required_actions:
+  confirm:
+    minimum_mode: explanation
+  refuse:
+    minimum_mode: explanation
+  recover:
+    minimum_mode: explanation
+  reclassify:
+    minimum_mode: explanation

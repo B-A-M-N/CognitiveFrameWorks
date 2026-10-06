@@ -16,9 +16,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DP_ROOT = ROOT.parent / "DigitalPsychology"
+CSW_ROOT = ROOT.parent / "CognitiveStateWork"
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(DP_ROOT))
-from lib.feedback_loop import load_events  # noqa: E402
+from lib.runtime_event_adapter import load_cfw_runtime_events  # noqa: E402
 from lib.routing_profiles import (build_experiment_plan, build_profile,
                                   derive_profiles, promote_profile)  # noqa: E402
 from runtime_contract.routing import comparison_context_hash, prepare_experiment_plan  # noqa: E402
@@ -37,6 +38,7 @@ def main() -> int:
         raw_root = Path(raw)
         os.environ["XDG_RUNTIME_DIR"] = str(raw_root / "runtime")
         os.environ["DIGITALPSYCHOLOGY_STATE_ROOT"] = str(raw_root / "dp-state")
+        os.environ["COGNITIVE_STATEWORK_ROOT"] = str(CSW_ROOT)
         resolve = load("resolve_runtime", ROOT / "scripts" / "resolve-runtime.py")
         load("runtime", ROOT / "scripts" / "runtime.py")
         api_module = load("cognitive_runtime", ROOT / "scripts" / "cognitive_runtime.py")
@@ -172,7 +174,7 @@ def main() -> int:
         telemetry_root = Path(os.environ["XDG_RUNTIME_DIR"]) / "cognitiveframeworks" / "telemetry"
         events = []
         for path in sorted(telemetry_root.glob("*.ndjson")):
-            events.extend(load_events(path))
+            events.extend(load_cfw_runtime_events(path))
         contexts = {}
         for session, request in zip(sessions, session_requests, strict=True):
             experiment = dict(session.bundle.guard_pack["routing_experiment"])

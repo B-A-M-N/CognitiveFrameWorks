@@ -94,35 +94,34 @@ def test_report_is_never_marked_qualification_eligible_without_evidence():
 
 
 def test_agent_adapter_never_fabricates_a_successful_outcome():
-    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
-    # An unparsable agent reply must be recorded as blocked, not as success.
-    assert '"status": "blocked"' in source
-    assert "no parsable JSON from agent" in source
+    adapter = _load("cohort_adapter_failure", ROOT / "scripts" / "cohort" / "agent_codex.py")
+    response = adapter._response_from_agent_message(
+        "not JSON", {"input_tokens": 0, "output_tokens": 0})
+    answer = json.loads(response["answer"])
+    assert response["complete"] is True
+    assert answer["status"] == "blocked"
+    assert "usable JSON answer" in answer["reason"]
+    assert response.get("infrastructure_failure") is not True
 
 
 def test_agent_adapter_satisfies_the_benchmark_line_protocol():
-    """Pin the two protocol facts the harness depends on.
-
-    The benchmark loop ends a trial only when `complete` is True, and every
-    evaluator calls `json.loads(response["answer"])`. Emitting a nested object
-    for `answer`, or omitting `complete`, silently scores every correct trial
-    as a budget failure.
-    """
-    import ast
-    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    payload_defaults = [
-        ast.literal_eval(node.value)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
-        and node.target.id == "payload" and isinstance(node.value, ast.Dict)
-    ]
-    assert payload_defaults, "adapter must declare a default payload"
-    default = payload_defaults[0]
-    assert default.get("complete") is True, "default payload must end the trial"
-    assert default.get("answer") == "", "answer defaults to empty, never a fake success"
-    # The answer is serialized to a string, not left as a nested object.
-    assert "isinstance(answer, str) else json.dumps(answer)" in source
+    """The adapter emits evaluator-compatible JSON and terminal usage."""
+    adapter = _load("cohort_adapter_protocol", ROOT / "scripts" / "cohort" / "agent_codex.py")
+    answer = {"status": "fixed", "reason": "updated the requested file",
+              "files_changed": 1}
+    message = json.dumps({"answer": json.dumps(answer), "complete": True})
+    events = "\n".join(json.dumps(event) for event in (
+        {"type": "item.completed", "item": {
+            "type": "agent_message", "text": message}},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 31, "output_tokens": 7, "total_tokens": 38}},
+    ))
+    final_message, usage = adapter.parse_codex_jsonl(events)
+    response = adapter._response_from_agent_message(final_message, usage)
+    assert json.loads(response["answer"]) == answer
+    assert response["complete"] is True
+    assert response["usage"] == {"input_tokens": 31, "output_tokens": 7}
+    assert response["usage_source"] == "codex.exec.turn.completed"
 
 
 def test_every_task_family_has_a_field_map_entry():
@@ -172,23 +171,39 @@ def test_field_specs_name_the_fields_evaluators_actually_read():
 
 
 def test_adapter_parses_multi_line_json_answers():
-    """The model often emits its JSON across several lines.
-
-    Scanning line-at-a-time missed those entirely and the adapter reported "no
-    parsable JSON" for a correct answer, which scored the trial as a failure.
-    """
-    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
-    assert "raw.splitlines()" not in source.split("parsed_objects")[0][-400:], (
-        "the parser must not scan the output one line at a time")
-    assert 'lines[start:end]' in source, "must scan multi-line chunks"
-    assert "no parsable JSON from agent" in source
+    """Multi-line final JSON remains intact through Codex JSONL parsing."""
+    adapter = _load("cohort_adapter_multiline", ROOT / "scripts" / "cohort" / "agent_codex.py")
+    message = '{\n  "answer": "{\\"status\\": \\"fixed\\", \\"files_changed\\": 1}",\n  "complete": true\n}'
+    events = "\n".join(json.dumps(event) for event in (
+        {"type": "item.completed", "item": {
+            "type": "agent_message", "text": message}},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 3, "output_tokens": 2}},
+    ))
+    final_message, usage = adapter.parse_codex_jsonl(events)
+    response = adapter._response_from_agent_message(final_message, usage)
+    assert json.loads(response["answer"]) == {
+        "status": "fixed", "files_changed": 1}
 
 
 def test_adapter_prefers_the_last_answer_bearing_object():
-    """Codex prints banner and metadata lines before the model's answer."""
-    source = (ROOT / "scripts" / "cohort" / "agent_codex.py").read_text(encoding="utf-8")
-    assert "for parsed in reversed(parsed_objects)" in source, (
-        "must prefer the last JSON object that carries an answer")
+    """Only the last completed agent message is scored."""
+    adapter = _load("cohort_adapter_last_message", ROOT / "scripts" / "cohort" / "agent_codex.py")
+    first = json.dumps({"answer": json.dumps({"status": "blocked"}),
+                        "complete": True})
+    last = json.dumps({"answer": json.dumps({"status": "fixed"}),
+                       "complete": True})
+    events = "\n".join(json.dumps(event) for event in (
+        {"type": "item.completed", "item": {
+            "type": "agent_message", "text": first}},
+        {"type": "item.completed", "item": {
+            "type": "agent_message", "text": last}},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 3, "output_tokens": 2}},
+    ))
+    final_message, usage = adapter.parse_codex_jsonl(events)
+    response = adapter._response_from_agent_message(final_message, usage)
+    assert json.loads(response["answer"]) == {"status": "fixed"}
 
 
 def test_adapter_prompt_states_strict_field_types():

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://digitalpsychology.dev/schemas/guard-pack.schema.json",
+  "title": "Compiled deployable guard pack",
+  "description": "The durable artifact FrameWorks consumes. FrameWorks reads only this file and never imports DigitalPsychology code. Exports ALL deployable guards (active + canary); scoping/budget/canary assignment happens at task composition time.",
+  "type": "object",
+  "required": ["pack_version", "semantic_hash", "content_hash", "compiled_at", "guards"],
+  "properties": {
+    "pack_version": { "type": "string", "minLength": 1 },
+    "source_registry_revision": { "type": "integer", "minimum": 0 },
+    "semantic_hash": { "type": "string", "minLength": 1 },
+    "content_hash": { "type": "string", "minLength": 1 },
+    "compiled_at": { "type": "string", "format": "date-time" },
+    "rollout": {
+      "type": "object",
+      "properties": {
+        "canary_task_determinism": { "type": "string" },
+        "task_ids": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "guards": { "type": "array", "items": { "$ref": "guard.schema.json" } }
+  },
+  "additionalProperties": false
+}

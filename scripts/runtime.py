@@ -34,14 +34,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol
 
-ROOT = Path(__file__).resolve().parents[1]
+from runtime_contract.paths import runtime_asset_root
+
+ROOT = runtime_asset_root()
 LOCAL_CONTRACT_ROOT = ROOT / "contracts"
-if not LOCAL_CONTRACT_ROOT.exists():
-    LOCAL_CONTRACT_ROOT = Path(__file__).resolve().parent / "contracts"
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-if str(ROOT / "scripts") not in sys.path:
-    sys.path.insert(0, str(ROOT / "scripts"))
 
 from runtime_contract.actions import (
     ActionDescriptor, ActionObjectiveBinding, ActionStrategy, AgentActionRequest,
@@ -95,10 +91,13 @@ from runtime_session.host_authority import (
     StateAuthority, _HostCapability, create_state_authority,
 )
 from runtime_session.lifecycle import (
-    ActionPreflightResult, ActionPreparation, ChildPolicyEpoch, ExecutionIdentity,
-    GateDecision, LifecycleController, PolicyEpochRecord,
-    RouteReplanRecommendation, SharedWorkflowMembership,
+    ActionPreflightResult, ActionPreparation, ExecutionIdentity,
+    GateDecision, LifecycleController,
+    SharedWorkflowMembership,
     _canonical_system_one_status,
+)
+from runtime_session.standalone_route_policy import (
+    ChildPolicyEpoch, PolicyEpochRecord, RouteReplanRecommendation,
 )
 from runtime_session.resolver_bridge import resolve_runtime
 

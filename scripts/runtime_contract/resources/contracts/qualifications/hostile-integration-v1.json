@@ -1,0 +1,42 @@
+{
+  "command": [
+    "scripts/acceptance-adversarial-concurrency.py"
+  ],
+  "evidence_class": "hostile_integration",
+  "mandatory_for_release": true,
+  "manifest_version": "1.0.0",
+  "notes": "Structural plus sustained adversarial concurrency, crash, trust, and forward-progress qualification.",
+  "qualification_id": "hostile-integration-v1",
+  "required_evidence": [
+    "sixteen_process_shared_backend",
+    "thousands_of_origin_scoped_events",
+    "concurrent_crash_restart",
+    "deliberate_database_contention",
+    "ordinary_agent_forward_progress_latency",
+    "malformed_observation_rejection",
+    "unsigned_sharing_promotion_rejection",
+    "tampered_sharing_promotion_rejection",
+    "host_managed_signing_authority",
+    "origin_collision_regression",
+    "concurrent_state_regression",
+    "stale_advice_regression",
+    "telemetry_replay",
+    "subprocess_group_cleanup"
+  ],
+  "result_contract": {
+    "path": "contracts/qualification-results/hostile-integration-v1.result.json",
+    "required_fields": [
+      "qualification_id",
+      "status",
+      "source_commits",
+      "completed_at",
+      "command_results"
+    ],
+    "status_values": [
+      "not_run",
+      "pass",
+      "fail",
+      "blocked"
+    ]
+  }
+}

@@ -16,6 +16,25 @@ from .protocol_artifact import (PROTOCOL_HASH as SYSTEM_ONE_PROTOCOL_HASH,
 MAX_SYSTEM_ONE_LATENCY_MS = 30000
 
 
+def task_goal_contract_mapping_hash(contract: Mapping[str, Any]) -> str:
+    """Hash a serialized TaskGoalContract using its canonical identity rules."""
+    if not isinstance(contract, Mapping):
+        return ""
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {str(key): normalize(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [normalize(item) for item in value]
+        return value
+
+    try:
+        payload = json.dumps(normalize(contract), sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return ""
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class SystemOnePolicy:
     """Pinned identity and mode for optional semantic judgments.
@@ -117,17 +136,31 @@ class AcceptanceCriterion:
     kind: str
     required: bool = True
     verification_strength: str = "host_observation"
+    required_boundaries: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("criterion_id", "claim", "kind", "verification_strength"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip() or len(value) > 1024:
                 raise ValueError(f"{name} must be non-empty bounded text")
+        if not isinstance(self.required_boundaries, (tuple, list)):
+            raise ValueError("required_boundaries must be a sequence of identifiers")
+        boundaries = tuple(self.required_boundaries)
+        if (len(boundaries) > 32
+                or any(not isinstance(item, str) or not item.strip() or len(item) > 128
+                       for item in boundaries)
+                or len(set(boundaries)) != len(boundaries)):
+            raise ValueError(
+                "required_boundaries must contain at most 32 unique bounded identifiers")
+        object.__setattr__(self, "required_boundaries", boundaries)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"criterion_id": self.criterion_id, "claim": self.claim,
-                "kind": self.kind, "required": self.required,
-                "verification_strength": self.verification_strength}
+        result = {"criterion_id": self.criterion_id, "claim": self.claim,
+                  "kind": self.kind, "required": self.required,
+                  "verification_strength": self.verification_strength}
+        if self.required_boundaries:
+            result["required_boundaries"] = list(self.required_boundaries)
+        return result
 
 
 @dataclass(frozen=True)
@@ -193,6 +226,8 @@ class TaskGoalContract:
         identifiers = [item.criterion_id for item in criteria]
         if len(set(identifiers)) != len(identifiers):
             raise ValueError("acceptance criterion IDs must be unique")
+        if sum(len(item.required_boundaries) for item in criteria) > 256:
+            raise ValueError("task goal contract is limited to 256 required boundary identifiers")
         if not any(item.required for item in criteria):
             raise ValueError("task goal contract requires at least one required acceptance criterion")
         non_goals = tuple(self.non_goals)
@@ -219,8 +254,7 @@ class TaskGoalContract:
 
     @property
     def contract_hash(self) -> str:
-        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return task_goal_contract_mapping_hash(self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -234,6 +268,9 @@ class TaskRequest:
     phase: Optional[str] = None
     shape: str = "implement"
     domain_tags: Tuple[str, ...] = ()
+    # Host-owned StateWork roots requested for this task. CSW resolves their
+    # dependencies and the resulting plan is pinned into the CFW runtime.
+    requested_statework_ids: Tuple[str, ...] = ()
     operation: Optional[str] = None
     trigger: Optional[str] = None
     model: Optional[str] = None
@@ -343,6 +380,17 @@ class TaskRequest:
                 for key, value in subjects.items()):
             raise ValueError("statework_subject_refs must map bounded StateWork IDs to subjects")
         object.__setattr__(self, "statework_subject_refs", MappingProxyType(subjects))
+        raw_statework_ids = self.requested_statework_ids
+        if not isinstance(raw_statework_ids, (tuple, list, set, frozenset)):
+            raise ValueError("requested_statework_ids must be a sequence of StateWork IDs")
+        statework_ids = tuple(raw_statework_ids)
+        if (len(statework_ids) > 32
+                or any(not isinstance(item, str) or not item.strip() or len(item) > 128
+                       for item in statework_ids)
+                or len(statework_ids) != len(set(statework_ids))):
+            raise ValueError(
+                "requested_statework_ids must contain at most 32 unique bounded IDs")
+        object.__setattr__(self, "requested_statework_ids", tuple(sorted(statework_ids)))
         if self.policy_revocation_revision < 0:
             raise ValueError("policy_revocation_revision must be non-negative")
         if self.revocation_mode not in {"deferred", "immediate"}:

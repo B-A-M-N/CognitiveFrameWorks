@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
-"""Construct each cohort configuration for real and emit DP behavioral telemetry.
+"""Build host-owned runtime treatments for real-agent cohort trials.
 
 The benchmark harness speaks JSON to an agent subprocess. On its own that
 measures the model, not the system under test: it never builds CFW, never binds
 DP, and therefore cannot observe starvation, mode behavior, or fairness. This
 module supplies that missing half.
 
-For each configuration it constructs the real objects:
+The construction helpers below are also used by the per-trial host adapter. A
+qualification trial must keep one host/runtime instance alive across model
+turns, inject context from that instance, and execute model-proposed actions at
+the host boundary. Merely calling :func:`build_session` is a construction
+probe, not trial exposure.
 
-- ``baseline``      : CFW only, DP unbound.
-- ``cfw_csw``       : CFW session with a real CSW WorkflowAuthority.
-- ``cfw_csw_dp``    : the above plus a real DP RuntimeSession bound as the
-                      external behavior authority.
-- ``cfw_csw_dp_laya``: identical composition, but the semantic provider must be
-                      live and attested or the trial is INVALID_TREATMENT.
+The five configurations are:
+
+- ``baseline``       : no CFW, CSW, DP, or Laya runtime.
+- ``cfw``            : CFW only.
+- ``cfw_csw``        : CFW plus one shared CSW WorkflowAuthority.
+- ``cfw_csw_dp``     : the above plus DP through its private stdio MCP.
+- ``cfw_csw_dp_laya``: the above plus a live Laya attestation from that MCP.
 
 Nothing here is stubbed. If a configuration cannot be constructed, that is
 reported rather than silently downgraded to a weaker cell.
@@ -21,8 +26,11 @@ reported rather than silently downgraded to a weaker cell.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -72,11 +80,500 @@ def _real_csw_authority(state_root: Path):
         sys.path.insert(0, str(COW / "scripts"))
     from control_plane import (EvidenceStore, SubjectStateStore,
                                WorkflowAuthority, WorkflowSelectionStore)
+    subject_store = SubjectStateStore(state_root / "csw-subjects.json")
+    evidence_store = EvidenceStore()
+    evidence_path = state_root / "csw-evidence.json"
+    evidence_store.save(evidence_path)
+    selection_store = WorkflowSelectionStore(state_root / "csw-selections.json")
     return WorkflowAuthority(
-        root=COW,
-        state_store=SubjectStateStore(state_root / "csw-subjects.json"),
-        evidence_store=EvidenceStore(),
-        selection_store=WorkflowSelectionStore(state_root / "csw-selections.json"))
+        root=COW, state_store=subject_store, evidence_store=evidence_store,
+        selection_store=selection_store,
+        storage_identity={
+            "state_store": str(Path(subject_store.path).resolve()),
+            "selection_store": str(Path(selection_store.path).resolve()),
+            "evidence_store": str(evidence_path.resolve()),
+        })
+
+
+DP_CONFIGURATIONS = frozenset({"cfw_csw_dp", "cfw_csw_dp_laya"})
+CSW_CONFIGURATIONS = frozenset({"cfw_csw", *DP_CONFIGURATIONS})
+FRAMEWORK_CONFIGURATIONS = frozenset({"cfw", *CSW_CONFIGURATIONS})
+AGENT_FILE_TOOLS = ("read", "inspect", "write")
+MAX_HOST_ACTIONS_PER_TURN = 8
+MAX_HOST_ACTIONS_PER_TRIAL = 128
+MAX_READ_BYTES = 32_768
+
+
+def _runtime_identity(task_id: str, criterion_id: str):
+    if str(DP) not in sys.path:
+        sys.path.insert(0, str(DP))
+    from lib.runtime.contracts import RuntimeIdentity
+    return RuntimeIdentity(
+        namespace_id="tenant-cohort", application_id="cohort-app",
+        application_instance_id="cohort-instance", agent_id="codex",
+        agent_instance_id=f"codex-cohort-{task_id}", session_id=f"session-{task_id}",
+        task_id=task_id, attempt_id="attempt-1",
+        workflow_id=("private:tenant-cohort:cohort-instance:"
+                     f"codex-cohort-{task_id}"), subject_ref=f"repo:{task_id}",
+        segment_id="segment-0", behavioral_subject=f"repo:{task_id}")
+
+
+def _csw_snapshot_context(authority: Any, identity: Any,
+                          candidate_ids: tuple[str, ...]) -> tuple[str, dict[str, Any]]:
+    if authority is None:
+        return "", {}
+    raw = authority.behavioral_snapshot(
+        workflow_scope=identity.csw_scope(), candidate_statework_ids=candidate_ids)
+    # Emit the authority's bounded current view, not model-supplied workflow data.
+    active = [{"statework_id": row["identity"]["statework_id"],
+               "state": row["current_state"], "revision": row["revision"],
+               "eligible_steps": [step["step_id"] for step in row.get("eligible_steps", ())]}
+              for row in raw.get("active_workflows", ())]
+    eligible = [str(row["statework_id"])
+                for row in raw.get("eligible_stateworks", ())]
+    snapshot = {"authority_id": str(getattr(authority, "authority_instance_id", "")),
+                "registry_hash": str(raw.get("registry_hash") or ""),
+                "snapshot_id": str(raw.get("snapshot_id") or ""),
+                "selection_revision": int(raw.get("selection_revision", 0)),
+                "active_workflows": active, "eligible_stateworks": eligible}
+    text = ("===== CSW AUTHORITATIVE WORKFLOW CONTEXT =====\n" +
+            json.dumps(snapshot, sort_keys=True, separators=(",", ":")))
+    return text, snapshot
+
+
+def _safe_workspace_target(workspace: Path, raw: Any) -> Path:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("host file action requires a non-empty target")
+    target = Path(raw)
+    if not target.is_absolute():
+        target = workspace / target
+    target = target.resolve()
+    try:
+        target.relative_to(workspace.resolve())
+    except ValueError as exc:
+        raise PermissionError("host file action escaped the trial workspace") from exc
+    return target
+
+
+def execute_host_file_action(action: Mapping[str, Any], *, workspace: Path) -> dict[str, Any]:
+    """Execute an allowlisted filesystem action as the trusted trial host."""
+    binding = action.get("tool_binding_id") or action.get("tool")
+    args = action.get("arguments") or {}
+    if not isinstance(args, Mapping):
+        raise ValueError("host file action arguments must be an object")
+    target = _safe_workspace_target(workspace, args.get("target", args.get("path")))
+    operation = args.get("operation")
+    if binding in {"read", "inspect"}:
+        if operation == "list":
+            if target.is_file():
+                entries = [target.name]
+            else:
+                entries = sorted(path.name for path in target.iterdir())[:256]
+            return {"status": "pass", "operation": "list", "target": str(target),
+                    "entries": entries}
+        data = target.read_bytes()
+        if len(data) > MAX_READ_BYTES:
+            data = data[:MAX_READ_BYTES]
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError:
+            content = data.decode("utf-8", errors="replace")
+        return {"status": "pass", "operation": "read", "target": str(target),
+                "content": content,
+                "content_digest": hashlib.sha256(data).hexdigest(),
+                "truncated": target.stat().st_size > len(data)}
+    if binding != "write":
+        raise PermissionError(f"host tool {binding!r} is not registered")
+    content = args.get("content")
+    if not isinstance(content, str):
+        raise ValueError("host write content must be text")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(f".{target.name}.cohort-partial")
+    try:
+        staging.write_text(content, encoding="utf-8")
+        os.replace(staging, target)
+    finally:
+        try:
+            staging.unlink()
+        except FileNotFoundError:
+            pass
+    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    return {"status": "pass", "operation": "write", "target": str(target),
+            "content_digest": digest, "bytes_written": target.stat().st_size}
+
+
+class RecordingCFWPort:
+    """Transparent CFW port that preserves gate evidence for the host receipt."""
+    def __init__(self, component_port: Any) -> None:
+        self.component_port = component_port
+        self.gate_receipts: list[dict[str, Any]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.component_port, name)
+
+    def preflight_action(self, action: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = self.component_port.preflight_action(action)
+        self.gate_receipts.append({"stage": "preflight", **dict(result)})
+        return result
+
+    def authorize_action(self, action: Mapping[str, Any]) -> Mapping[str, Any]:
+        result = self.component_port.authorize_action(action)
+        self.gate_receipts.append({"stage": "final", **dict(result)})
+        return result
+
+
+class CohortTrialHost:
+    """One real treatment instance that owns context, actions and receipts."""
+
+    def __init__(self, *, configuration: str, task: Mapping[str, Any],
+                 state_root: Path, workspace: Path) -> None:
+        self.configuration = configuration
+        self.task = dict(task)
+        self.task_id = str(task.get("task_id") or
+                           f"{task.get('task_family', 'trial')}-{task.get('trial', 0)}")
+        self.criterion_id = f"{self.task_id}-criterion"
+        self.state_root = state_root
+        self.workspace = workspace.resolve()
+        self.authority = None
+        self.cfw_session = None
+        self.bridge = None
+        self.client = None
+        self.dp_identity = None
+        self.csw_candidate_ids: tuple[str, ...] = ()
+        self.cfw_port = None
+        self.receipts: list[dict[str, Any]] = []
+        self.context_hashes: list[str] = []
+        self.action_count = 0
+        self.exposure: dict[str, Any] = {}
+        self.closed = False
+
+    async def open(self) -> "CohortTrialHost":
+        if self.configuration not in {"baseline", "cfw", "cfw_csw", *DP_CONFIGURATIONS}:
+            raise HarnessError(f"unknown cohort configuration {self.configuration!r}")
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        use_csw = self.configuration in CSW_CONFIGURATIONS
+        use_cfw = self.configuration in FRAMEWORK_CONFIGURATIONS
+        if use_csw:
+            self.authority = _real_csw_authority(self.state_root)
+        if use_cfw:
+            resolve, runtime = _cfw_modules()
+            authority_options = {}
+            if self.authority is not None:
+                evidence_path = Path(self.authority.storage_components["evidence_store"])
+                authority_options["state_authority"] = runtime.create_state_authority(
+                    self.authority.root,
+                    state_path=self.authority.state_store.path,
+                    evidence_path=evidence_path,
+                    workflow_authority=self.authority)
+            protected = runtime.HostExecutionContext
+            from runtime_contract.actions import ProtectedResourcePolicy
+            default_policy = ProtectedResourcePolicy.default()
+            workspace_root = str(self.workspace)
+            policy = ProtectedResourcePolicy(
+                protected_roots=default_policy.protected_roots,
+                authorized_write_roots=(workspace_root,))
+            host_context = protected(
+                principal="runtime", task_scope=self.task_id,
+                filesystem_scope=(workspace_root,), task_id=self.task_id,
+                protected_resources=policy)
+            request = resolve.TaskRequest(
+                task_id=self.task_id, namespace_id="tenant-cohort",
+                application_id="cohort-app", application_instance_id="cohort-instance",
+                agent_id="codex", agent_instance_id=f"codex-cohort-{self.task_id}",
+                subject_ref=f"repo:{self.task_id}" if use_csw else None,
+                shape="quick",
+                domain_tags=("terminal interface",) if use_csw else ())
+            self.csw_candidate_ids = ("tuid",) if use_csw else ()
+            bundle = resolve.resolve(
+                request, cow_root=(COW if use_csw else ROOT / "statework"),
+                requested_flows={"tuid": "discover"} if use_csw else None)
+            self.csw_candidate_ids = tuple(sorted({
+                str(item.get("id")) for item in bundle.stateworks
+                if isinstance(item, Mapping) and item.get("id")}))
+            self.cfw_session = runtime.start(
+                bundle, telemetry_disabled=True, host_context=host_context,
+                runtime_mode="combined_enforcing" if use_csw else "standalone_enforcing",
+                **authority_options)
+        if self.configuration in DP_CONFIGURATIONS:
+            try:
+                await self._open_private_dp()
+            except BaseException:
+                await self._close_runtime_after_open_failure()
+                raise
+        else:
+            if self.configuration == "cfw":
+                self.exposure = {"frameworks": ["CFW"],
+                                 "cfw_authority_id": str(
+                                     self.cfw_session.identity_authority.authorities
+                                     .state_authority.authority_identity().get("authority_id", ""))
+                                     if self.cfw_session.identity_authority.authorities
+                                     .state_authority is not None else "cfw-runtime"}
+            elif self.configuration == "cfw_csw":
+                scope = _runtime_identity(self.task_id, self.criterion_id).csw_scope()
+                snap = self.authority.behavioral_snapshot(
+                    workflow_scope=scope, candidate_statework_ids=self.csw_candidate_ids)
+                self.exposure = {"frameworks": ["CFW", "CSW"],
+                                 "csw_authority_id": str(self.authority.authority_instance_id),
+                                 "csw_registry_hash": str(snap.get("registry_hash") or ""),
+                                 "csw_snapshot_id": str(snap.get("snapshot_id") or "")}
+            else:
+                self.exposure = {"frameworks": []}
+        return self
+
+    async def _close_runtime_after_open_failure(self) -> None:
+        """Release partial host resources when a treatment handshake fails."""
+        try:
+            if self.bridge is not None:
+                await self.bridge.close()
+            elif self.client is not None:
+                await self.client.close()
+        except Exception:
+            # Preserve the construction/handshake error that invalidated the
+            # treatment while making a best effort to stop its private child.
+            pass
+        finally:
+            close_cfw = getattr(self.cfw_session, "close", None)
+            if callable(close_cfw):
+                close_cfw()
+
+    async def _open_private_dp(self) -> None:
+        if self.cfw_session is None or self.authority is None:
+            raise InvalidTreatment("DP cells require the actual CFW+CSW host composition")
+        if str(DP) not in sys.path:
+            sys.path.insert(0, str(DP))
+        from lib.behavior_state import GoalItemSnapshot, GoalSetSnapshot
+        from lib.host import MCPControlClient
+        from lib.runtime.adapters.cfw import CFWRuntimeAdapter
+        from lib.runtime.adapters.csw import CSWRuntimeAdapter, CSWWorkflowBinding
+        from lib.runtime.host import RuntimeHost
+
+        self.dp_identity = _runtime_identity(self.task_id, self.criterion_id)
+        from host_binding import resolve_bindings
+        raw_bindings = resolve_bindings(
+            self.authority, self.dp_identity,
+            task_context={"candidate_statework_ids": list(self.csw_candidate_ids)})
+        bindings = {str(item.identity["statework_id"]): CSWWorkflowBinding(
+            identity=dict(item.identity), contract_hash=item.contract_hash)
+            for item in raw_bindings}
+        if not bindings:
+            raise InvalidTreatment("CSW authority exposed no eligible workflow binding")
+        self.csw_candidate_ids = tuple(sorted(bindings))
+        csw = CSWRuntimeAdapter(self.authority, identity=self.dp_identity,
+                                bindings=bindings)
+        from digital_psychology_adapter import CFWBehaviorAdapter
+        self.cfw_port = RecordingCFWPort(CFWRuntimeAdapter(
+            CFWBehaviorAdapter(self.cfw_session, self.cfw_session)))
+
+        # The private control child gets a per-trial state root and never joins
+        # the Codex/model MCP registry. The model subprocess gets a sanitized
+        # environment separately in agent_codex_host.py.
+        dp_env = dict(os.environ)
+        dp_env["DIGITALPSYCHOLOGY_ROOT"] = str(DP)
+        dp_env["DIGITALPSYCHOLOGY_STATE_ROOT"] = str(self.state_root / "dp-state")
+        dp_env["DIGITALPSYCHOLOGY_EVENT_DB"] = str(self.state_root / "dp-events.sqlite3")
+        dp_env["DIGITALPSYCHOLOGY_BEHAVIOR_STATE_DB"] = str(
+            self.state_root / "dp-behavior.sqlite3")
+        self.client = MCPControlClient(
+            command=sys.executable, args=("-m", "lib.transport.control_mcp"),
+            cwd=DP, env=dp_env)
+        runtime_host = RuntimeHost(service=None, model_visible_tools=AGENT_FILE_TOOLS)
+        goals = GoalSetSnapshot(revision=0, items=(GoalItemSnapshot(
+            criterion_id=self.criterion_id),))
+        self.bridge = await runtime_host.open_control_bridge(
+            identity=self.dp_identity,
+            objective=str(self.task.get("instruction") or "Complete the benchmark task."),
+            objective_criteria=(self.criterion_id,), initial_goal_set=goals,
+            cfw=self.cfw_port, csw=csw, client=self.client,
+            csw_authority_identity=csw.authority_identity(),
+            host_policy_context={"deliverable_kind": "code",
+                                 "semantic_provider_status": (
+                                     "enabled" if self.configuration.endswith("laya")
+                                     else "disabled")})
+        status = await self.bridge.lifecycle_hooks.open()
+        if status.get("status") != "ready" or self.bridge._needs_reconciliation:
+            raise InvalidTreatment("private DP stdio host session did not reconcile")
+        # This record is fetched through DP's private MCP endpoint. In the Laya
+        # arm it proves the running child, rather than local caller metadata,
+        # loaded the attested provider.
+        self.dp_record = await self.client.behavioral_trial_record(
+            self.dp_identity.scope, trial_id=self.task_id)
+        if self.configuration.endswith("laya"):
+            from lib.telemetry.behavioral_trace import provider_status
+            attestation = self.dp_record.get("semantic_provider_attestation")
+            required = REQUIRED_PROVIDER_ATTESTATION
+            missing = [key for key in required
+                       if not isinstance(attestation, Mapping) or not attestation.get(key)]
+            if (missing or attestation.get("backend_id") != "digitalpsychology-laya-native"
+                    or attestation.get("provider_mode") not in {"shadow", "advisory"}
+                    or provider_status(attestation, factory_configured=True)
+                    != attestation.get("provider_mode")):
+                raise InvalidTreatment(
+                    "private DP MCP lacks a live pinned Laya capability handshake")
+        self.exposure = {
+            "frameworks": ["CFW", "CSW", "DP"] +
+                          (["Laya"] if self.configuration.endswith("laya") else []),
+            "private_dp_mcp": True,
+            "dp_control_session_id": self.dp_identity.scope,
+            "dp_behavior_revision": int(status.get("behavior_revision", -1)),
+            "csw_authority_id": str(self.authority.authority_instance_id),
+            "csw_registry_hash": str(self.dp_record.get("csw_registry_hash") or
+                                      self.authority.registry_hash),
+            "csw_bindings": list(self.csw_candidate_ids),
+            "semantic_provider_attestation": (
+                dict(self.dp_record.get("semantic_provider_attestation") or {})),
+        }
+
+    async def context_for_turn(self) -> str:
+        if self.bridge is not None:
+            context = await self.bridge.before_model_call("", tool_capable=True)
+        elif self.cfw_session is not None:
+            context = self.cfw_session.before_model_call(tool_capable=True)
+            if self.authority is not None:
+                identity = _runtime_identity(self.task_id, self.criterion_id)
+                csw_context, _ = _csw_snapshot_context(
+                    self.authority, identity, self.csw_candidate_ids)
+                context = f"{context}\n\n{csw_context}"
+        else:
+            context = "No CFW, CSW, or DP runtime is configured for this baseline cell."
+        if not isinstance(context, str) or not context.strip():
+            raise HarnessError("selected treatment produced no model context")
+        context_hash = hashlib.sha256(context.encode("utf-8")).hexdigest()
+        self.context_hashes.append(context_hash)
+        return context
+
+    async def execute_action(self, action: Mapping[str, Any], *, turn: int,
+                             action_number: int) -> dict[str, Any]:
+        if self.closed:
+            raise HarnessError("trial host is closed")
+        if not isinstance(action, Mapping):
+            raise ValueError("model action proposal must be an object")
+        if self.action_count >= MAX_HOST_ACTIONS_PER_TRIAL:
+            raise HarnessError("trial host action budget exhausted")
+        if action_number >= MAX_HOST_ACTIONS_PER_TURN:
+            raise HarnessError("turn host action budget exhausted")
+        action = dict(action)
+        binding = action.get("tool_binding_id") or action.get("tool")
+        args = action.get("arguments") or {}
+        if binding not in AGENT_FILE_TOOLS or not isinstance(args, Mapping):
+            raise PermissionError("model proposed an unregistered host file action")
+        args = dict(args)
+        args.setdefault("target", args.get("path"))
+        action = {"tool_binding_id": str(binding), "arguments": args,
+                  "subject_ref": (self.dp_identity.subject_ref if self.dp_identity
+                                  else f"repo:{self.task_id}")}
+        action_id = f"{self.task_id}-turn-{turn}-action-{action_number}"
+        request_digest = hashlib.sha256(json.dumps(
+            action, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+        gate_details: dict[str, Any] = {"status": "not_applicable"}
+        request_id = None
+
+        if self.bridge is not None:
+            from lib.runtime.contracts import ActionCandidate
+            candidate = ActionCandidate(
+                action_class="read" if binding in {"read", "inspect"} else "write",
+                proposed_purpose="DIRECT_GOAL", proposed_reason="model-proposed task action",
+                affected_criterion_ids=(self.criterion_id,), action_id=action_id,
+                tool_name=str(binding), operation=str(binding),
+                mutating=binding == "write", reversible=binding == "write",
+                external=False, target_kind="workspace", target_ref_digest=request_digest)
+            self.cfw_port.gate_receipts.clear()
+            gate_details = await self.bridge.before_action_candidate(
+                candidate, cfw_action_request=action)
+            request_id = gate_details.get("action_request_id")
+            if (gate_details.get("status") != "ready"
+                    or gate_details.get("action_authorized") is False):
+                receipt = {"receipt_id": action_id, "action_digest": request_digest,
+                           "tool": binding, "executed": False,
+                           "result": {"status": "blocked", "reason":
+                                      str(gate_details.get("reason") or
+                                          gate_details.get("status"))},
+                           "cfw_gate_receipts": list(self.cfw_port.gate_receipts),
+                           "dp_boundary": dict(gate_details)}
+                self.receipts.append(receipt)
+                return {"receipt": receipt, "output": receipt["result"], "authorized": False}
+        elif self.cfw_session is not None:
+            prepared = self.cfw_session.prepare_action(action)
+            gate_details = {
+                "decision": prepared.decision.value,
+                "action_request_id": prepared.action_request_id,
+                "action_digest": prepared.action_digest,
+                "reason_codes": list(prepared.reason_codes),
+            }
+            request_id = prepared.action_request_id
+            if prepared.decision.value != "allow":
+                receipt = {"receipt_id": action_id, "action_digest": request_digest,
+                           "tool": binding, "executed": False,
+                           "result": {"status": "blocked", "reason": prepared.decision.value},
+                           "cfw_gate": gate_details}
+                self.receipts.append(receipt)
+                return {"receipt": receipt, "output": receipt["result"], "authorized": False}
+
+        try:
+            actual_result = execute_host_file_action(action, workspace=self.workspace)
+        except Exception as exc:
+            actual_result = {"status": "fail", "reason": f"{type(exc).__name__}: {exc}"[:256]}
+        result_payload = {key: value for key, value in actual_result.items()
+                          if key != "content"}
+        result_digest = hashlib.sha256(json.dumps(
+            actual_result, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+        cfw_result_ref = None
+        if self.cfw_session is not None:
+            cfw_result_ref = self.cfw_session._host_ingress().record_tool_result(
+                str(binding), str(actual_result.get("status", "fail")),
+                action["subject_ref"], invocation_id=action_id,
+                result_digest=result_digest, action_request_id=request_id,
+                actual_result={"result_digest": result_digest,
+                               "workspace_target": result_payload.get("target")})
+            self.cfw_session._host_ingress().complete_action()
+        dp_result: Mapping[str, Any] | None = None
+        if self.bridge is not None:
+            from lib.runtime.contracts import RuntimeObservation
+            action_index = max(1, int(self.bridge._action_index) + 1)
+            post_observation = RuntimeObservation(
+                action_index=action_index, action_completed=True,
+                artifact_changed=binding == "write",
+                criterion_status={self.criterion_id: "unmet"},
+                goal_set=self.bridge.goal_set)
+            dp_result = await self.bridge.after_action(post_observation)
+            if dp_result.get("status") != "ready":
+                raise InvalidTreatment("private DP MCP did not commit the host action boundary")
+            self.dp_record = await self.client.behavioral_trial_record(
+                self.dp_identity.scope, trial_id=self.task_id)
+        self.action_count += 1
+        receipt = {
+            "receipt_id": action_id, "action_digest": request_digest,
+            "tool": binding, "executed": True,
+            "result": result_payload, "result_digest": result_digest,
+            "cfw_gate": dict(gate_details),
+            "cfw_gate_receipts": list(self.cfw_port.gate_receipts)
+                                  if self.cfw_port is not None else [],
+            "cfw_tool_result_evidence_ref": cfw_result_ref,
+            "dp_committed_boundary": dict(dp_result) if dp_result is not None else None,
+            "csw_authority_id": str(getattr(self.authority,
+                                            "authority_instance_id", "")),
+        }
+        self.receipts.append(receipt)
+        return {"receipt": receipt, "output": actual_result, "authorized": True}
+
+    async def behavioral_record(self, *, trial_id: str) -> dict[str, Any] | None:
+        if self.bridge is None:
+            return None
+        return await self.client.behavioral_trial_record(
+            self.dp_identity.scope, trial_id=trial_id)
+
+    async def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            if self.bridge is not None:
+                await self.bridge.close()
+            elif self.client is not None:
+                await self.client.close()
+        finally:
+            close_cfw = getattr(self.cfw_session, "close", None)
+            if callable(close_cfw):
+                close_cfw()
 
 
 def build_session(*, configuration: str, task_id: str, state_root: Path,

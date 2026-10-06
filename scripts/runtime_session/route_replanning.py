@@ -4,15 +4,15 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
-import yaml
 from runtime_contract.actions import ActionDescriptor, AgentActionRequest
 from runtime_contract.convergence import TERMINAL_DISPOSITIONS
+from runtime_contract.workflow_port import WorkflowRouteRanking
 from runtime_session.host_authority import _HostCapability
-from runtime_session.lifecycle import (
-    ChildPolicyEpoch, PolicyEpochRecord, RouteReplanRecommendation,
+from runtime_session.standalone_route_policy import (
+    ChildPolicyEpoch, PolicyEpochRecord, RoutePolicyContext,
+    RouteReplanRecommendation, RouteSelectionUnavailable, SemanticRouteResolution,
 )
 
 from runtime_session.resolver_bridge import resolve_runtime
@@ -20,27 +20,52 @@ from runtime_session.resolver_bridge import resolve_runtime
 
 class RouteReplanningMethods:
     """Session-facing policy epoch validation for host-selected legal routes."""
-    def _validate_child_route_bundle(self, route: str, target_statework_id: str,
-                                      child: resolve_runtime.RuntimeBundle) -> None:
-        """Require a resolver-produced child that changes only one legal flow."""
-        pieces = route.split(":", 2)
-        if len(pieces) != 3 or pieces[0] != "flow" or pieces[1] != target_statework_id:
-            raise ValueError("route must identify the target StateWork flow")
-        flow_name = pieces[2]
-        if not flow_name or len(flow_name) > 64 or any(char in flow_name for char in "/\\\0"):
-            raise ValueError("route flow name is malformed")
+    def _validate_child_route_bundle(self, route_id: str,
+                                      child: resolve_runtime.RuntimeBundle, *,
+                                      expected_route_digest: Optional[str] = None) -> None:
+        """Validate a child using neutral route pins and CFW-owned policy identity."""
+        if not isinstance(route_id, str) or not route_id or len(route_id) > 192:
+            raise ValueError("workflow route candidate ID is malformed")
         if not isinstance(child, resolve_runtime.RuntimeBundle):
             raise ValueError("legal route must be represented by a resolved runtime bundle")
-        resolve_runtime._policy_from_bundle(self.bundle)
-        resolve_runtime._policy_from_bundle(child)
-        if child.task_id != self.bundle.task_id or child.statework_root != self.bundle.statework_root:
-            raise ValueError("child route changed task or StateWork source")
+        if child.task_id != self.bundle.task_id:
+            raise ValueError("child route changed task identity")
+        parent_cfw = self.bundle.cfw_policy_snapshot
+        child_cfw = child.cfw_policy_snapshot
+        parent_composite = self.bundle.composite_snapshot
+        child_composite = child.composite_snapshot
+        if (parent_cfw is None or child_cfw is None
+                or parent_composite is None or child_composite is None):
+            raise PermissionError("route candidates require pinned CFW and composite snapshots")
+        if (parent_cfw.policy_hash != child_cfw.policy_hash
+                or parent_composite.cfw_policy_hash != parent_cfw.policy_hash
+                or child_composite.cfw_policy_hash != child_cfw.policy_hash):
+            raise PermissionError("child workflow route changed CFW-owned policy")
+        for candidate in (self.bundle, child):
+            cfw_snapshot = candidate.cfw_policy_snapshot
+            composite_snapshot = candidate.composite_snapshot
+            pinned_cfw = candidate.pinned.get("cfw_policy_snapshot")
+            pinned_composite = candidate.pinned.get("composite_snapshot")
+            if (candidate.pinned.get("cfw_policy_hash") != cfw_snapshot.policy_hash
+                    or not isinstance(pinned_cfw, Mapping)
+                    or pinned_cfw.get("cfw_policy_hash") != cfw_snapshot.policy_hash
+                    or pinned_composite != composite_snapshot.to_dict()):
+                raise resolve_runtime.SnapshotIntegrityError(
+                    "route candidate snapshot does not match its immutable pins")
+        stable_composite_fields = (
+            "csw_registry_hash", "host_goal_contract_hash",
+            "model_harness_toolset_hash", "dp_policy_contract_hash",
+            "laya_identity_hash",
+        )
+        if any(getattr(parent_composite, name) != getattr(child_composite, name)
+               for name in stable_composite_fields):
+            raise PermissionError("child route changed unrelated composite runtime identity")
+        actual_digest = child.workflow_route_contract_digests.get(route_id)
+        if (actual_digest is None or (expected_route_digest is not None
+                                      and actual_digest != expected_route_digest)):
+            raise resolve_runtime.SnapshotIntegrityError(
+                "child route differs from the workflow owner's pinned route contract")
 
-        before, after = self.bundle.policy.canonical(), child.policy.canonical()
-        mutable_policy_fields = {"kernel", "capsules", "stateworks"}
-        if set(before) != set(after) or any(
-                before[key] != after[key] for key in before if key not in mutable_policy_fields):
-            raise PermissionError("child route changed policy outside flow-derived content")
         for field_name in (
                 "namespace_id", "application_id", "application_instance_id", "agent_id",
                 "agent_instance_id", "attempt_id", "interaction_id", "parent_session_id",
@@ -57,199 +82,143 @@ class RouteReplanningMethods:
                 or self.bundle.guard_pack.get("routing_experiment")
                 != child.guard_pack.get("routing_experiment")):
             raise PermissionError("child route changed host guards or routing authority")
-
-        parent_stateworks = list(self.bundle.stateworks)
-        child_stateworks = list(child.stateworks)
-        if len(parent_stateworks) != len(child_stateworks):
-            raise PermissionError("child route changed the required StateWork set")
-        parent_target = child_target = None
-        for left, right in zip(parent_stateworks, child_stateworks):
-            if left.get("id") != right.get("id"):
-                raise PermissionError("child route reordered or replaced StateWorks")
-            if left.get("id") == target_statework_id:
-                parent_target, child_target = left, right
-                flow_derived_fields = {"selected_flow", "flow_integrations",
-                                       "flow_metadata"}
-                for key in set(left) | set(right):
-                    if (key not in flow_derived_fields
-                            and left.get(key) != right.get(key)):
-                        raise PermissionError("child route changed a StateWork contract")
-            elif left != right:
-                raise PermissionError("child route changed a different StateWork")
-        if parent_target is None or child_target is None:
-            raise ValueError("route target is not required by the pinned task")
-        selected = child_target.get("selected_flow")
-        if not isinstance(selected, (list, tuple)) or len(selected) != 2:
-            raise ValueError("child bundle has no pinned selected flow")
-        relative_path, content_hash = str(selected[0]), str(selected[1])
-        flow_path = Path(relative_path)
-        if (flow_path.is_absolute() or ".." in flow_path.parts
-                or flow_path.parts[:1] != (target_statework_id,)
-                or flow_path.parent.name != flow_name):
-            raise ValueError("child bundle did not resolve the selected legal flow")
-        root = Path(child.statework_root).resolve()
-        resolved_flow = (root / flow_path).resolve()
-        try:
-            resolved_flow.relative_to(root)
-        except ValueError as exc:
-            raise PermissionError("child flow escaped its StateWork source") from exc
-        if not resolved_flow.is_file() or resolve_runtime.sha256(resolved_flow) != content_hash:
-            raise resolve_runtime.SnapshotIntegrityError(
-                "child flow content no longer matches its resolved snapshot")
-    def _record_route_replan_blocker(self, *, target_statework_id: str,
+    def _record_route_replan_blocker(self, *, target_workflow_id: str,
                                      reason: str,
                                      legal_routes: Sequence[str] = ()) -> None:
-        self._journal("route_replan_blocked", target_statework_id=target_statework_id,
+        self._journal("route_replan_blocked", target_workflow_id=target_workflow_id,
                       reason=reason, legal_routes=sorted(legal_routes))
         self._emit_runtime({
             "category": "blocker", "event_type": "route_replan_blocked",
-            "subject": self.current_segment.subject_ref,
+            "subject": self.lifecycle_workflow.current_segment.subject_ref,
             "payload": {"summary": reason[:256], "result_class": "blocked"}})
     def _rank_legal_routes(
             self, capability: _HostCapability, *,
             legal_children: Mapping[str, resolve_runtime.RuntimeBundle],
-            state_revision: int, target_statework_id: str,
+            state_revision: int, target_workflow_id: str,
             route_preference: Optional[str] = None,
             preference_source: str = "metacognition"
             ) -> Optional[RouteReplanRecommendation]:
         self._require_host(capability)
-        if self.external_behavior_authority:
+        if self.behavior.is_external:
             return None
         if self._evaluate_metacognition().mode != "REPLAN":
             return None
-        if self.termination_disposition in TERMINAL_DISPOSITIONS:
+        if self.lifecycle_workflow.termination_disposition in TERMINAL_DISPOSITIONS:
             raise PermissionError("a terminated task cannot request a route replan")
-        if self._pending_action_requests:
+        if self.actions.pending_action_requests:
             raise PermissionError("route ranking requires an action boundary with no pending calls")
-        if not isinstance(state_revision, int) or state_revision < 0:
-            raise ValueError("current StateWork revision must be a non-negative integer")
-        if not target_statework_id or len(target_statework_id) > 64:
-            raise ValueError("route ranking requires a bounded StateWork ID")
+        if type(state_revision) is not int or state_revision < 0:
+            raise ValueError("current workflow revision must be a non-negative integer")
+        if not isinstance(target_workflow_id, str) or not target_workflow_id \
+                or len(target_workflow_id) > 128:
+            raise ValueError("route ranking requires a bounded workflow ID")
         if not isinstance(legal_children, Mapping) or len(legal_children) > 16:
-            raise ValueError("route ranking accepts at most sixteen host-resolved legal flows")
-        if preference_source not in {"metacognition", "operator", "learned_profile"}:
-            raise ValueError("unsupported deterministic route preference source")
+            raise ValueError("route ranking accepts at most sixteen resolved candidates")
         children = dict(legal_children)
-        for route, child in children.items():
-            if not isinstance(route, str):
-                raise ValueError("legal flow route IDs must be strings")
-            self._validate_child_route_bundle(route, target_statework_id, child)
+        for route_id, child in children.items():
+            if not isinstance(route_id, str):
+                raise ValueError("workflow route candidate IDs must be strings")
+            self._validate_child_route_bundle(route_id, child)
+
+        workflow_port = self.identity_authority.authorities.workflow_port
+        ranker = getattr(workflow_port, "rank_legal_routes", None)
+        if not callable(ranker):
+            self._record_route_replan_blocker(
+                target_workflow_id=target_workflow_id,
+                reason="workflow authority cannot rank legal routes")
+            return None
+        runtime_identity = dict(self.bundle.workflow_runtime_identity)
+        workflow_context = dict(self.bundle.workflow_task_context)
+        if not runtime_identity or not workflow_context:
+            raise PermissionError("route ranking requires the task-scoped workflow context")
+        ranking = ranker(
+            runtime_identity=runtime_identity, task_context=workflow_context,
+            workflow_id=target_workflow_id,
+            candidate_routes=tuple(sorted(children)),
+            expected_workflow_revision=state_revision)
+        if isinstance(ranking, Mapping):
+            ranking = WorkflowRouteRanking(**dict(ranking))
+        if not isinstance(ranking, WorkflowRouteRanking):
+            raise TypeError("workflow authority returned an invalid route ranking")
+        legal_routes = ranking.legal_routes
+        route_digests = dict(ranking.route_contract_digests)
+        route_scores = dict(ranking.scores)
+        registry_hash = ranking.registry_hash
+        if (ranking.workflow_id != target_workflow_id
+                or ranking.workflow_revision != state_revision
+                or not set(legal_routes).issubset(children)):
+            raise PermissionError("workflow authority returned an invalid route ranking")
+        for route in legal_routes:
+            self._validate_child_route_bundle(
+                route, children[route], expected_route_digest=route_digests[route])
+        children = {route: children[route] for route in legal_routes}
         if not children:
             self._record_route_replan_blocker(
-                target_statework_id=target_statework_id,
-                reason="no host-resolved legal route is available")
+                target_workflow_id=target_workflow_id,
+                reason="no workflow-authorized legal route is available")
             return None
 
-        selected = route_preference
-        source = preference_source
-        semantic_decision_ref: Optional[str] = None
-        confidence = 1.0
-        if selected is not None:
-            if selected not in children:
-                raise ValueError("preferred route must be one of the host-resolved legal flows")
-            if source == "learned_profile":
-                adjustments = self.bundle.guard_pack.get("routing_adjustments", ())
-                if not any(item.get("route_type") == "flow"
-                           and item.get("disposition") == "prefer"
-                           and item.get("route") in {selected, selected.split(":", 2)[-1]}
-                           for item in adjustments):
-                    raise PermissionError("learned route preference is not pinned in this policy")
-        elif len(children) == 1:
-            selected = next(iter(children))
-            source = "metacognition"
-        else:
-            domains = set(self.bundle.pinned.get("domain_tags") or ())
-            task_shape = self.bundle.pinned.get("task_shape")
-            operation = self.bundle.pinned.get("operation")
-            trigger = self.bundle.pinned.get("trigger")
-            current_state = self.statework_states.get(
-                (target_statework_id, self.current_segment.subject_ref or ""))
-            flow_contracts: Dict[str, Mapping[str, Any]] = {}
-            for route, child in children.items():
-                pin = next((item for item in child.stateworks
-                            if item.get("id") == target_statework_id), None)
-                selected_flow = pin.get("selected_flow") if pin else None
-                if not selected_flow:
-                    continue
-                flow_path = Path(child.statework_root) / str(selected_flow[0])
-                parts = flow_path.read_text(encoding="utf-8").split("---", 2)
-                metadata = yaml.safe_load(parts[1]) if len(parts) == 3 else {}
-                metadata = metadata if isinstance(metadata, Mapping) else {}
-                flow_contracts[route] = metadata
-            target_pin = next((item for item in self.bundle.stateworks
-                               if item.get("id") == target_statework_id), None)
-            flow_policy = dict((target_pin or {}).get("flow_selection") or {})
-            selector = resolve_runtime._flow_selector(
-                Path(self.bundle.statework_root))
-            selection = selector.select(
-                flow_contracts,
-                {"operation": operation, "trigger": trigger,
-                 "task_shape": task_shape, "phase": self.bundle.pinned.get("phase"),
-                 "domain_tags": sorted(domains), "current_state": current_state},
-                flow_policy)
-            scores = dict(selection.scores)
-            if not scores:
-                self._record_route_replan_blocker(
-                    target_statework_id=target_statework_id,
-                    reason="no legal route matches the current selector context")
-                return None
-            top_score = max(scores.values())
-            top_routes = sorted(route for route, score in scores.items()
-                                if score == top_score)
-            if len(top_routes) == 1:
-                selected = top_routes[0]
-                source = "metacognition"
-            else:
-                policy = self._system_one_policy()
-                if policy.mode != "advisory" or self.system_one_judge is None:
-                    self._record_route_replan_blocker(
-                        target_statework_id=target_statework_id,
-                        reason="legal routes are tied and no calibrated semantic resolver is available",
-                        legal_routes=top_routes)
-                    return None
-                candidate = self.metacognitive_state.make_candidate(
-                    "validation", source="host_observed", action_class="route_ranking",
-                    host_declared_relation="ambiguous", target_kind="statework",
-                    proposed_purpose="resolve equally specific legal StateWork flows",
-                    proposed_purpose_source="host_observed")
-                judgment = self._system_one_query(
-                    questions=("route_preference",), candidate=candidate,
-                    subject_ref=self.current_segment.subject_ref,
-                    route_candidates=tuple(top_routes),
-                    route_state_revision=state_revision,
-                    route_statework_id=target_statework_id)
-                if judgment is None:
-                    self._record_route_replan_blocker(
-                        target_statework_id=target_statework_id,
-                        reason="semantic route resolution did not produce an answer",
-                        legal_routes=top_routes)
-                    return None
-                decision = self.system_one_decisions.get(judgment.request_id) or {}
-                answer = judgment.answer("route_preference")
-                calibrated_ids = set(decision.get("calibrated_question_ids") or ())
-                confidence = answer.calibrated_confidence if answer else None
-                if ("route_preference" not in calibrated_ids or answer is None
-                        or confidence is None
-                        or confidence < policy.confidence_threshold("route_preference")
-                        or answer.selected not in top_routes):
-                    self._record_route_replan_blocker(
-                        target_statework_id=target_statework_id,
-                        reason="semantic route answer is not calibrated for the tied legal candidates",
-                        legal_routes=top_routes)
-                    return None
-                selected = answer.selected
-                source = "semantic_advisory"
-                semantic_decision_ref = judgment.request_id
-        assert selected is not None
-        reason = {
-            "metacognition": "deterministic_route_specificity",
-            "operator": "operator_route_preference",
-            "learned_profile": "learned_profile_route_preference",
-            "semantic_advisory": "semantic_route_recommendation",
-        }[source]
+        def resolve_semantic_tie(routes: tuple[str, ...]) -> SemanticRouteResolution:
+            policy = self._system_one_policy()
+            if policy.mode != "advisory" or self.behavior.system_one_judge is None:
+                return SemanticRouteResolution(
+                    None, None, None, False,
+                    "legal routes are tied and no calibrated semantic resolver is available")
+            candidate = self.behavior.metacognitive.make_candidate(
+                "validation", source="host_observed", action_class="route_ranking",
+                host_declared_relation="ambiguous", target_kind="workflow",
+                proposed_purpose="resolve equally ranked legal workflow routes",
+                proposed_purpose_source="host_observed")
+            judgment = self._system_one_query(
+                questions=("route_preference",), candidate=candidate,
+                subject_ref=self.lifecycle_workflow.current_segment.subject_ref,
+                route_candidates=routes, route_state_revision=state_revision,
+                route_workflow_id=target_workflow_id)
+            if judgment is None:
+                return SemanticRouteResolution(
+                    None, None, None, False,
+                    "semantic route resolution did not produce an answer")
+            decision = self.behavior.system_one_decisions.get(judgment.request_id) or {}
+            answer = judgment.answer("route_preference")
+            calibrated_ids = set(decision.get("calibrated_question_ids") or ())
+            return SemanticRouteResolution(
+                route=answer.selected if answer else None,
+                decision_ref=judgment.request_id,
+                confidence=(answer.calibrated_confidence if answer else None),
+                calibrated="route_preference" in calibrated_ids)
+
+        adjustments = self.bundle.guard_pack.get("routing_adjustments", ())
+        learned_routes = frozenset(
+            item.get("route") for item in adjustments
+            if isinstance(item, Mapping)
+            and item.get("route_type") == "flow"
+            and item.get("disposition") == "prefer"
+            and isinstance(item.get("route"), str))
+        system_one_policy = self._system_one_policy()
+        route_policy = self.ensure_standalone_behavior_authority().route_policy
+        try:
+            selection = route_policy.select(
+                tuple(children), RoutePolicyContext(
+                    route_preference=route_preference,
+                    preference_source=preference_source,
+                    scores=route_scores,
+                    learned_preferred_routes=learned_routes,
+                    confidence_threshold=system_one_policy.confidence_threshold(
+                        "route_preference"),
+                    resolve_tie=resolve_semantic_tie))
+        except RouteSelectionUnavailable as error:
+            self._record_route_replan_blocker(
+                target_workflow_id=target_workflow_id,
+                reason=error.reason, legal_routes=error.legal_routes)
+            return None
+        selected = selection.route
+        source = selection.source
+        reason = selection.reason
+        confidence = selection.confidence
+        semantic_decision_ref = selection.semantic_decision_ref
         if semantic_decision_ref:
             decision_id = semantic_decision_ref
-            semantic_decision = self.system_one_decisions[decision_id]
+            semantic_decision = self.behavior.system_one_decisions[decision_id]
             state_digest = semantic_decision["state_digest"]
             request_digest = semantic_decision["request_digest"]
             sequence = int(semantic_decision["sequence"])
@@ -259,25 +228,31 @@ class RouteReplanningMethods:
                 selection_reason=f"policy_epoch:{reason}",
                 event_type="route_replan_recommended")
             state_digest = hashlib.sha256(json.dumps({
-                "metacognitive": self.metacognitive_state.snapshot(),
+                "metacognitive": self.behavior.metacognitive.snapshot(),
                 "state_revision": state_revision,
                 "legal_routes": sorted(children),
+                "workflow_registry_hash": registry_hash,
+                "route_contract_digests": {
+                    route: route_digests[route] for route in sorted(children)},
             }, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
             request_digest = hashlib.sha256(json.dumps({
                 "decision_id": decision_id, "route": selected, "source": source,
                 "state_digest": state_digest,
             }, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-            sequence = self.system_one_sequence
+            sequence = self.behavior.system_one_sequence
         recommendation = RouteReplanRecommendation(
             route=selected, decision_id=decision_id, source=source,
             source_state_digest=state_digest,
             request_digest=request_digest, sequence=sequence,
             confidence=float(confidence), state_revision=state_revision,
-            target_statework_id=target_statework_id,
-            source_metacognitive_revision=self.metacognitive_state.logical_revision,
+            workflow_ranking=ranking,
+            source_metacognitive_revision=self.behavior.metacognitive.logical_revision,
             legal_routes_digest=hashlib.sha256(json.dumps(
                 sorted(children), separators=(",", ":")).encode()).hexdigest(),
             policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
+            workflow_registry_hash=registry_hash,
+            route_contract_digests={route: route_digests[route]
+                                    for route in legal_routes},
             legal_children=children,
             semantic_decision_ref=semantic_decision_ref)
         self._journal("route_replan_recommended", recommendation={
@@ -290,8 +265,10 @@ class RouteReplanningMethods:
             "sequence": recommendation.sequence,
             "confidence": recommendation.confidence,
             "state_revision": state_revision,
-            "target_statework_id": target_statework_id,
+            "target_workflow_id": target_workflow_id,
             "legal_routes": sorted(children),
+            "workflow_registry_hash": recommendation.workflow_registry_hash,
+            "route_contract_digests": dict(recommendation.route_contract_digests),
             "source_metacognitive_revision": recommendation.source_metacognitive_revision,
             "legal_routes_digest": recommendation.legal_routes_digest,
             "policy_hash": recommendation.policy_hash,
@@ -302,18 +279,29 @@ class RouteReplanningMethods:
             recommendation: RouteReplanRecommendation, *, selected_route: str,
             current_state_revision: int) -> ChildPolicyEpoch:
         self._require_host(capability)
+        route_policy = self.behavior.standalone_route_policy
+        if route_policy is None:
+            raise PermissionError("child policy epochs require standalone CFW route policy")
         if not isinstance(recommendation, RouteReplanRecommendation):
             raise TypeError("child policy epoch requires a host route recommendation")
-        if self.termination_disposition in TERMINAL_DISPOSITIONS:
+        if self.lifecycle_workflow.termination_disposition in TERMINAL_DISPOSITIONS:
             raise PermissionError("a terminated task cannot enter a child policy epoch")
-        if self._pending_action_requests:
+        if self.actions.pending_action_requests:
             raise PermissionError("child policy epoch requires no pending action calls")
         if (recommendation.source == "semantic_advisory"
-                and recommendation.sequence != self.system_one_sequence):
+                and recommendation.sequence != self.behavior.system_one_sequence):
             raise PermissionError("semantic route recommendation is stale after subsequent System-1 activity")
         if current_state_revision != recommendation.state_revision:
-            raise PermissionError("StateWork revision changed after route ranking")
-        if recommendation.source_metacognitive_revision != self.metacognitive_state.logical_revision:
+            raise PermissionError("workflow revision changed after route ranking")
+        revalidate = getattr(self.identity_authority.authorities.workflow_port, "validate_route_ranking", None)
+        if not callable(revalidate):
+            raise PermissionError("workflow authority cannot revalidate its route ranking")
+        if not revalidate(
+                runtime_identity=dict(self.bundle.workflow_runtime_identity),
+                task_context=dict(self.bundle.workflow_task_context),
+                ranking=recommendation.workflow_ranking):
+            raise PermissionError("workflow route ranking changed before policy epoch creation")
+        if recommendation.source_metacognitive_revision != self.behavior.metacognitive.logical_revision:
             raise PermissionError("route recommendation is stale after metacognitive state changed")
         expected_routes_digest = hashlib.sha256(json.dumps(
             sorted(recommendation.legal_children), separators=(",", ":")).encode()).hexdigest()
@@ -323,13 +311,14 @@ class RouteReplanningMethods:
         if selected_route not in recommendation.legal_children:
             raise PermissionError("host selected a route outside the resolved legal candidates")
         if recommendation.source == "semantic_advisory":
-            decision = self.system_one_decisions.get(recommendation.decision_id)
+            decision = self.behavior.system_one_decisions.get(recommendation.decision_id)
             if (not decision or decision.get("policy_hash") != self.bundle.pinned.get("policy_hash")
                     or decision.get("request_digest") != recommendation.request_digest
                     or decision.get("state_digest") != recommendation.source_state_digest
                     or decision.get("sequence") != recommendation.sequence
                     or decision.get("route_state_revision") != current_state_revision
-                    or decision.get("route_statework_id") != recommendation.target_statework_id
+                    or decision.get("route_workflow_id")
+                    != recommendation.workflow_ranking.workflow_id
                     or tuple(decision.get("legal_routes") or ())
                     != tuple(sorted(recommendation.legal_children))):
                 raise PermissionError("route recommendation no longer matches its semantic decision")
@@ -344,7 +333,7 @@ class RouteReplanningMethods:
                 "operator": "operator_route_preference",
                 "learned_profile": "learned_profile_route_preference",
             }
-            decision = self.route_decisions.get(recommendation.decision_id)
+            decision = self.actions.route_decisions.get(recommendation.decision_id)
             if (recommendation.source not in reasons or not decision
                     or decision.get("policy_hash") != self.bundle.pinned.get("policy_hash")
                     or decision.get("route_type") != "flow"
@@ -356,13 +345,14 @@ class RouteReplanningMethods:
             raise PermissionError("route recommendation is outside the legal candidates")
         child_bundle = recommendation.legal_children[selected_route]
         self._validate_child_route_bundle(
-            selected_route, recommendation.target_statework_id, child_bundle)
+            selected_route, child_bundle,
+            expected_route_digest=recommendation.route_contract_digests.get(selected_route))
         child_hash = str(child_bundle.pinned.get("policy_hash") or "")
         parent_hash = str(self.bundle.pinned.get("policy_hash") or "")
         if not child_hash or child_hash == parent_hash:
             raise ValueError("child policy epoch must have a distinct policy hash")
-        epoch_index = (self.policy_epoch_record.epoch_index + 1
-                       if self.policy_epoch_record else 1)
+        epoch_index = (route_policy.policy_epoch_record.epoch_index + 1
+                       if route_policy.policy_epoch_record else 1)
         record = PolicyEpochRecord(
             epoch_index=epoch_index, parent_policy_hash=parent_hash,
             child_policy_hash=child_hash, reason="dynamic_replan",
@@ -371,9 +361,8 @@ class RouteReplanningMethods:
             decision_ref=recommendation.decision_id,
             semantic_decision_ref=recommendation.semantic_decision_ref,
             state_revision=current_state_revision)
-        route_name = selected_route.split(":", 2)[2]
         route_decision_id = self._record_route_decision(
-            capability, route=route_name, route_type="flow",
+            capability, route=selected_route, route_type="flow",
             selection_reason="dynamic_policy_epoch")
         self._journal("child_policy_epoch_created", policy_epoch=record.to_dict(),
                       route_decision_id=route_decision_id,
@@ -383,7 +372,7 @@ class RouteReplanningMethods:
             "event_id": f"policy-epoch-{uuid.uuid4()}", "category": "decision",
             "event_type": "policy_epoch_created", "subject": self.bundle.policy.subject_ref,
             "payload": {"summary": "host-created child policy epoch",
-                        "route": route_name, "route_type": "flow",
+                        "route": selected_route, "route_type": "flow",
                         "route_decision_id": route_decision_id,
                         "policy_hash": parent_hash,
                         "reason": "dynamic_replan"}})

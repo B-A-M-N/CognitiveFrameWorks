@@ -71,7 +71,15 @@ def wheel_files(project: Path) -> set[str]:
                 "from runtime_contract.routing import _profile_schema_text; "
                 "assert 'behavioral-routing-profile' in _profile_schema_text(); "
                 "from runtime_contract.component_control import COMPONENT_IDS; "
-                "assert {'owl', 'anchor', 'fuse', 'ward', 'flow', 'sispis', 'dox'} == set(COMPONENT_IDS)"
+                "assert {'owl', 'anchor', 'fuse', 'ward', 'flow', 'sispis', 'dox'} == set(COMPONENT_IDS); "
+                "from runtime_contract.composite_snapshot import CFWPolicySnapshot, CompositeCognitiveRuntimeSnapshot; "
+                "assert CFWPolicySnapshot and CompositeCognitiveRuntimeSnapshot; "
+                "from runtime_start.validation import validate_start_contracts; "
+                "from runtime_start.initialization import initialize_runtime_session; "
+                "from codex_app_server_adapter import CodexAppServerAdapter, CodexCognitiveHost, CodexValidatorBinding; "
+                "from codex_app_server_dp_bridge import DigitalPsychologyBridgeHost; "
+                "assert validate_start_contracts and initialize_runtime_session; "
+                "assert CodexAppServerAdapter and CodexCognitiveHost and CodexValidatorBinding and DigitalPsychologyBridgeHost"
             ),
         }
         import_result = subprocess.run(
@@ -98,9 +106,15 @@ def main() -> int:
     assert "cognitive_statework/workflow_planner.py" in csw
     assert "cognitive_statework/cfw_authority.py" in csw
     assert "runtime_contract/contracts/behavioral-routing-profile.schema.json" in cfw
+    assert "runtime_contract/contracts/runtime-event.schema.json" in cfw
+    assert "runtime_contract/resources/contracts/runtime-event.schema.json" in cfw
     assert "runtime_contract/contracts/routing-experiment-plan.schema.json" in cfw
     assert "runtime_contract/pipeline.yaml" in cfw
     assert "runtime_contract/workflow_port.py" in cfw
+    assert "runtime_start/validation.py" in cfw
+    assert "runtime_start/initialization.py" in cfw
+    assert "codex_app_server_adapter.py" in cfw
+    assert "codex_app_server_dp_bridge.py" in cfw
     print("PACKAGE_RESOURCE_TEST=PASS")
     return 0
 

@@ -368,6 +368,125 @@
           "condition": {
             "type": "object"
           },
+          "behavior_policy": {
+            "type": "object",
+            "required": [
+              "candidate_id",
+              "cognitive_mode",
+              "framework_modes",
+              "controls"
+            ],
+            "properties": {
+              "candidate_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "cognitive_mode": {
+                "enum": [
+                  "DELIVER",
+                  "DIAGNOSE",
+                  "VERIFY",
+                  "RECOVER",
+                  "REPLAN",
+                  "BLOCKED",
+                  "REINSPECT",
+                  "READY_TO_COMPLETE"
+                ]
+              },
+              "framework_modes": {
+                "type": "object",
+                "maxProperties": 16,
+                "propertyNames": {
+                  "enum": ["owl", "anchor", "dox", "fuse", "flow", "ward", "sispis"]
+                },
+                "additionalProperties": {
+                  "enum": [
+                    "off",
+                    "passive",
+                    "normal",
+                    "elevated",
+                    "mandatory",
+                    "constrained",
+                    "reopen",
+                    "recovery",
+                    "reset"
+                  ]
+                }
+              },
+              "controls": {
+                "type": "object",
+                "required": [
+                  "verification_intensity",
+                  "exploration_budget",
+                  "retry_policy",
+                  "recovery_level",
+                  "context_strategy",
+                  "response_strategy"
+                ],
+                "properties": {
+                  "verification_intensity": {
+                    "enum": ["passive", "normal", "high", "strict"]
+                  },
+                  "exploration_budget": {
+                    "enum": ["disabled", "low", "normal", "bounded"]
+                  },
+                  "retry_policy": {
+                    "enum": ["normal", "materially_different_only", "no_retry"]
+                  },
+                  "recovery_level": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3
+                  },
+                  "context_strategy": {
+                    "enum": ["standard", "compact", "criterion_focused"]
+                  },
+                  "response_strategy": {
+                    "enum": ["direct", "detailed", "structured"]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "focus_scope": {
+                "const": "current_attention"
+              },
+              "focus_criteria": {
+                "const": "$current_attention"
+              },
+              "statework_preferences": {
+                "type": "array",
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "reason_codes": {
+                "type": "array",
+                "maxItems": 16,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "cause": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "expected_effect": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              }
+            },
+            "additionalProperties": false
+          },
           "evidence_refs": {
             "type": "array",
             "items": {
@@ -616,6 +735,62 @@
             },
             "treatment_bad_rate": {
               "type": "number"
+            },
+            "candidate_policy_evidence": {
+              "type": "object",
+              "required": [
+                "correct_progress_rate", "regression_rate", "repeated_failure_rate",
+                "confidence_interval", "regression_confidence_interval",
+                "repeated_failure_confidence_interval", "sample_count", "holdout_count"
+              ],
+              "properties": {
+                "correct_progress_rate": {"type": "number", "minimum": 0, "maximum": 1},
+                "regression_rate": {"type": "number", "minimum": 0, "maximum": 1},
+                "repeated_failure_rate": {"type": "number", "minimum": 0, "maximum": 1},
+                "confidence_interval": {
+                  "type": "array", "minItems": 2, "maxItems": 2,
+                  "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "regression_confidence_interval": {
+                  "type": "array", "minItems": 2, "maxItems": 2,
+                  "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "repeated_failure_confidence_interval": {
+                  "type": "array", "minItems": 2, "maxItems": 2,
+                  "items": {"type": "number", "minimum": 0, "maximum": 1}
+                },
+                "sample_count": {"type": "integer", "minimum": 1},
+                "holdout_count": {"type": "integer", "minimum": 1}
+              },
+              "additionalProperties": false
+            },
+            "candidate_policy_compatibility": {
+              "type": "object",
+              "required": [
+                "behavior_policy_contract_hash",
+                "candidate_generator_contract_hash",
+                "dp_control_implementation_version",
+                "dp_control_implementation_hash",
+                "candidate_policy_mapping_hash"
+              ],
+              "properties": {
+                "behavior_policy_contract_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                },
+                "candidate_generator_contract_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                },
+                "dp_control_implementation_version": {
+                  "type": "string", "minLength": 1, "maxLength": 64
+                },
+                "dp_control_implementation_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                },
+                "candidate_policy_mapping_hash": {
+                  "type": "string", "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "additionalProperties": false
             },
             "effect": {
               "type": "number"

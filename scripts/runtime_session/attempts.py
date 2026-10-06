@@ -17,19 +17,19 @@ class AttemptMethods:
     """Attempt-local state, outcome, recovery, and progress recording."""
     def _retry_comparison_fingerprints(
             self, descriptor: AttemptDescriptor) -> tuple[str, str, Optional[str]]:
-        if descriptor.attempt_ref not in self._semantic_retry_same or self.convergence is None:
+        if descriptor.attempt_ref not in self.attempts.semantic_retry_same or self.attempts.controller is None:
             return (descriptor.action_plan_digest, descriptor.premise_digest,
                     descriptor.premise_digest)
-        prior = self.convergence.state(descriptor.cause_id)
+        prior = self.attempts.controller.state(descriptor.cause_id)
         return (prior.action_fingerprint or descriptor.action_plan_digest,
                 prior.hypothesis_fingerprint or descriptor.premise_digest,
                 prior.premise_digest or descriptor.premise_digest)
     def _record_convergence(self, reason: str) -> None:
         """Persist convergence state so resume cannot erase the budget."""
-        if self.convergence is None:
+        if self.attempts.controller is None:
             return
         self._journal("convergence_recorded", reason=reason,
-                      convergence=self.convergence.export())
+                      convergence=self.attempts.controller.export())
     def _system_one_decision_for_action(self, capability: _HostCapability,
                                         action_request_id: str) -> Optional[str]:
         self._require_host(capability)
@@ -37,7 +37,7 @@ class AttemptMethods:
                 or not action_request_id.startswith("action-request-")
                 or len(action_request_id) > 256):
             raise ValueError("action_request_id must be a bounded host-generated identifier")
-        matches = [decision for decision in self.system_one_decisions.values()
+        matches = [decision for decision in self.behavior.system_one_decisions.values()
                    if decision.get("action_request_id") == action_request_id
                    and decision.get("judgment")]
         if not matches:
@@ -50,11 +50,11 @@ class AttemptMethods:
                                    criterion_id: Optional[str] = None) -> str:
         """Append T2 ground truth only from later host-attested evidence."""
         self._require_host(capability)
-        decision = self.system_one_decisions.get(decision_id)
+        decision = self.behavior.system_one_decisions.get(decision_id)
         if decision is None or not decision.get("judgment"):
             raise ValueError("System-1 outcome requires a recorded prediction")
         outcome_key = f"{decision_id}:{label}"
-        if outcome_key in self.system_one_outcomes:
+        if outcome_key in self.behavior.system_one_outcomes:
             raise ValueError("System-1 outcome already recorded for this label")
         label_values = {
             "action_relation": {"advances_primary_goal", "removes_concrete_blocker",
@@ -77,7 +77,7 @@ class AttemptMethods:
             raise ValueError("unsupported System-1 ground-truth label")
         if authority not in {"host_evidence", "validator", "csw_fact", "operator"}:
             raise ValueError("unsupported System-1 outcome authority")
-        record = self.ledger.get(evidence_ref)
+        record = self.evidence.ledger.get(evidence_ref)
         if record is None or record.invalidated:
             raise ValueError("System-1 outcome requires current host-attested evidence")
         expected_subject = decision.get("subject_ref") or self.bundle.policy.subject_ref
@@ -108,7 +108,7 @@ class AttemptMethods:
                             "acceptance_criteria", ())}
             if criterion_id not in criteria:
                 raise ValueError("outcome references an unknown acceptance criterion")
-        self.system_one_outcomes.add(outcome_key)
+        self.behavior.system_one_outcomes.add(outcome_key)
         outcome_event_id = f"system-one-outcome-{uuid.uuid4()}"
         self._journal("system_one_outcome_recorded", decision_id=decision_id,
                       label=label, value=value, evidence_ref=evidence_ref,
@@ -134,18 +134,18 @@ class AttemptMethods:
         return outcome_event_id
     def _shared_branch_exhausted(self, descriptor: AttemptDescriptor,
                                  recovery_limit: int) -> bool:
-        membership = self.shared_workflow_membership or {}
-        if self.shared_branch_ledger is None or not membership.get("workflow_id"):
+        membership = self.identity_authority.authorities.shared_workflow_membership or {}
+        if self.attempts.shared_branch_ledger is None or not membership.get("workflow_id"):
             return False
-        count = self.shared_branch_ledger.recovery_count(
+        count = self.attempts.shared_branch_ledger.recovery_count(
             namespace_id=str(membership.get("namespace_id") or ""),
             application_instance_id=str(membership.get("application_instance_id") or ""),
             workflow_id=str(membership.get("workflow_id") or ""),
             cause_id=descriptor.cause_id, premise_digest=descriptor.premise_digest)
         if count < recovery_limit:
             return False
-        if self.convergence is not None:
-            state = self.convergence.state(descriptor.cause_id)
+        if self.attempts.controller is not None:
+            state = self.attempts.controller.state(descriptor.cause_id)
             state.disposition = "BLOCKED"
             state.terminated_reason = "shared_premise_recovery_limit"
             self._record_convergence("shared_premise_recovery_limit")
@@ -156,7 +156,7 @@ class AttemptMethods:
                        parent_attempt_ref: Optional[str] = None,
                        semantic_descriptor: Optional[Mapping[str, Any]] = None) -> AttemptDescriptor:
         self._require_host(capability)
-        if self.convergence is None:
+        if self.attempts.controller is None:
             raise PermissionError("attempt tracking requires the host convergence controller")
         if not isinstance(action_plan, Mapping):
             raise TypeError("action_plan must be host-accepted structured data")
@@ -190,32 +190,32 @@ class AttemptMethods:
                 action_plan_digest=descriptor.action_plan_digest,
                 affected_criterion_ids=tuple(semantic_descriptor.get("affected_criterion_ids") or ()),
                 source=str(semantic_descriptor.get("source") or "model_proposed"))
-        prior = self.attempt_descriptors.get(attempt_ref)
+        prior = self.attempts.descriptors.get(attempt_ref)
         if prior is not None and prior != descriptor:
             raise ValueError("attempt_ref is already bound to a different plan")
-        self.attempt_descriptors[attempt_ref] = descriptor
+        self.attempts.descriptors[attempt_ref] = descriptor
         if semantic is not None:
-            old_semantic = self.attempt_semantics.get(attempt_ref)
+            old_semantic = self.attempts.semantics.get(attempt_ref)
             if old_semantic is not None and old_semantic != semantic:
                 raise ValueError("attempt_ref is already bound to a different semantic descriptor")
-            self.attempt_semantics[attempt_ref] = semantic
+            self.attempts.semantics[attempt_ref] = semantic
         self._journal("attempt_descriptor_recorded", descriptor=descriptor.to_dict(),
                       semantic_descriptor=semantic.to_dict() if semantic else None)
         return descriptor
     def _record_attempt_failure(self, capability: _HostCapability, *,
                                 attempt_ref: str, evidence_ref: str) -> None:
         self._require_host(capability)
-        if self.convergence is None:
+        if self.attempts.controller is None:
             raise PermissionError("attempt tracking requires the host convergence controller")
-        descriptor = self.attempt_descriptors.get(attempt_ref)
-        record = self.ledger.get(evidence_ref)
+        descriptor = self.attempts.descriptors.get(attempt_ref)
+        record = self.evidence.ledger.get(evidence_ref)
         if descriptor is None or record is None or record.invalidated:
             raise ValueError("attempt failure requires a registered attempt and current evidence")
-        if attempt_ref in self.attempt_failures:
+        if attempt_ref in self.attempts.failures:
             return
-        membership = self.shared_workflow_membership or {}
-        if self.shared_branch_ledger is not None and membership.get("workflow_id"):
-            self.shared_branch_ledger.record_failure(
+        membership = self.identity_authority.authorities.shared_workflow_membership or {}
+        if self.attempts.shared_branch_ledger is not None and membership.get("workflow_id"):
+            self.attempts.shared_branch_ledger.record_failure(
                 namespace_id=str(membership["namespace_id"]),
                 application_instance_id=str(membership["application_instance_id"]),
                 workflow_id=str(membership["workflow_id"]),
@@ -223,12 +223,12 @@ class AttemptMethods:
                 premise_digest=descriptor.premise_digest,
                 action_plan_fingerprint=descriptor.action_plan_digest,
                 evidence_ref=evidence_ref, attempt_ref=attempt_ref)
-        self.convergence.record_failure(
+        self.attempts.controller.record_failure(
             cause_id=descriptor.cause_id,
             action_fingerprint=descriptor.action_plan_digest,
             hypothesis_fingerprint=descriptor.premise_digest,
             evidence_ref=evidence_ref, premise_digest=descriptor.premise_digest)
-        semantic = self.attempt_semantics.get(attempt_ref)
+        semantic = self.attempts.semantics.get(attempt_ref)
         if semantic is not None:
             failed = AttemptSemanticDescriptor(
                 cause_class=semantic.cause_class,
@@ -237,20 +237,20 @@ class AttemptMethods:
                 evidence_target=semantic.evidence_target,
                 planned_action_class=semantic.planned_action_class,
                 planned_target_kind=semantic.planned_target_kind,
-                failed_result_class=str(self.host_invocations.get(
-                    self.ledger.get(evidence_ref).invocation_id or "", {}).get(
+                failed_result_class=str(self.actions.host_invocations.get(
+                    self.evidence.ledger.get(evidence_ref).invocation_id or "", {}).get(
                         "result_class") or semantic.failed_result_class),
                 premise_digest=semantic.premise_digest,
                 action_plan_digest=semantic.action_plan_digest,
                 affected_criterion_ids=semantic.affected_criterion_ids,
                 source=semantic.source)
-            self.metacognitive_state.record_failed_approach(failed)
+            self.behavior.metacognitive.record_failed_approach(failed)
             self._journal("system_one_projection_changed",
-                          snapshot=self.metacognitive_state.snapshot())
-        self.attempt_failures.add(attempt_ref)
+                          snapshot=self.behavior.metacognitive.snapshot())
+        self.attempts.failures.add(attempt_ref)
         self._journal("attempt_failure_recorded", attempt_ref=attempt_ref,
                       cause_id=descriptor.cause_id, evidence_ref=evidence_ref,
-                      convergence=self.convergence.export())
+                      convergence=self.attempts.controller.export())
         self._record_convergence("attempt_failure")
         self._emit_runtime({
             "category": "retry", "event_type": "attempt_failure_recorded",
@@ -264,9 +264,9 @@ class AttemptMethods:
     def _record_reinspection(self, capability: _HostCapability, *,
                              cause_id: str, revision: int) -> None:
         self._require_host(capability)
-        if self.convergence is None or revision < 1:
+        if self.attempts.controller is None or revision < 1:
             raise ValueError("reinspection requires convergence state and a positive revision")
-        self.convergence.record_reinspection(cause_id=cause_id, revision=revision)
+        self.attempts.controller.record_reinspection(cause_id=cause_id, revision=revision)
         self._record_convergence("reinspection")
         self._emit_runtime({
             "category": "observation", "event_type": "reinspection_recorded",
@@ -279,11 +279,11 @@ class AttemptMethods:
                               criterion_id: Optional[str] = None,
                               progress_class: str = "GOAL_PROGRESS") -> None:
         self._require_host(capability)
-        if self.convergence is None:
+        if self.attempts.controller is None:
             raise PermissionError("goal progress requires the host convergence controller")
         if progress_class not in {"GOAL_PROGRESS", "BLOCKER_REMOVED"}:
             raise ValueError("goal progress must be GOAL_PROGRESS or BLOCKER_REMOVED")
-        record = self.ledger.get(evidence_ref)
+        record = self.evidence.ledger.get(evidence_ref)
         if record is None or record.invalidated:
             raise ValueError("goal progress requires current host-attested evidence")
         expected_subject = self.bundle.policy.subject_ref
@@ -307,7 +307,7 @@ class AttemptMethods:
         if expected_evidence_kinds and record.kind not in expected_evidence_kinds:
             raise ValueError("goal progress evidence kind does not match the criterion contract")
         if record.kind == "tool_result":
-            invocation = next((item for item in self.host_invocations.values()
+            invocation = next((item for item in self.actions.host_invocations.values()
                                if item.get("evidence_id") == evidence_ref), None)
             actual = dict((invocation or {}).get("actual_result") or {})
             binding = dict((invocation or {}).get("objective_binding") or {})
@@ -354,15 +354,15 @@ class AttemptMethods:
         if (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery":
             progress_causes.add("primary-objective")
         for progress_cause in progress_causes:
-            self.convergence.record_progress(
+            self.attempts.controller.record_progress(
                 cause_id=progress_cause, progress_digest=digest,
                 progress_class=progress_class, evidence_ref=evidence_ref)
         self._record_convergence("goal_progress")
-        self.metacognitive_state.record_goal_progress(
+        self.behavior.metacognitive.record_goal_progress(
             binding, claim=str(criterion.get("claim") or ""),
             kind=str(criterion.get("kind") or "acceptance"))
         self._journal("system_one_projection_changed",
-                      snapshot=self.metacognitive_state.snapshot())
+                      snapshot=self.behavior.metacognitive.snapshot())
         self._emit_runtime({
             "category": "decision", "event_type": "goal_progress_recorded",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -381,7 +381,7 @@ class AttemptMethods:
             raise ValueError("verification references an unknown pinned criterion")
         allowed_kinds = self._criterion_evidence_kinds(str(criterion.get("kind") or ""))
         try:
-            resolved = self.ledger.resolve(
+            resolved = self.evidence.ledger.resolve(
                 [evidence_ref], subject_ref=self.bundle.policy.subject_ref,
                 allowed_kinds=allowed_kinds or None)
         except ValueError as exc:
@@ -390,11 +390,11 @@ class AttemptMethods:
         if str(criterion.get("verification_strength") or "host_observation") == "validator":
             if not str(record.get("issuer") or "").startswith("validator:"):
                 raise ValueError("criterion requires validator-issued evidence")
-        self.metacognitive_state.mark_criterion_satisfied(
+        self.behavior.metacognitive.mark_criterion_satisfied(
             criterion_id, evidence_ref=evidence_ref,
             evidence_kind=str(record.get("kind") or ""))
         self._journal("system_one_projection_changed",
-                      snapshot=self.metacognitive_state.snapshot())
+                      snapshot=self.behavior.metacognitive.snapshot())
         self._emit_runtime({
             "category": "validation", "event_type": "criterion_verified",
             "subject": record.get("subject_ref"), "evidence_refs": [evidence_ref],
@@ -403,12 +403,12 @@ class AttemptMethods:
     def _record_recovery_epoch(self, capability: _HostCapability, *,
                                cause_id: str, reason: str) -> None:
         self._require_host(capability)
-        if self.convergence is None:
+        if self.attempts.controller is None:
             raise PermissionError("recovery tracking requires the host convergence controller")
-        state = self.convergence.record_recovery_epoch(cause_id=cause_id)
-        self.metacognitive_state.record_recovery_epoch()
+        state = self.attempts.controller.record_recovery_epoch(cause_id=cause_id)
+        self.behavior.metacognitive.record_recovery_epoch()
         self._journal("system_one_projection_changed",
-                      snapshot=self.metacognitive_state.snapshot())
+                      snapshot=self.behavior.metacognitive.snapshot())
         self._record_convergence("recovery_epoch")
         self._emit_runtime({
             "category": "retry", "event_type": "recovery_epoch_recorded",
@@ -431,13 +431,13 @@ class AttemptMethods:
     def _reject_investigative_path(self, capability: _HostCapability, *,
                                    attempt_ref: str, evidence_ref: str) -> None:
         self._require_host(capability)
-        if self.convergence is None:
+        if self.attempts.controller is None:
             raise PermissionError("path rejection requires the host convergence controller")
-        descriptor = self.attempt_descriptors.get(attempt_ref)
-        record = self.ledger.get(evidence_ref)
+        descriptor = self.attempts.descriptors.get(attempt_ref)
+        record = self.evidence.ledger.get(evidence_ref)
         if descriptor is None or record is None or record.invalidated:
             raise ValueError("path rejection requires a registered attempt and current evidence")
-        self.convergence.reject_path(
+        self.attempts.controller.reject_path(
             cause_id=descriptor.cause_id,
             action_fingerprint=descriptor.action_plan_digest,
             hypothesis_fingerprint=descriptor.premise_digest,

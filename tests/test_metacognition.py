@@ -29,6 +29,64 @@ def test_retry_accounting_only_changes_when_committed_and_survives_restore():
     assert restored.repeated_branch_count == 1
 
 
+def test_progress_redirects_are_bounded_and_yield_attention_until_new_evidence():
+    state = MetacognitiveState()
+    state.ensure_criteria({"acceptance_criteria": [
+        {"criterion_id": item, "claim": "unfinished", "kind": "code_behavior"}
+        for item in ("C1", "C2", "C3", "C4")
+    ]})
+
+    assert state.record_progress_redirect(
+        action_digest="action-a", criterion_id="C1") == "redirect"
+    assert state.record_progress_redirect(
+        action_digest="action-a", criterion_id="C1") == "repeat"
+    assert state.take_progress_redirect_guidance() == "C1"
+    assert state.take_progress_redirect_guidance() is None
+
+    assert state.record_progress_redirect(
+        action_digest="action-b", criterion_id="C1") == "yield"
+    assert state.active_attention_window() == ("C2", "C3", "C4")
+
+    restored = MetacognitiveState()
+    restored.restore(state.snapshot())
+    assert restored.progress_redirected is True
+    assert restored.progress_redirect_guidance_pending is True
+    assert restored.consume_progress_redirect_yield("C2") is True
+    assert restored.consume_progress_redirect_yield("C2") is False
+    assert restored.take_progress_redirect_guidance() == "C1"
+    assert restored.record_progress_redirect(
+        action_digest="action-c", criterion_id="C1") == "limit"
+
+    prior_epoch = restored.progress_redirect_epoch
+    restored.record_activity("action", artifact_changed=True)
+    assert restored.progress_redirect_epoch == prior_epoch + 1
+    assert restored.progress_redirected is False
+    assert restored.record_progress_redirect(
+        action_digest="action-a", criterion_id="C1") == "redirect"
+
+
+def test_metacognitive_controller_does_not_repeat_redirect_after_yield():
+    controller = MetacognitiveController()
+    state = MetacognitiveState()
+    state.ensure_criteria({"acceptance_criteria": [
+        {"criterion_id": "C1", "claim": "unfinished", "kind": "code_behavior"},
+        {"criterion_id": "C2", "claim": "unfinished", "kind": "code_behavior"},
+    ]})
+    state.record_progress_redirect(action_digest="action-a", criterion_id="C1")
+    state.take_progress_redirect_guidance()
+    state.record_progress_redirect(action_digest="action-b", criterion_id="C1")
+    state.take_progress_redirect_guidance()
+
+    decision = controller.evaluate(
+        state, support_actions_since_progress=5, support_action_limit=5,
+        total_actions_since_progress=15, total_action_limit=15,
+        recovery_epochs_since_progress=0, max_recovery_epochs=3,
+        same_approach_retries=0, max_same_approach_retries=2)
+
+    assert decision.mode == "DELIVER"
+    assert decision.active_criterion_ids == ("C2", "C1")
+
+
 def test_completion_readiness_requires_boundary_evidence_and_complete_workflows():
     controller = MetacognitiveController()
     state = MetacognitiveState()

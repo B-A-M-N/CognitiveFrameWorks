@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import os
 import signal
 import sys
@@ -14,6 +16,13 @@ spec = importlib.util.spec_from_file_location("acceptance_real_agent_bounds", MO
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
+
+AGENT_MODULE_PATH = ROOT / "scripts" / "cohort" / "agent_codex.py"
+agent_spec = importlib.util.spec_from_file_location(
+    "cohort_agent_codex_bounds", AGENT_MODULE_PATH)
+agent_codex = importlib.util.module_from_spec(agent_spec)
+sys.modules[agent_spec.name] = agent_codex
+agent_spec.loader.exec_module(agent_codex)
 
 
 def test_budget_stops_model_calls_tokens_cost_and_time() -> None:
@@ -63,6 +72,90 @@ def test_budget_stops_model_calls_tokens_cost_and_time() -> None:
         assert "elapsed" in str(exc)
     else:
         raise AssertionError("elapsed budget was not enforced")
+
+
+def test_codex_adapter_uses_sandbox_mcp_off_and_jsonl_usage(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "trial-workspace"
+    workspace.mkdir()
+    assert not (workspace / ".codex" / "config.toml").exists()
+    claimed_usage = {"input_tokens": 9000, "output_tokens": 8000, "cost": 99.0}
+    message = json.dumps({
+        "answer": json.dumps({
+            "status": "fixed", "reason": "updated the requested file",
+            "files_changed": 1,
+        }),
+        "complete": True,
+        "usage": claimed_usage,
+    })
+    events = "\n".join(json.dumps(event) for event in (
+        {"type": "thread.started", "thread_id": "fixture-thread"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {
+            "id": "assistant-message", "type": "agent_message", "text": message}},
+        {"type": "turn.completed", "usage": {
+            "input_tokens": 37, "cached_input_tokens": 12,
+            "output_tokens": 19, "total_tokens": 56}},
+    ))
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return agent_codex.subprocess.CompletedProcess(
+            command, 0, stdout=events, stderr="")
+
+    monkeypatch.setattr(agent_codex.subprocess, "run", fake_run)
+    monkeypatch.setenv("CODEX_SANDBOX", "danger-full-access")
+    monkeypatch.setattr(agent_codex.sys, "stdin", io.StringIO(json.dumps({
+        "task": {
+            "task_family": "code_repair", "instruction": "Repair the fixture.",
+            "workspace": str(workspace),
+        },
+        "turn": 0,
+        "previous": [],
+    }) + "\n"))
+    stdout = io.StringIO()
+    monkeypatch.setattr(agent_codex.sys, "stdout", stdout)
+
+    assert agent_codex.main() == 0
+    response = json.loads(stdout.getvalue())
+    command = captured["command"]
+    kwargs = captured["kwargs"]
+    assert "--json" in command
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert command[command.index("--cd") + 1] == str(workspace.resolve())
+    assert "--ignore-user-config" in command
+    assert "mcp_servers={}" not in command
+    assert "danger-full-access" not in command
+    assert kwargs["cwd"] == str(workspace.resolve())
+    assert kwargs["timeout"] == agent_codex.CODEX_TIMEOUT_SECONDS
+    assert "CODEX_SANDBOX" not in kwargs["env"]
+    assert response["usage"] == {"input_tokens": 37, "output_tokens": 19}
+    assert response["usage_source"] == "codex.exec.turn.completed"
+    assert response["answer"] == json.dumps({
+        "status": "fixed", "reason": "updated the requested file",
+        "files_changed": 1,
+    })
+    assert response["tool_visibility_evidence"]["mcp_servers"] == {
+        "status": "disabled", "names": [],
+        "config_override": "--ignore-user-config"
+    }
+    assert response["tool_visibility_evidence"]["full_agent_tool_registry"][
+        "status"] == "missing"
+
+
+def test_codex_jsonl_missing_actual_usage_fails_closed() -> None:
+    events = "\n".join(json.dumps(event) for event in (
+        {"type": "item.completed", "item": {
+            "id": "assistant-message", "type": "agent_message", "text": "{}"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 2}},
+    ))
+    try:
+        agent_codex.parse_codex_jsonl(events)
+    except ValueError as exc:
+        assert "output_tokens" in str(exc)
+    else:
+        raise AssertionError("missing Codex event usage was accepted")
 
 
 def test_agent_tool_visibility_uses_a_fixed_model_request_without_dp_tools() -> None:

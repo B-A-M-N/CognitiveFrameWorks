@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from runtime_contract.pipeline import load_pipeline_document
+from runtime_contract.paths import runtime_asset_root
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = runtime_asset_root()
 
 
 def load_pipeline() -> Dict[str, Any]:

@@ -563,7 +563,7 @@ def qualify_routes(mode: str, cow_root: Path) -> tuple[str, str | None, tuple[st
     # Unique deterministic choice and epoch creation work with DP disabled.
     unique = host.rank_legal_routes(
         {"flow:tuid:validate": children["flow:tuid:validate"]},
-        state_revision=0, target_statework_id="tuid")
+        state_revision=0, target_workflow_id="tuid")
     assert unique is not None and unique.route == "flow:tuid:validate"
     assert unique.source == "metacognition"
     epoch = host.create_child_policy_epoch(
@@ -575,7 +575,7 @@ def qualify_routes(mode: str, cow_root: Path) -> tuple[str, str | None, tuple[st
     # The two specific routes tie. The generic fallback is legal but lower
     # ranked, so it must never be exposed as a semantic choice.
     ambiguous = host.rank_legal_routes(
-        children, state_revision=0, target_statework_id="tuid")
+        children, state_revision=0, target_workflow_id="tuid")
     expected_top = ("flow:tuid:test", "flow:tuid:validate")
     if mode == "advisory":
         assert ambiguous is not None and ambiguous.route == "flow:tuid:validate"

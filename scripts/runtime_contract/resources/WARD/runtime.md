@@ -1,0 +1,34 @@
+# WARD — Runtime Capsule
+
+Authority, trust boundary, secrets, blast radius. Runs alongside FUSE at
+every action decision. FUSE picks; WARD gates.
+
+## Gate (hard first)
+- refuse   → block; surface with refuse
+- confirm  → halt; surface, wait for confirmation
+- recover  → halt; state recovery required before action
+- constrain → surface; modify action before execution
+- No hard gate: surface only if severity medium+ / multiple medium findings
+- Suppression: pure read of project files, no boundary crossing, no secrets,
+  no policy implication → do not run
+
+## Principles
+1. Authority Fit — stay within granted authority
+2. Blast Radius — narrowest reversible action; name irreversible effects
+3. Secret Hygiene — never read/log/expose/transmit secrets
+4. Trust Boundary — name local/project/user/private/external before crossing
+5. Mutation Consent — writes/deletes/installs/sends may require confirmation
+6. Reversibility — undoable actions; checkpoints before risky mutation
+7. Supply-Chain — installing/executing external code gets elevated scrutiny
+8. Policy Preservation — project/user constraints override convenience
+
+## Signals
+authority_exceeded, destructive_irreversible, secret_exposure,
+untrusted_execution (refuse) · authority_unknown, unscoped_external_call,
+unconfirmed_mutation, external_side_effect, irreversible_write,
+supply_chain_risk (confirm) · boundary_crossing, missing_reversibility,
+permission_widening, secret_in_context (constrain) · state_recovery_required
+(recover) · policy_conflict (refuse)
+
+Emissions cross the boundary in the canonical envelope only
+(shared/signal.schema.json); never compute SISPIS scoring here.

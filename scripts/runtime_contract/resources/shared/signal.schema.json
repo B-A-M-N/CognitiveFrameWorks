@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cognitiveframeworks.dev/shared/signal.schema.json",
+  "title": "CognitiveFrameWorks canonical signal envelope",
+  "description": "Envelope for every signal that crosses a skill boundary. Carries semantic meaning only; SISPIS owns all calibration mappings.",
+  "type": "object",
+  "required": ["schema_version", "signal_id", "cause_id", "source", "signal_type", "severity", "scope", "evidence_refs", "required_action"],
+  "properties": {
+    "schema_version": { "const": "1.1.0" },
+    "signal_id": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Stable unique identifier for this emission instance." },
+    "cause_id": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Identifier of the underlying cause; shared by all signals deduplicated to the same cause." },
+    "source": { "type": "string", "enum": ["owl", "anchor", "fuse", "flow", "ward"] },
+    "signal_type": {
+      "type": "string",
+      "pattern": "^(owl|anchor|fuse|flow|ward)\\.[a-z0-9_]+$",
+      "description": "Namespaced type matching the producer registry and shared/signals.md."
+    },
+    "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+    "scope": { "type": "string", "enum": ["task", "artifact", "session", "system"] },
+    "evidence_refs": { "type": "array", "items": { "type": "string", "minLength": 1, "maxLength": 256 }, "maxItems": 128 },
+    "required_action": {
+      "type": "string",
+      "enum": ["surface", "reclassify", "recover", "confirm", "refuse", "constrain", "reinspect", "suppress"],
+      "description": "Machine-routable action taxonomy owned by the framework (not free text)."
+    },
+    "detail_type": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Optional refinement for a canonical family signal (e.g. n_plus_one_query)." },
+    "subject_ref": { "type": "string", "minLength": 1, "maxLength": 512, "description": "Optional reference to the artifact/claim/entity the signal is about." }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "source": { "const": "owl" } } },
+      "then": { "properties": { "signal_type": { "pattern": "^owl\\.[a-z0-9_]+$" } } }
+    },
+    {
+      "if": { "properties": { "source": { "const": "fuse" } } },
+      "then": { "properties": { "signal_type": { "pattern": "^fuse\\.[a-z0-9_]+$" } } }
+    },
+    {
+      "if": { "properties": { "source": { "const": "flow" } } },
+      "then": { "properties": { "signal_type": { "pattern": "^flow\\.[a-z0-9_]+$" } } }
+    },
+    {
+      "if": { "properties": { "source": { "const": "ward" } } },
+      "then": { "properties": { "signal_type": { "pattern": "^ward\\.[a-z0-9_]+$" } } }
+    },
+    {
+      "if": { "properties": { "source": { "const": "anchor" } } },
+      "then": { "properties": { "signal_type": { "pattern": "^anchor\\.[a-z0-9_]+$" } } }
+    }
+  ],
+  "additionalProperties": false
+}

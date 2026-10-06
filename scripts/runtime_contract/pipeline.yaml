@@ -91,7 +91,7 @@ components:
     baseline_mode: normal
     allowed_modes: ["off", passive, normal, elevated]
     scope: [artifact]
-    activation_predicates: [artifact.flow_triggered]
+    activation_predicates: [artifact.flow_triggered, artifact.high_change_amplification]
     deactivation_predicates: [artifact.closed, artifact.no_flow_trigger]
     runtime_cost_class: medium
     context_cost_class: medium
@@ -215,6 +215,8 @@ stages:
     activation_predicates:
       - event: artifact
         predicate: artifact.flow_triggered
+      - event: artifact
+        predicate: artifact.high_change_amplification
   - id: dox_closeout
     owner: dox
     activation_rule: durable documentation contract changed by the edit

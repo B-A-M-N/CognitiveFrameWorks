@@ -11,6 +11,7 @@ from functools import lru_cache
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol
+from runtime_contract.paths import runtime_asset_root
 
 
 _PROVIDER_GROUP = "cognitiveframeworks.statework_providers"
@@ -37,7 +38,7 @@ def default_statework_root() -> Path:
     provider explicitly and pass its root (or, preferably, a neutral
     ``WorkflowPort``) at the integration boundary.
     """
-    cfw_root = Path(__file__).resolve().parents[2]
+    cfw_root = runtime_asset_root()
     bundled = cfw_root / "statework"
     configured = os.environ.get("COGNITIVE_STATEWORK_ROOT")
     if configured:
@@ -134,7 +135,9 @@ class EmptyStateWorkProvider:
                           task_context: Mapping[str, Any],
                           routing_adjustments: Iterable[Mapping[str, Any]]) -> Dict[str, Any]:
         return {"execution_order": [], "active_workflows": [], "capsules": {},
-                "registry_version": "", "dependency_checks_passed": True}
+                "component_requirements": [], "component_enhancements": [],
+                "registry_version": "", "registry_hash": "",
+                "dependency_checks_passed": True}
 
 
 @lru_cache(maxsize=8)

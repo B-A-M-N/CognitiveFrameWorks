@@ -10,9 +10,28 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = ["jsonschema>=4.18", "PyYAML>=6.0"]
 
+[project.scripts]
+cognitive-frameworks-resolve = "resolver.api:main"
+
 [tool.setuptools]
-packages = ["runtime_contract"]
-package-dir = {runtime_contract = "scripts/runtime_contract"}
+packages = ["cohort", "operator_ui", "resolver", "runtime_contract",
+            "runtime_host", "runtime_session", "runtime_start"]
+py-modules = ["cognitive_runtime", "codex_app_server_adapter",
+              "codex_app_server_dp_bridge",
+              "digital_psychology_adapter", "resolve_runtime", "runtime"]
+
+[tool.setuptools.package-dir]
+"" = "scripts"
+cohort = "scripts/cohort"
+operator_ui = "scripts/operator_ui"
+resolver = "scripts/resolver"
+runtime_contract = "scripts/runtime_contract"
+runtime_host = "scripts/runtime_host"
+runtime_session = "scripts/runtime_session"
+runtime_start = "scripts/runtime_start"
 
 [tool.setuptools.package-data]
-runtime_contract = ["*.py", "pipeline.yaml", "contracts/*.json"]
+runtime_contract = ["*.py", "pipeline.yaml", "contracts/*.json",
+                    "resources/*", "resources/**/*"]
+resolver = ["*.py"]
+operator_ui = ["*.html", "*.css", "*.js", "*.json"]

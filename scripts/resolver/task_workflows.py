@@ -43,6 +43,7 @@ def resolve_task_workflows(
     trigger: Optional[str],
     observation_context: Optional[Mapping[str, Any]],
     requested_flows: Optional[Dict[str, str]],
+    requested_statework_ids: tuple[str, ...],
     statework_subject_refs: Dict[str, str],
     packet_store: Optional[Dict[str, Dict[str, Any]]],
     allow_missing_required: bool,
@@ -70,6 +71,7 @@ def resolve_task_workflows(
         "observation_context": dict(observation_context or {}),
         "current_state": (observation_context or {}).get("state"),
         "requested_flows": dict(requested_flows or {}),
+        "requested_statework_ids": tuple(requested_statework_ids),
         "statework_subject_refs": dict(statework_subject_refs),
         "packet_records": (list(packet_store.values())
                            if isinstance(packet_store, Mapping)

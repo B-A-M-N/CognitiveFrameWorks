@@ -10,9 +10,10 @@ from runtime_contract.actions import action_contract_hash, effective_action_regi
 from runtime_contract.handlers import handler_registry_hash
 from runtime_contract.policy import stable_hash as _stable_contract_hash
 from runtime_contract.validators import validator_registry_hash
+from runtime_contract.paths import runtime_asset_root
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = runtime_asset_root()
 
 
 def _tree_runtime_hash(paths: Iterable[Path], *,
@@ -33,16 +34,17 @@ def _tree_runtime_hash(paths: Iterable[Path], *,
 
 def runtime_behavior_hash() -> str:
     """Hash CFW-owned runtime code and resolver components."""
-    paths = [ROOT / "scripts" / "runtime.py",
-             ROOT / "scripts" / "resolve-runtime.py",
-             ROOT / "scripts" / "cognitive_runtime.py",
-             ROOT / "scripts" / "digital_psychology_adapter.py",
+    scripts = ROOT / "scripts"
+    package_root = ROOT.parent.parent if (ROOT.parent.parent / "runtime_contract").is_dir() else ROOT
+    source_root = scripts if scripts.is_dir() else package_root
+    paths = [source_root / "runtime.py", source_root / "resolve-runtime.py",
+             source_root / "resolve_runtime.py", source_root / "cognitive_runtime.py",
+             source_root / "digital_psychology_adapter.py",
              ROOT / "SISPIS" / "runtime" / "calibrate.py"]
-    paths.extend(sorted((ROOT / "scripts" / "runtime_contract").glob("*.py")))
-    paths.extend(sorted((ROOT / "scripts" / "runtime_host").glob("*.py")))
-    paths.extend(sorted((ROOT / "scripts" / "resolver").glob("*.py")))
-    paths.extend(sorted((ROOT / "scripts" / "runtime_session").glob("*.py")))
-    return _tree_runtime_hash(paths, relative_to=ROOT)
+    for package in ("runtime_contract", "runtime_host", "resolver", "runtime_session"):
+        paths.extend(sorted((source_root / package).glob("*.py")))
+    label_root = ROOT if scripts.is_dir() else package_root
+    return _tree_runtime_hash(paths, relative_to=label_root)
 
 
 def runtime_build_manifest(

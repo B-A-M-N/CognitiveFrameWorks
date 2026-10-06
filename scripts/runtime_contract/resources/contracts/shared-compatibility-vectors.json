@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "profile": {
+    "profile_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "sharing_scope": "cross_application",
+    "subject": {
+      "namespace_id": "source-ns", "application_id": "source-app",
+      "application_version": "1", "application_instance_id": "source-instance",
+      "provider_id": "provider", "model_id": "model", "model_revision": "r1",
+      "model_capability_hash": "cap", "harness_id": "harness", "harness_version": "1",
+      "agent_instance_id": "source-agent"
+    },
+    "selector_semantics": {"subject": "exact", "context": "exact"},
+    "context": {"compatibility_constraints": {"task_family": "performance", "environment": "test"}},
+    "routing_adjustments": [{"route_type": "stage", "route": "flow", "disposition": "suppress", "condition": {}}]
+  },
+  "cases": [
+    {"id": "authorized-compatible", "context": {"namespace_id":"target-ns","application_id":"target-app","application_version":"1","application_instance_id":"target-instance","provider_id":"provider","model_id":"model","model_revision":"r1","model_capability_hash":"cap","harness_id":"harness","harness_version":"1","agent_instance_id":"target-agent","adopted_profile_hashes":["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],"authorized_target_application_ids":["target-app"],"task_family":"performance","environment":"test"}, "expected": true},
+    {"id": "not-adopted", "context": {"namespace_id":"target-ns","application_id":"target-app","application_version":"1","application_instance_id":"target-instance","provider_id":"provider","model_id":"model","model_revision":"r1","model_capability_hash":"cap","harness_id":"harness","harness_version":"1","agent_instance_id":"target-agent","adopted_profile_hashes":[],"authorized_target_application_ids":["target-app"],"task_family":"performance","environment":"test"}, "expected": false},
+    {"id": "unauthorized-app", "context": {"namespace_id":"target-ns","application_id":"other-app","application_version":"1","application_instance_id":"target-instance","provider_id":"provider","model_id":"model","model_revision":"r1","model_capability_hash":"cap","harness_id":"harness","harness_version":"1","agent_instance_id":"target-agent","adopted_profile_hashes":["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],"authorized_target_application_ids":["target-app"],"task_family":"performance","environment":"test"}, "expected": false},
+    {"id": "incompatible-model", "context": {"namespace_id":"target-ns","application_id":"target-app","application_version":"1","application_instance_id":"target-instance","provider_id":"provider","model_id":"other-model","model_revision":"r1","model_capability_hash":"cap","harness_id":"harness","harness_version":"1","agent_instance_id":"target-agent","adopted_profile_hashes":["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],"authorized_target_application_ids":["target-app"],"task_family":"performance","environment":"test"}, "expected": false},
+    {"id": "incompatible-task", "context": {"namespace_id":"target-ns","application_id":"target-app","application_version":"1","application_instance_id":"target-instance","provider_id":"provider","model_id":"model","model_revision":"r1","model_capability_hash":"cap","harness_id":"harness","harness_version":"1","agent_instance_id":"target-agent","adopted_profile_hashes":["ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"],"authorized_target_application_ids":["target-app"],"task_family":"unsolvable","environment":"test"}, "expected": false}
+  ]
+}

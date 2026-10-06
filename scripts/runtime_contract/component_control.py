@@ -47,10 +47,51 @@ COMPONENT_HARD_FLOOR_MODES = {
     for component_id, component in _COMPONENT_CATALOG.items()
     if component.get("hard_floor") is True
 }
+SUPPORTED_BEHAVIOR_COMPONENTS = frozenset({
+    "owl", "anchor", "fuse", "ward", "flow", "sispis", "dox",
+})
 COMPONENT_MODES = frozenset(mode for modes in COMPONENT_ALLOWED_MODES.values()
                             for mode in modes)
 _DP_SCOPE = re.compile(r"^dp-runtime-[0-9a-f]{64}$")
 MAX_EXTERNAL_TARGET_LEASES = 16 * 12
+
+
+def build_task_behavior_contract(selected_components: Any) -> dict[str, Any]:
+    """Build the canonical CFW-owned baseline contract for one resolved task."""
+    if not isinstance(selected_components, (list, tuple, set, frozenset)):
+        raise TypeError("selected behavior components must be a bounded collection")
+    selected = tuple(sorted({str(item).lower() for item in selected_components
+                             if str(item).lower() in SUPPORTED_BEHAVIOR_COMPONENTS}))
+    if len(selected) > len(SUPPORTED_BEHAVIOR_COMPONENTS):
+        raise ValueError("selected behavior component set is invalid")
+    baselines = {component: COMPONENT_BASELINE_MODES[component]
+                 for component in selected}
+    suppressed = {}
+    transient = {}
+    operations = {"reset", "reopen", "recovery"}
+    for component in selected:
+        baseline = baselines[component]
+        modes = COMPONENT_ALLOWED_MODES[component]
+        if baseline in {"normal", "elevated"}:
+            suppressed[component] = sorted(modes & {"off", "passive"})
+        elif baseline == "passive":
+            suppressed[component] = sorted(modes & {"off"})
+        else:
+            suppressed[component] = []
+        transient[component] = sorted(modes & operations)
+    body = {
+        "protocol_version": "1.0.0",
+        "pipeline_manifest_version": PIPELINE_MANIFEST_VERSION,
+        "pipeline_manifest_hash": PIPELINE_MANIFEST_HASH,
+        "selected_components": list(selected),
+        "baseline_floors": baselines,
+        "suppression_modes": suppressed,
+        "transient_operation_modes": transient,
+    }
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False)
+    return {**body, "contract_hash": hashlib.sha256(
+        encoded.encode("utf-8")).hexdigest()}
 
 
 @dataclass(frozen=True)
@@ -97,6 +138,7 @@ class AppliedControlLease:
     previous_value: str
     expires_at_action: int
     behavior_revision: int
+    recovery_epoch_id: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("lease_id", "intervention_id", "target",
@@ -107,6 +149,10 @@ class AppliedControlLease:
         if (type(self.expires_at_action) is not int or self.expires_at_action < 0
                 or type(self.behavior_revision) is not int or self.behavior_revision < 0):
             raise ValueError("applied behavior lease bounds are invalid")
+        if (self.recovery_epoch_id is not None
+                and (not isinstance(self.recovery_epoch_id, str)
+                     or not self.recovery_epoch_id or len(self.recovery_epoch_id) > 128)):
+            raise ValueError("applied behavior lease recovery epoch ID is malformed")
         if self.target == "mode":
             modes = {"RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
                      "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}
@@ -175,7 +221,7 @@ class ExternalBehaviorProjection:
     target_leases: tuple[AppliedControlLease, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.protocol_version != "2.0.0":
+        if self.protocol_version != "2.1.0":
             raise ValueError("unsupported CFW behavior projection version")
         if type(self.behavior_revision) is not int or self.behavior_revision < 0:
             raise ValueError("external behavior revision is invalid")
@@ -240,7 +286,8 @@ class ExternalBehaviorProjection:
         if not isinstance(raw_leases, (tuple, list)) or len(raw_leases) > MAX_EXTERNAL_TARGET_LEASES:
             raise ValueError("CFW target lease collection exceeds its bound")
         lease_fields = {"lease_id", "intervention_id", "target", "previous_value",
-                        "applied_value", "expires_at_action", "source_revision"}
+                        "applied_value", "expires_at_action", "source_revision",
+                        "recovery_epoch_id"}
         if any(not isinstance(item, Mapping) or set(item) != lease_fields
                for item in raw_leases):
             raise ValueError("CFW target lease does not match the v2 contract")
@@ -252,6 +299,7 @@ class ExternalBehaviorProjection:
             previous_value=str(item["previous_value"]),
             expires_at_action=item["expires_at_action"],
             behavior_revision=item["source_revision"],
+            recovery_epoch_id=str(item["recovery_epoch_id"]),
         ) for item in raw_leases)
         return cls(
             protocol_version=value["protocol_version"],
@@ -291,6 +339,7 @@ class ExternalBehaviorProjection:
                 "applied_value": item.applied_value,
                 "expires_at_action": item.expires_at_action,
                 "source_revision": item.behavior_revision,
+                "recovery_epoch_id": item.recovery_epoch_id,
             } for item in self.target_leases],
         }
 
@@ -368,6 +417,7 @@ class ComponentOverlay:
                 "previous_value": item.previous_value,
                 "expires_at_action": item.expires_at_action,
                 "behavior_revision": item.behavior_revision,
+                "recovery_epoch_id": item.recovery_epoch_id,
             } for item in self.target_leases],
         }
 

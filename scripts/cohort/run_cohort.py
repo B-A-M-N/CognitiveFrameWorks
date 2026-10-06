@@ -18,6 +18,7 @@ import statistics
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -53,15 +54,17 @@ CONFIGURATIONS = (
     ("cfw_csw_dp", ("CFW", "CSW", "DP")),
     ("cfw_csw_dp_laya", ("CFW", "CSW", "DP", "Laya")),
 )
+EXPECTED_FRAMEWORKS = {
+    "baseline": (),
+    "cfw": ("CFW",),
+    "cfw_csw": ("CFW", "CSW"),
+    "cfw_csw_dp": ("CFW", "CSW", "DP"),
+    "cfw_csw_dp_laya": ("CFW", "CSW", "DP", "Laya"),
+}
 
 
 def _agent_env(configuration: str, *, state_root: Path) -> dict[str, str]:
-    """Build the environment each cohort cell's agent subprocess runs under.
-
-    Composition is host-selected: CFW starts CFW-only unless a StateWork root
-    is supplied, and DP stays host-injected so a disabled provider is the
-    default. This function records intent; it does not claim DP/Laya authority.
-    """
+    """Build the environment for one cell's trusted host and private DP child."""
     import os
     env = dict(os.environ)
     env["XDG_RUNTIME_DIR"] = str(state_root / "xdg")
@@ -73,8 +76,7 @@ def _agent_env(configuration: str, *, state_root: Path) -> dict[str, str]:
     else:
         env.pop("COGNITIVE_STATEWORK_ROOT", None)
     # Ordinary cells always run without System-1. A Laya cell inherits only
-    # explicit operator-pinned provider settings; the runtime harness performs
-    # the actual handshake and rejects a disabled or incomplete provider.
+    # explicit provider settings; the private MCP server must attest them.
     if configuration != "cfw_csw_dp_laya":
         env["DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE"] = "disabled"
         env["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] = "disabled"
@@ -108,7 +110,8 @@ def _aggregate(results: list[dict]) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agent-command", default=f"{sys.executable} {ROOT / 'scripts' / 'cohort' / 'agent_codex.py'}")
+    parser.add_argument("--agent-command", default=(
+        f"{sys.executable} {ROOT / 'scripts' / 'cohort' / 'agent_codex_host.py'}"))
     parser.add_argument("--contract", type=Path,
                         default=ROOT / "contracts" / "real-agent-benchmark-v1.json")
     parser.add_argument("--configurations", default=",".join(c for c, _ in CONFIGURATIONS))
@@ -136,7 +139,8 @@ def main() -> int:
     # correct work as zero; canaries make that fail here instead.
     if not args.skip_canaries:
         canaries = cohort_preflight.run_canaries(
-            agent_command=command, families=contract["task_families"])
+            agent_command=command, families=contract["task_families"],
+            limits=contract["limits"])
         print(json.dumps({"canaries": canaries}, indent=2), flush=True)
 
     cohorts: dict[str, dict] = {}
@@ -150,65 +154,96 @@ def main() -> int:
             env = _agent_env(configuration, state_root=state_root)
             import os
             saved = dict(os.environ)
+            cell_command = [*command, "--configuration", configuration,
+                            "--state-root", str(state_root / "host-state")]
             os.environ.update(env)
             try:
                 report = benchmark.execute_benchmark(
-                    contract, command,
+                    contract, cell_command,
                     trials_per_cell=args.trials_per_cell,
                     holdout_fraction=args.holdout_fraction)
             finally:
                 os.environ.clear(); os.environ.update(saved)
-        # Construct the composition for real and record its behavioral
-        # telemetry. Environment variables alone measure the model, not the
-        # systems, so a configuration that cannot be built is a failure rather
-        # than a quietly weaker cell.
-        telemetry: list[dict[str, Any]] = []
-        construction = None
-        try:
-            state_root = Path(raw) / "runtime-state"
-            handles = cohort_runtime.build_session(
-                configuration=configuration,
-                task_id=f"{configuration}-construction-probe",
-                state_root=state_root)
-            construction = "constructed"
-            if handles.get("dp_session") is not None:
-                criterion = f"{configuration}-construction-probe-criterion"
-                cohort_runtime.drive_actions(
-                    handles, criterion_id=criterion, action_count=3)
-                record = cohort_runtime.behavioral_record(
-                    handles, trial_id=f"{label}-construction-probe")
-                if configuration == "cfw_csw_dp_laya":
-                    attestation = record.get("semantic_provider_attestation")
-                    manifest = (dict(attestation) if isinstance(attestation, dict)
-                                else {})
-                    manifest.update({
-                        "semantic_provider_status": "enabled" if attestation else "disabled",
-                        "capability_handshake_observed": bool(attestation),
-                    })
-                    cohort_preflight.check_semantic_treatment({label: manifest})
-                telemetry.append({
-                    "trial_id": f"{label}-construction-probe",
-                    "configuration": configuration,
-                    "record": record,
-                })
-        except cohort_runtime.InvalidTreatment as exc:
-            construction = f"INVALID_TREATMENT: {exc}"
-        except Exception as exc:
-            construction = f"FAILED: {type(exc).__name__}: {exc}"
+
+        raw_results = report["results"]
+        exposures = [exposure for row in raw_results
+                     for exposure in row.get("treatment_exposure", [])]
+        receipts = [receipt for row in raw_results
+                    for receipt in row.get("host_action_receipts", [])]
+        expected_frameworks = list(EXPECTED_FRAMEWORKS[configuration])
+        exposure_verified = bool(raw_results) and all(
+            bool(exposure.get("host_generated"))
+            and exposure.get("configuration") == configuration
+            and exposure.get("frameworks") == expected_frameworks
+            and bool(exposure.get("context_sha256"))
+            and int(exposure.get("context_bytes", 0)) > 0
+            and ("DP" not in expected_frameworks
+                 or bool(exposure.get("private_dp_mcp")))
+            and ("CSW" not in expected_frameworks
+                 or (bool(exposure.get("csw_authority_id"))
+                     and bool(exposure.get("csw_registry_hash"))))
+            for exposure in exposures) and all(
+                bool(row.get("treatment_exposure")) for row in raw_results)
+        def _authoritative_receipt(item: dict) -> bool:
+            if item.get("executed") is not True:
+                return False
+            if "CFW" not in expected_frameworks:
+                return True
+            cfw_gate = item.get("cfw_gate") or {}
+            if "DP" not in expected_frameworks:
+                return cfw_gate.get("decision") == "allow"
+            boundary = item.get("dp_committed_boundary") or {}
+            gate_receipts = item.get("cfw_gate_receipts") or []
+            return (cfw_gate.get("status") == "ready"
+                    and cfw_gate.get("action_authorized") is True
+                    and boundary.get("status") == "ready"
+                    and any(receipt.get("stage") == "final"
+                            and receipt.get("decision") == "allow"
+                            for receipt in gate_receipts))
+
+        receipt_verified = bool(raw_results) and all(
+            any(_authoritative_receipt(item) for item in row.get(
+                "host_action_receipts", [])) for row in raw_results)
+        if configuration == "cfw_csw_dp_laya":
+            for row in raw_results:
+                per_trial = row.get("runtime_behavioral_telemetry") or []
+                if not per_trial:
+                    exposure_verified = False
+                    continue
+                for record in per_trial:
+                    cohort_preflight.check_semantic_treatment({
+                        str(record.get("trial_id") or row.get("task_family")): record})
+
+        cell_blockers = []
+        if not exposure_verified:
+            cell_blockers.append("treatment_exposure_missing_or_mismatched")
+        if not receipt_verified:
+            cell_blockers.append("host_action_receipts_missing")
 
         cohorts[configuration] = {
-            "_raw_results": report["results"],
-            "construction": construction,
-            "behavioral_telemetry": telemetry,
+            "_raw_results": raw_results,
+            "runtime_behavioral_telemetry": [
+                telemetry for row in raw_results
+                for telemetry in row.get("runtime_behavioral_telemetry", [])],
+            "treatment_exposure_verified": exposure_verified,
+            "host_action_receipts_verified": receipt_verified,
+            "validation_blockers": cell_blockers,
+            "host_action_count": len(receipts),
+            "treatment_exposure_count": len(exposures),
             "blinded_label": label,
             "subsystems": list(subsystems),
-            "per_family": _aggregate(report["results"]),
+            "per_family": _aggregate(raw_results),
             "trials_per_cell": args.trials_per_cell,
             "holdout_fraction": args.holdout_fraction,
             "contract_hash": report["contract_hash"],
         }
         labels.append({"blinded_label": label, "configuration": configuration,
                        "subsystems": list(subsystems)})
+
+    all_exposure_verified = all(
+        cohorts[name]["treatment_exposure_verified"] for name in wanted)
+    all_receipts_verified = all(
+        cohorts[name]["host_action_receipts_verified"] for name in wanted)
 
     # Post-matrix tripwires: infrastructure failures abort rather than report.
     raw_results: list[dict] = []
@@ -218,16 +253,25 @@ def main() -> int:
         cohort_preflight.check_hard_zero(raw_results)
         cohort_preflight.check_full_budget_burn(raw_results)
 
+    qualification_blockers = [
+        "full_agent_tool_registry_not_observable",
+        "independent_intervention_outcome_attribution_incomplete",
+        "cross_cell_real_agent_effect_not_established",
+    ]
+    if not all_exposure_verified:
+        qualification_blockers.append("treatment_exposure_incomplete")
+    if not all_receipts_verified:
+        qualification_blockers.append("host_action_receipts_incomplete")
+
     out = {
         "cohort_id": "real-agent-behavioral-cohort-v1",
-        "evidence_source": "host_evaluator_only",
+        "evidence_source": "host_evaluator_with_host_action_receipts",
         "agent_command": args.agent_command,
         "configurations_run": wanted,
+        "treatment_exposure_verified": all_exposure_verified,
+        "host_action_receipts_verified": all_receipts_verified,
         "qualification_eligible": False,
-        "qualification_blockers": [
-            "task_outcome_only_evaluation",
-            "single_agent_backend_per_cell",
-        ],
+        "qualification_blockers": qualification_blockers,
         "cohorts": cohorts,
     }
     for entry in out["cohorts"].values():

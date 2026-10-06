@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional
 
 from runtime_contract.actions import ActionDescriptor
+from runtime_contract.paths import runtime_asset_root
+from runtime_contract.task import task_goal_contract_mapping_hash
 from runtime_contract.behavioral_fusion import SemanticFusion, fuse_action_relation
 from runtime_contract.metacognition import CompletionReadiness, MetaDecision, SemanticSignals
 from runtime_contract.system_one import (
@@ -18,7 +20,7 @@ from runtime_contract.system_one import (
 )
 from runtime_session.lifecycle import _canonical_system_one_status
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = runtime_asset_root()
 _SISPIS_CALIBRATION = None
 
 
@@ -40,28 +42,33 @@ class StandaloneBehaviorMethods:
         return SystemOnePolicy(**dict(self.bundle.pinned.get("system_one_policy") or {}))
     def _evaluate_metacognition(self, *,
                                  semantic: Optional[SemanticSignals] = None) -> MetaDecision:
-        if self.external_behavior_authority:
+        if self.behavior.is_external:
             state = self.effective_external_behavior_projection()
             return MetaDecision(
                 str(state.get("cognitive_mode") or "DELIVER"),
                 "behavior policy is owned by DigitalPsychology")
         self.ensure_standalone_behavior_authority()
         goal = self.bundle.pinned.get("goal_contract") or {}
+        pinned_goal_hash = str(self.bundle.pinned.get("goal_contract_hash") or "")
+        goal_anchor_valid = (
+            goal.get("work_mode") != "delivery"
+            or bool(goal and pinned_goal_hash
+                    and task_goal_contract_mapping_hash(goal) == pinned_goal_hash))
         verification = goal.get("verification_policy") or {}
-        state = self.convergence.state("primary-objective") if self.convergence else None
+        state = self.attempts.controller.state("primary-objective") if self.attempts.controller else None
         required_criteria = [item for item in goal.get("acceptance_criteria", ())
                              if item.get("required", True)]
         completion_readiness = None
         if required_criteria:
             criterion_states = {item.criterion_id: item
-                                for item in self.metacognitive_state.criteria}
+                                for item in self.behavior.metacognitive.criteria}
             criteria_satisfied = all(
                 criterion_states.get(str(item.get("criterion_id"))) is not None
                 and criterion_states[str(item.get("criterion_id"))].status == "satisfied"
                 for item in required_criteria)
             workflow_facts = {
                 (item.statework_id, item.subject_ref): item
-                for item in self.metacognitive_state.workflows}
+                for item in self.behavior.metacognitive.workflows}
             workflows_complete = True
             for item in self.bundle.stateworks:
                 statework_id = str(item.get("id") or "")
@@ -71,13 +78,13 @@ class StandaloneBehaviorMethods:
                 if workflow is None or workflow.completed is not True:
                     workflows_complete = False
                     break
-            completion_subject = (self.current_segment.subject_ref
+            completion_subject = (self.lifecycle_workflow.current_segment.subject_ref
                                   or self.bundle.policy.subject_ref)
             boundary_evidence_available = any(
                 record.issuer.startswith("validator:")
                 and record.invocation_id is not None
                 and bool(record.claim_digest)
-                for record in self.ledger.current_records(
+                for record in self.evidence.ledger.current_records(
                     subject_ref=completion_subject,
                     allowed_kinds={"boundary_evidence", "completion_boundary"}))
             completion_readiness = CompletionReadiness(
@@ -87,19 +94,19 @@ class StandaloneBehaviorMethods:
                     not bool(item.get("resolved"))
                     and (completion_subject is None
                          or item.get("subject") == completion_subject)
-                    for item in self.contradictions.values()),
+                    for item in self.evidence.contradictions.values()),
                 active_stateworks_complete=workflows_complete,
                 pending_verification_obligations=len(
-                    self.metacognitive_state.pending_verification_obligations))
+                    self.behavior.metacognitive.pending_verification_obligations))
         current_semantic = (semantic if semantic is not None else
-                            self.semantic_signal_store.current(
-                                metacognitive_revision=self.metacognitive_state.logical_revision,
+                            self.behavior.semantic_signal_store.current(
+                                metacognitive_revision=self.behavior.metacognitive.logical_revision,
                                 question_families={"action_relation", "progress_relation",
                                                    "retry_relation", "goal_drift"})
-                            if self.semantic_signals_revision
-                            == self.metacognitive_state.logical_revision else SemanticSignals())
-        decision = self.metacognitive_controller.evaluate(
-            self.metacognitive_state,
+                            if self.behavior.semantic_signals_revision
+                            == self.behavior.metacognitive.logical_revision else SemanticSignals())
+        decision = self.behavior.metacognitive_controller.evaluate(
+            self.behavior.metacognitive,
             support_actions_since_progress=(
                 state.support_actions_since_goal_progress if state else 0),
             support_action_limit=int(verification.get(
@@ -116,13 +123,14 @@ class StandaloneBehaviorMethods:
             max_same_approach_retries=int(verification.get(
                 "max_same_approach_retries", 2) or 2),
             unresolved_contradiction=any(
-                not bool(item.get("resolved")) for item in self.contradictions.values()),
+                not bool(item.get("resolved")) for item in self.evidence.contradictions.values()),
+            goal_contract_anchor_valid=goal_anchor_valid,
             semantic=current_semantic,
             completion_readiness=completion_readiness)
-        if decision != self.metacognitive_decision:
-            object.__setattr__(self, "metacognitive_decision", decision)
+        if decision != self.behavior.metacognitive_decision:
+            self.behavior.set_metacognitive_decision(decision)
             self._journal("metacognitive_decision_recorded", decision=decision.to_dict(),
-                          logical_revision=self.metacognitive_state.logical_revision)
+                          logical_revision=self.behavior.metacognitive.logical_revision)
         return decision
     def _system_one_query(self, *, questions: tuple[str, ...], candidate: ActivityFact,
                           subject_ref: Optional[str] = None,
@@ -131,16 +139,16 @@ class StandaloneBehaviorMethods:
                           descriptor: Optional[ActionDescriptor] = None,
                           route_candidates: tuple[str, ...] = (),
                           route_state_revision: Optional[int] = None,
-                          route_statework_id: Optional[str] = None) -> Optional[SystemOneJudgment]:
+                          route_workflow_id: Optional[str] = None) -> Optional[SystemOneJudgment]:
         """Serialize a complete provider operation for this RuntimeSession identity."""
-        with self._system_one_provider_lock:
+        with self.behavior.system_one_provider_lock:
             return self._system_one_query_serialized(
                 questions=questions, candidate=candidate, subject_ref=subject_ref,
                 action_request_id=action_request_id,
                 action_invocation_id=action_invocation_id, descriptor=descriptor,
                 route_candidates=route_candidates,
                 route_state_revision=route_state_revision,
-                route_statework_id=route_statework_id)
+                route_workflow_id=route_workflow_id)
     def _system_one_query_serialized(self, *, questions: tuple[str, ...], candidate: ActivityFact,
                           subject_ref: Optional[str] = None,
                           action_request_id: Optional[str] = None,
@@ -148,9 +156,9 @@ class StandaloneBehaviorMethods:
                           descriptor: Optional[ActionDescriptor] = None,
                           route_candidates: tuple[str, ...] = (),
                           route_state_revision: Optional[int] = None,
-                          route_statework_id: Optional[str] = None) -> Optional[SystemOneJudgment]:
+                          route_workflow_id: Optional[str] = None) -> Optional[SystemOneJudgment]:
         """Query from a typed host snapshot after authority checks."""
-        if self.external_behavior_authority:
+        if self.behavior.is_external:
             return None
         self.ensure_standalone_behavior_authority()
         policy = self._system_one_policy()
@@ -162,23 +170,23 @@ class StandaloneBehaviorMethods:
         if not questions:
             return None
         goal = self.bundle.pinned.get("goal_contract") or {}
-        if not goal.get("objective") or self.system_one_judge is None:
+        if not goal.get("objective") or self.behavior.system_one_judge is None:
             return None
-        with self._system_one_lock:
-            object.__setattr__(self, "system_one_sequence", self.system_one_sequence + 1)
-            sequence = self.system_one_sequence
+        with self.behavior.system_one_lock:
+            self.behavior.system_one_sequence += 1
+            sequence = self.behavior.system_one_sequence
         self._journal("system_one_sequence", sequence=sequence)
         identity = SystemOneIdentity(
-            namespace_id=self.execution_identity.namespace_id,
+            namespace_id=self.identity_authority.identity.execution_identity.namespace_id,
             application_id=str(self.bundle.pinned.get("application_id") or "unknown-application"),
-            application_instance_id=self.execution_identity.application_instance_id,
+            application_instance_id=self.identity_authority.identity.execution_identity.application_instance_id,
             agent_id=str(self.bundle.pinned.get("agent_id") or "agent"),
-            agent_instance_id=self.execution_identity.agent_instance_id,
-            session_id=self.execution_identity.session_id,
-            task_id=self.execution_identity.task_id,
-            attempt_id=self.execution_identity.attempt_id,
-            interaction_id=self.execution_identity.interaction_id)
-        convergence_state = self.convergence.state("primary-objective") if self.convergence else None
+            agent_instance_id=self.identity_authority.identity.execution_identity.agent_instance_id,
+            session_id=self.identity_authority.identity.execution_identity.session_id,
+            task_id=self.identity_authority.identity.execution_identity.task_id,
+            attempt_id=self.identity_authority.identity.execution_identity.attempt_id,
+            interaction_id=self.identity_authority.identity.execution_identity.interaction_id)
+        convergence_state = self.attempts.controller.state("primary-objective") if self.attempts.controller else None
         convergence = {
             "support_actions_since_goal_progress": int(
                 convergence_state.support_actions_since_goal_progress if convergence_state else 0),
@@ -188,32 +196,32 @@ class StandaloneBehaviorMethods:
                 convergence_state.same_approach_retries if convergence_state else 0),
         }
         active_flow = None
-        active_statework_id = self.current_segment.statework_id
+        active_statework_id = self.lifecycle_workflow.current_segment.statework_id
         if active_statework_id:
             active_statework = next((item for item in self.bundle.stateworks
                                      if item.get("id") == active_statework_id), None)
             selected_flow = active_statework.get("selected_flow") if active_statework else None
             if isinstance(selected_flow, (list, tuple)) and selected_flow:
                 active_flow = Path(str(selected_flow[0])).parent.name
-        query_meta_revision = self.metacognitive_state.logical_revision
-        frame = self.system_one_projector.project(
-            meta_state=self.metacognitive_state,
+        query_meta_revision = self.behavior.metacognitive.logical_revision
+        frame = self.behavior.system_one_projector.project(
+            meta_state=self.behavior.metacognitive,
             identity=identity, sequence=sequence,
             policy_hash=str(self.bundle.pinned.get("policy_hash") or ""),
             policy=policy, questions=questions, goal_contract=goal,
             convergence=convergence, candidate=candidate,
             phase=self.bundle.pinned.get("phase"),
-            active_segment=self.current_segment.segment_id,
+            active_segment=self.lifecycle_workflow.current_segment.segment_id,
             active_statework=(active_statework_id or None), active_flow=active_flow,
-            current_state=(self.statework_states.get((
-                active_statework_id or "", self.current_segment.subject_ref or ""))),
+            current_state=(self.lifecycle_workflow.statework_states.get((
+                active_statework_id or "", self.lifecycle_workflow.current_segment.subject_ref or ""))),
             blockers=tuple(f"{item.blocker_id}: {item.summary}" if item.summary
-                           else item.blocker_id for item in self.metacognitive_state.blockers),
+                           else item.blocker_id for item in self.behavior.metacognitive.blockers),
             failed_approaches=tuple(
-                self.attempt_semantics[attempt_ref]
-                for attempt_ref in self.attempt_descriptors
-                if attempt_ref in self.attempt_failures
-                and attempt_ref in self.attempt_semantics)[-4:],
+                self.attempts.semantics[attempt_ref]
+                for attempt_ref in self.attempts.descriptors
+                if attempt_ref in self.attempts.failures
+                and attempt_ref in self.attempts.semantics)[-4:],
             legal_routes=route_candidates)
         status_reason = "fallback"
         calibrated_questions: set[str] = set()
@@ -221,8 +229,8 @@ class StandaloneBehaviorMethods:
         try:
             # This lock is per RuntimeSession identity: stateful providers see
             # each full snapshot and its answer validation as one operation.
-            with self._system_one_provider_lock:
-                raw = self.system_one_judge.judge(frame, mode=policy.mode)
+            with self.behavior.system_one_provider_lock:
+                raw = self.behavior.system_one_judge.judge(frame, mode=policy.mode)
                 if hasattr(raw, "judgment"):
                     status_reason = str(
                         getattr(raw, "reason", None)
@@ -250,8 +258,8 @@ class StandaloneBehaviorMethods:
         except Exception:
             judgment, calibrated_questions = None, set()
             status_reason = "provider_exception"
-        if (sequence != self.system_one_sequence
-                or query_meta_revision != self.metacognitive_state.logical_revision):
+        if (sequence != self.behavior.system_one_sequence
+                or query_meta_revision != self.behavior.metacognitive.logical_revision):
             judgment, calibrated_questions = None, set()
             status_reason = "stale_response"
         status = _canonical_system_one_status(
@@ -267,12 +275,12 @@ class StandaloneBehaviorMethods:
             influenced = fused.model_influenced
         signals = SemanticFusion.signals(
             judgment, policy=policy, calibrated=calibrated)
-        prior_decision = self.metacognitive_decision
+        prior_decision = self.behavior.metacognitive_decision
         candidate_digest = hashlib.sha256(json.dumps({
             "candidate": candidate.to_dict(),
             "legal_routes": sorted(route_candidates),
         }, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
-        scenario = (f"route:{route_statework_id}" if route_statework_id else
+        scenario = (f"route:{route_workflow_id}" if route_workflow_id else
                     f"action:{action_request_id or action_invocation_id}" if action_request_id or action_invocation_id else
                     f"task:{self.bundle.task_id}")
         answer_by_family = {family: (judgment.answer(family) if judgment else None)
@@ -287,7 +295,7 @@ class StandaloneBehaviorMethods:
             if value is None:
                 continue
             answer = answer_by_family.get(family)
-            self.semantic_signal_store.record(
+            self.behavior.semantic_signal_store.record(
                 question_family=family, value=value, scenario=scenario,
                 criterion_id=(candidate.affected_criterion_ids[0]
                               if candidate.affected_criterion_ids else None),
@@ -295,15 +303,14 @@ class StandaloneBehaviorMethods:
                 metacognitive_revision=query_meta_revision,
                 source_decision_id=(judgment.request_id if judgment else frame.request_id),
                 confidence=(answer.calibrated_confidence if answer else None))
-        refreshed_signals = self.semantic_signal_store.current(
+        refreshed_signals = self.behavior.semantic_signal_store.current(
             metacognitive_revision=query_meta_revision,
             question_families={"action_relation", "progress_relation", "retry_relation",
                                "goal_drift", "route_preference"})
-        object.__setattr__(self, "semantic_signals", refreshed_signals)
-        object.__setattr__(self, "semantic_signals_revision",
-                           query_meta_revision)
+        self.behavior.set_semantic_signals(refreshed_signals)
+        self.behavior.semantic_signals_revision = query_meta_revision
         self._journal("semantic_signal_store_changed",
-                      records=self.semantic_signal_store.snapshot(),
+                      records=self.behavior.semantic_signal_store.snapshot(),
                       metacognitive_revision=query_meta_revision)
         next_decision = self._evaluate_metacognition(semantic=refreshed_signals)
         control_changed = (next_decision.mode, next_decision.reason,
@@ -325,7 +332,7 @@ class StandaloneBehaviorMethods:
             "policy_hash": frame.policy_hash,
             "legal_routes": list(route_candidates),
             "route_state_revision": route_state_revision,
-            "route_statework_id": route_statework_id,
+            "route_workflow_id": route_workflow_id,
             "question_hash": question_hash,
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "judgment": judgment.to_dict() if judgment else {},
@@ -342,12 +349,12 @@ class StandaloneBehaviorMethods:
                                       if control_changed else None),
             "fused_action_relation": relation,
         }
-        self.system_one_decisions[decision_id] = decision
-        while len(self.system_one_decisions) > 512:
-            oldest = next(iter(self.system_one_decisions))
-            self.system_one_decisions.pop(oldest)
-            self.system_one_outcomes.difference_update(
-                key for key in tuple(self.system_one_outcomes)
+        self.behavior.system_one_decisions[decision_id] = decision
+        while len(self.behavior.system_one_decisions) > 512:
+            oldest = next(iter(self.behavior.system_one_decisions))
+            self.behavior.system_one_decisions.pop(oldest)
+            self.behavior.system_one_outcomes.difference_update(
+                key for key in tuple(self.behavior.system_one_outcomes)
                 if key.startswith(f"{oldest}:"))
         self._journal("system_one_decision_recorded", decision=decision)
         payload = {

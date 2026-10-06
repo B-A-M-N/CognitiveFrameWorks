@@ -7,6 +7,21 @@ import json
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 
+def _normalize_boundary_ids(values: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError("boundary coverage must be a sequence of identifiers")
+    try:
+        items = tuple(values)
+    except TypeError as exc:
+        raise ValueError("boundary coverage must be a bounded sequence of identifiers") from exc
+    if (len(items) > 32
+            or any(not isinstance(item, str) or not item.strip() or len(item) > 128
+                   for item in items)
+            or len(set(items)) != len(items)):
+        raise ValueError("boundary coverage requires at most 32 unique bounded identifiers")
+    return tuple(sorted(items))
+
+
 def completion_claim_digest(task_id: str, subject_ref: Optional[str],
                             boundary_type: str, boundary_target: str,
                             expected_validator: str, invocation_id: str,
@@ -135,6 +150,11 @@ class EvidenceAttestation:
     claim_digest: Optional[str] = None
     schema: Optional[str] = None
     validator: Optional[str] = None
+    covered_boundary_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "covered_boundary_ids",
+                           _normalize_boundary_ids(self.covered_boundary_ids))
 
 
 @dataclass(frozen=True)
@@ -153,6 +173,11 @@ class EvidenceRecord:
     claim_digest: Optional[str] = None
     schema: Optional[str] = None
     validator: Optional[str] = None
+    covered_boundary_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "covered_boundary_ids",
+                           _normalize_boundary_ids(self.covered_boundary_ids))
 
 
 @dataclass(frozen=True)
@@ -218,6 +243,7 @@ class EvidenceLedger:
             claim_digest=attestation.claim_digest,
             schema=attestation.schema,
             validator=attestation.validator,
+            covered_boundary_ids=attestation.covered_boundary_ids,
         )
         prior = self._records.get(attestation.evidence_id)
         if prior is not None and prior != record:
@@ -263,6 +289,16 @@ class EvidenceLedger:
 
     def get(self, evidence_id: str) -> Optional[EvidenceRecord]:
         return self._records.get(evidence_id)
+
+    def covered_boundary_ids(self, refs: Iterable[str], *,
+                             subject_ref: Optional[str] = None) -> tuple[str, ...]:
+        """Return the explicit boundary coverage asserted by current host evidence."""
+        normalized_refs = list(dict.fromkeys(refs))
+        self.resolve(normalized_refs, subject_ref=subject_ref)
+        return tuple(sorted({
+            boundary for ref in normalized_refs
+            for boundary in self._records[ref].covered_boundary_ids
+        }))
 
     def current_records(self, *, subject_ref: Optional[str] = None,
                         allowed_kinds: Optional[set[str]] = None

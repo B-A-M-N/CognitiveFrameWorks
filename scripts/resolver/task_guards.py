@@ -36,19 +36,19 @@ def resolve_task_guards(
     routing_adjustments: List[Dict[str, Any]],
     statework_available: bool,
     statework_registry_version: Optional[str],
-    behavior_contract_path: Path,
+    runtime_event_contract_path: Path,
     load_document,
     load_json,
 ) -> TaskGuardResolution:
     """Resolve applicable guards and pin their rollout decision for a task."""
-    behavior_contract = load_document(behavior_contract_path, load_json)
-    behavior_event_version = str(
-        behavior_contract.get("properties", {}).get("schema_version", {}).get("const", ""))
+    runtime_event_contract = load_document(runtime_event_contract_path, load_json)
+    runtime_event_version = str(
+        runtime_event_contract.get("properties", {}).get("schema_version", {}).get("const", ""))
     statework_ids = [sw.get("id") for sw in stateworks]
     if statework_available:
         validate_compatibility(
             statework_registry_version=statework_registry_version,
-            behavior_event_version=behavior_event_version,
+            runtime_event_version=runtime_event_version,
             guard_pack_version=pack.get("pack_version"))
 
     suppressed_routes = {

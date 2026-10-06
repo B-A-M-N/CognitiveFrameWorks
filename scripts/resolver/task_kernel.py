@@ -18,10 +18,11 @@ def compose_task_kernel(
     profile: List[str],
     stages: Mapping[str, Any],
     aliases: Mapping[str, Any],
-    stateworks: List[Dict[str, Any]],
+    required_components: List[str],
+    enhanced_components: List[str],
     routing_adjustments: List[Dict[str, Any]],
 ) -> TaskKernel:
-    """Apply legal stage preferences and StateWork runtime requirements."""
+    """Apply stage preferences and normalized component requirements."""
     suppressed = {
         str(item.get("route")) for item in routing_adjustments
         if item.get("route_type") in {"stage", "lifecycle_stage"}
@@ -34,17 +35,10 @@ def compose_task_kernel(
     kernel_stages = order_kernel(selected, stages)
 
     merged = list(kernel_stages)
-    for statework in stateworks:
-        integration_sets = [statework.get("integrations") or {},
-                            statework.get("flow_integrations") or {}]
-        for integration_set in integration_sets:
-            integration = integration_set.get("cognitiveframeworks", {})
-            requirements = (list(integration.get("required") or ())
-                            + list(integration.get("enhancements") or ()))
-            for requirement in requirements:
-                for concrete in expand([requirement], aliases):
-                    if concrete not in merged:
-                        merged.append(concrete)
+    for requirement in [*required_components, *enhanced_components]:
+        for concrete in expand([requirement], aliases):
+            if concrete not in merged:
+                merged.append(concrete)
     ordered = order_kernel(requires_closure(merged, stages), stages)
 
     preferred = {

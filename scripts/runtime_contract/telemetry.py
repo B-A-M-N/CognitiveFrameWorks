@@ -1,4 +1,4 @@
-"""Canonical DP behavior-event schema contract for host telemetry."""
+"""Neutral runtime-event schema contract owned by CognitiveFrameWorks."""
 from __future__ import annotations
 
 import fcntl
@@ -15,25 +15,30 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Tuple
 
 EventKey = Tuple[str, str, str]
 
-def behavior_schema_contract(path: Path) -> Tuple[Dict[str, Any], str, str]:
-    packaged = resource_files("runtime_contract").joinpath(f"contracts/{path.name}")
+def runtime_event_schema_contract(
+        path: Path | None = None) -> Tuple[Dict[str, Any], str, str]:
+    filename = (path.name if path is not None else "runtime-event.schema.json")
+    packaged = resource_files("runtime_contract").joinpath(f"contracts/{filename}")
     if packaged.is_file():
         raw = packaged.read_bytes()
         schema = json.loads(raw.decode("utf-8"))
         version = str(schema.get("properties", {}).get("schema_version", {}).get("const", ""))
         return schema, hashlib.sha256(raw).hexdigest(), version
-    if not path.exists():
-        candidates = [Path(__file__).resolve().parents[2] / "contracts" / path.name,
-                      Path(__file__).resolve().parents[1] / "contracts" / path.name]
+    local_path = path
+    if local_path is None:
+        local_path = Path(__file__).resolve().parents[2] / "contracts" / filename
+    if not local_path.exists():
+        candidates = [Path(__file__).resolve().parents[2] / "contracts" / filename,
+                      Path(__file__).resolve().parents[1] / "contracts" / filename]
         for local in candidates:
             if local.exists():
-                path = local
+                local_path = local
                 break
-    if not path.exists():
-        raise ValueError(f"behavior-event schema is unavailable: {path}")
-    schema = json.loads(path.read_text(encoding="utf-8"))
+    if not local_path.exists():
+        raise ValueError(f"runtime-event schema is unavailable: {local_path}")
+    schema = json.loads(local_path.read_text(encoding="utf-8"))
     version = str(schema.get("properties", {}).get("schema_version", {}).get("const", ""))
-    return schema, hashlib.sha256(path.read_bytes()).hexdigest(), version
+    return schema, hashlib.sha256(local_path.read_bytes()).hexdigest(), version
 
 
 def event_key(event: Mapping[str, Any]) -> EventKey:

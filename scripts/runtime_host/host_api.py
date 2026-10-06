@@ -115,20 +115,26 @@ class CognitiveRuntime:
     def after_tool(self, session: RuntimeSession, *, tool_type: str,
                    result_class: str, subject_ref: Optional[str] = None,
                    invocation_id: Optional[str] = None,
+                   action_request_id: Optional[str] = None,
                    result_digest: Optional[str] = None,
-                   actual_result: Optional[Mapping[str, Any]] = None) -> str:
+                   actual_result: Optional[Mapping[str, Any]] = None,
+                   covered_boundary_ids: Iterable[str] = ()) -> str:
         return session._host_ingress().record_tool_result(
             tool_type, result_class, subject_ref,
             invocation_id=invocation_id, result_digest=result_digest,
-            actual_result=actual_result)
+            action_request_id=action_request_id,
+            actual_result=actual_result,
+            covered_boundary_ids=covered_boundary_ids)
 
     def on_artifact(self, session: RuntimeSession, *, flow_triggered: bool = False,
                     durable_contract_changed: bool = False,
-                    state_changed: bool = True) -> None:
+                    state_changed: bool = True,
+                    impact_facts: Optional[Mapping[str, Any]] = None) -> None:
         """Host lifecycle hook for a produced artifact boundary."""
         session.on_artifact(flow_triggered=flow_triggered,
                             durable_contract_changed=durable_contract_changed,
-                            state_changed=state_changed)
+                            state_changed=state_changed,
+                            impact_facts=impact_facts)
 
     def artifact_processed(self, session: RuntimeSession) -> None:
         session.artifact_processed()
@@ -142,10 +148,12 @@ class CognitiveRuntime:
     def after_validator(self, session: RuntimeSession, *, validator_id: str,
                         invocation_id: str, result: Mapping[str, Any],
                         subject_ref: Optional[str] = None,
-                        claim_digest: Optional[str] = None) -> str:
+                        claim_digest: Optional[str] = None,
+                        covered_boundary_ids: Iterable[str] = ()) -> str:
         return session._host_ingress().record_validator_result(
             validator_id, invocation_id, result, subject_ref,
-            claim_digest=claim_digest)
+            claim_digest=claim_digest,
+            covered_boundary_ids=covered_boundary_ids)
 
     def create_completion_claim(self, session: RuntimeSession, *,
                                 subject_ref: str, invocation_id: str,

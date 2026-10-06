@@ -79,6 +79,49 @@ proposed change
 
 Conflict resolution: OWL Locality cannot suppress a decomposition required to prevent responsibility concentration; OWL Generalization cannot classify responsibility extraction as premature solely because there is one caller. Conservation governs extraction—preserve behavior while moving ownership, then implement the new behavior through that boundary.
 
+## Change Resilience Contract
+
+This specializes the universal kernel for consequential software changes. It
+does not create a second correctness authority or a new `CHANGE` framework.
+Materialize the frame only when a change affects a public interface,
+persistent representation, concurrency, authentication/security, shared
+abstraction, state machine, provider/protocol, cross-module contract,
+performance-sensitive path, or compatibility assumption.
+
+For those changes, keep a bounded task-local frame:
+
+```text
+intended_delta
+preserved_guarantees
+deliberately_changed_guarantees
+affected_boundaries
+compatibility_assumptions
+verification_obligations
+recovery_boundary
+```
+
+Ownership remains distributed by responsibility:
+
+| Skill | Change-resilience responsibility |
+|-------|-----------------------------------|
+| OWL | Impact, invariants, implications, and verification obligations |
+| ANCHOR | Task-local validity continuity for claims and criteria |
+| FUSE | Explicit evidence coverage for affected boundaries and retry adequacy |
+| WARD | Authority, acceptability, reversibility, and semantic blast radius |
+| FLOW | Structural and operational amplification |
+| DOX | Persistence of changed durable contracts |
+| SISPIS | Communication only |
+
+ANCHOR records claim validity for the current task and links to host evidence.
+CSW remains the owner of durable workflow facts. ANCHOR may mark a claim that
+depends on a CSW fact as invalidated when that fact is invalidated; it never
+changes the CSW fact or transition.
+
+When a criterion declares `required_boundaries`, completion requires the union
+of current, subject-matched host evidence `covered_boundary_ids` to cover that
+set. Evidence coverage is a set relation, not an inferred ranking of vague
+scope labels.
+
 ## Skill Ownership
 
 | Skill | Owns | Does not own |
@@ -193,7 +236,11 @@ Recovery is owned by ANCHOR.
 |----------------|---------------|----------------|
 | OWL `approach_failed` / `sunk_cost_detected` | OWL | ANCHOR |
 | FUSE `retry_bound_exceeded` | FUSE | ANCHOR |
-| WARD `refuse` / `recover` | WARD | ANCHOR |
+| WARD `RECOVER_APPROACH` | WARD | ANCHOR |
+
+A plain WARD `BLOCK_ACTION` records a disallowed candidate and returns control
+to FUSE selection under the same valid approach. It is not an ANCHOR recovery
+trigger.
 
 Surface one merged block, not separate duplicate blocks.
 

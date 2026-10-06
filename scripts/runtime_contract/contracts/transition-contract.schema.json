@@ -10,6 +10,16 @@
     "completion_states": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "normal_path": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "external_entry_states": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "facts": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "type": "string", "minLength": 1, "maxLength": 128 },
+      "additionalProperties": {
+        "type": "object",
+        "properties": { "terminal_required": { "type": "boolean" } },
+        "additionalProperties": false
+      }
+    },
     "transitions": {
       "type": "array",
       "items": {
@@ -24,6 +34,9 @@
           "domain_effect": { "type": "string", "minLength": 1, "maxLength": 128 },
           "progress_class": { "enum": ["FORWARD_PROGRESS", "LATERAL", "RECOVERY", "INVALIDATION", "REGRESSION", "TERMINAL"] },
           "required_evidence": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+          "requires_facts": { "$ref": "#/$defs/fact_ids" },
+          "establishes_facts": { "$ref": "#/$defs/fact_ids" },
+          "invalidates_facts": { "$ref": "#/$defs/fact_ids" },
           "consequential": { "type": "boolean" },
           "path_class": { "enum": ["normal", "recovery", "failure", "invalidation", "external"] },
           "evidence_freshness": {
@@ -37,6 +50,12 @@
         },
         "additionalProperties": false
       }
+    }
+  },
+  "$defs": {
+    "fact_ids": {
+      "type": "array", "maxItems": 64, "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
     }
   },
   "additionalProperties": false

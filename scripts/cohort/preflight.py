@@ -90,6 +90,7 @@ def validate_agent_response(response: Any, *, required_fields: Iterable[str],
 
 
 def run_canaries(*, agent_command: Sequence[str], families: Sequence[Mapping[str, Any]],
+                 limits: Mapping[str, Any],
                  canary_count: int = 1,
                  max_field_attempts: int = 3) -> list[dict[str, Any]]:
     """Dispatch canary tasks before the matrix and validate every response.
@@ -101,10 +102,9 @@ def run_canaries(*, agent_command: Sequence[str], families: Sequence[Mapping[str
     be averaged away.
     """
     import importlib.util
-    import subprocess
     import tempfile
 
-    agent_task_view = _load_benchmark().agent_task_view
+    benchmark = _load_benchmark()
 
     adapter = Path(__file__).resolve().parent / "agent_codex.py"
     canaries: list[dict[str, Any]] = []
@@ -120,17 +120,22 @@ def run_canaries(*, agent_command: Sequence[str], families: Sequence[Mapping[str
                     workspace = Path(raw) / str(family["id"]) / str(trial)
                     workspace.mkdir(parents=True)
                     task = module.create_task(workspace, trial=trial, holdout=False)
+                    task["task_id"] = f"canary-{family['id']}-{trial}"
                     task["workspace"] = str(workspace)
                     validate_task_envelope(task)
-                    request = json.dumps({"task": agent_task_view(task), "turn": 0,
-                                          "previous": []})
-                    proc = subprocess.run([*agent_command], input=request,
-                                          capture_output=True, text=True, timeout=300)
-                    if proc.returncode != 0 or not proc.stdout.strip():
+                    trajectory, _usage = benchmark.run_agent(
+                        list(agent_command), task,
+                        timeout=float(limits["max_elapsed_seconds_per_trial"]),
+                        max_model_calls=int(limits["max_model_calls_per_trial"]),
+                        max_tokens=int(limits["max_external_tokens_per_trial"]),
+                        max_cost=float(limits["max_monetary_cost_per_trial"]),
+                        max_elapsed_seconds=float(limits[
+                            "max_elapsed_seconds_per_trial"]))
+                    if not trajectory:
                         last_error = PreflightError(
                             f"canary for {family['id']} produced no response")
                         continue
-                    candidate = json.loads(proc.stdout.strip().splitlines()[-1])
+                    candidate = trajectory[-1].get("response")
                     try:
                         validate_agent_response(
                             candidate, required_fields=required,
@@ -140,8 +145,17 @@ def run_canaries(*, agent_command: Sequence[str], families: Sequence[Mapping[str
                         continue
                     response = candidate
                     evaluation = module.evaluate(
-                        {"task": task,
-                         "trajectory": [{"turn": 0, "response": response}]},
+                        {"task": task, "trajectory": trajectory,
+                         "host_action_receipts": [
+                             receipt for turn in trajectory
+                             for receipt in ((turn.get("response") or {}).get(
+                                 "host_action_receipts") or ())],
+                         "treatment_exposure": [
+                             exposure for turn in trajectory
+                             for exposure in (((turn.get("response") or {}).get(
+                                 "treatment_exposure"),)
+                                 if isinstance((turn.get("response") or {}).get(
+                                     "treatment_exposure"), Mapping) else ())]},
                         workspace)
                     canaries.append({
                         "task_family": str(family["id"]),

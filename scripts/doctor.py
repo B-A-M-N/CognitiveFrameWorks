@@ -98,8 +98,6 @@ def check_installed_runtime(runtime_dst: Path, label: str,
         "import runtime; "
         "bundle = resolve_runtime.resolve('doctor-probe', 'quick', ()); "
         "session = runtime.start(bundle, telemetry_disabled=True); "
-        "assert session.before_model_call(); "
-        "assert session.current_segment.index == 0; "
         "from cognitive_runtime import CognitiveRuntime; "
         "from digital_psychology_adapter import CFWBehaviorAdapter; "
         "runtime_host = CognitiveRuntime(telemetry_disabled=True); "
@@ -107,6 +105,8 @@ def check_installed_runtime(runtime_dst: Path, label: str,
         "assert host.session_id == session.session_id; "
         "adapter = CFWBehaviorAdapter(session, runtime_host.agent_handle(session)); "
         "assert adapter.available_component_ids(); "
+        "assert session.before_model_call(); "
+        "assert session.current_segment.index == 0; "
         "host.close()"
     ) % (str(scripts), str(scripts / "resolve-runtime.py"))
     with tempfile.TemporaryDirectory(prefix="cfw-doctor-") as runtime_dir:
@@ -144,6 +144,8 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
         runtime_dst / "scripts" / "resolve-runtime.py",
         runtime_dst / "scripts" / "cognitive_runtime.py",
         runtime_dst / "scripts" / "digital_psychology_adapter.py",
+        runtime_dst / "scripts" / "resolver" / "api.py",
+        runtime_dst / "scripts" / "runtime_session" / "session.py",
         runtime_dst / "scripts" / "runtime_host" / "__init__.py",
         runtime_dst / "scripts" / "runtime_host" / "session_registry.py",
         runtime_dst / "scripts" / "runtime_host" / "handles.py",
