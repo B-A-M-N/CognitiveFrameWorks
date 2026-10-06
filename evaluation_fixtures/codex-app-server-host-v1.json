@@ -1,0 +1,33 @@
+{
+  "fixture_id": "codex-app-server-host-v1",
+  "design": "matched-control-treatment-host-contract",
+  "classification": "deterministic integration trial",
+  "trials_per_cohort": 10,
+  "shared": {
+    "task_id_prefix": "codex-host-trial",
+    "thread_id_prefix": "thread",
+    "session_id_prefix": "session",
+    "tool": "cfw_read",
+    "action_binding_id": "read",
+    "arguments": {"path": "fixture.txt"}
+  },
+  "cohorts": {
+    "baseline": {
+      "gate_decision": "allow",
+      "expected_action_executions": 10
+    },
+    "treatment": {
+      "gate_decision": "block",
+      "expected_action_executions": 0
+    }
+  },
+  "holdout": {
+    "purpose": "sanity check that the host can still route the declared safe read",
+    "gate_decision": "allow"
+  },
+  "claims": {
+    "models_used": false,
+    "efficacy_inference_allowed": false,
+    "note": "This fixture checks deterministic adapter and authority wiring only."
+  }
+}

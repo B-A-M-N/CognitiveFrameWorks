@@ -1,0 +1,37 @@
+{
+  "fixture_id": "codex-app-server-coding-v1",
+  "objective": "Repair the seeded record-processing defects and satisfy each host validator.",
+  "deliverable_kind": "code_behavior",
+  "work_mode": "delivery",
+  "task_complexity": "complex",
+  "criteria": [
+    {
+      "id": "parser_correctness",
+      "claim": "Record values preserve embedded equals signs.",
+      "validator": "parser"
+    },
+    {
+      "id": "retry_schedule",
+      "claim": "Retry delays start at the base delay and grow exponentially up to the cap.",
+      "validator": "retry"
+    },
+    {
+      "id": "state_removal",
+      "claim": "Removing a missing key does not mutate unrelated state.",
+      "validator": "state"
+    },
+    {
+      "id": "event_integration",
+      "claim": "The event stream applies record updates and deletes in order.",
+      "validator": "integration"
+    }
+  ],
+  "non_goals": [
+    "broad refactoring",
+    "dependency upgrades",
+    "modifying tests or documentation",
+    "changes outside src/"
+  ],
+  "write_paths": ["src/"],
+  "task_prompt": "Repair the seeded defects. Read the tests and the host-owned task contract. The README is stale, so treat it as historical context rather than a specification. Change files under src/ only; do not edit tests, documentation, or dependencies. Use cfw_read, cfw_write, and cfw_run_validator for all task actions. Run the relevant validators, then report which criteria passed and any that remain incomplete. Do not claim that a criterion passed without its host validator result."
+}

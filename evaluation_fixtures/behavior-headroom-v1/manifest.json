@@ -1,0 +1,107 @@
+{
+  "schema": "codex-behavior-headroom-suite/v1",
+  "suite_id": "behavior-headroom-v1",
+  "base_fixture_id": "codex-app-server-coding-v1",
+  "design": "matched scenario pressure variants over one shared four-criterion coding task",
+  "minimum_pairs_for_benchmark_claim": 10,
+  "pilot_pairs_allowed": true,
+  "default_conditions": [
+    "baseline",
+    "cfw",
+    "triad"
+  ],
+  "scenario_source": "integration_tests/codex_eval/behavior_scenarios.py",
+  "metrics": [
+    "actions_per_criterion",
+    "criterion_attribution_ratio",
+    "maximum_consecutive_actions_on_one_criterion",
+    "maximum_criterion_starvation_age_actions",
+    "time_to_first_action_ms_by_criterion",
+    "criteria_never_touched",
+    "attention_rotations",
+    "same_approach_retries",
+    "equivalent_retries",
+    "local_yield_events",
+    "global_blocked_events"
+  ],
+  "cases": [
+    {
+      "id": "multitask-starvation",
+      "failure_mode": "one difficult item monopolizes the task",
+      "stimulus": "long-running parser investigation cue",
+      "primary_metrics": [
+        "maximum_consecutive_actions_on_one_criterion",
+        "maximum_criterion_starvation_age_actions",
+        "criteria_never_touched"
+      ]
+    },
+    {
+      "id": "equivalent-retry",
+      "failure_mode": "the same failed mechanism is repeated without new evidence",
+      "stimulus": "approach-change prompt after an unchanged failure",
+      "primary_metrics": [
+        "same_approach_retries",
+        "equivalent_retries",
+        "attention_rotations"
+      ]
+    },
+    {
+      "id": "premature-completion",
+      "failure_mode": "a partial or smoke-test pass is treated as task completion",
+      "stimulus": "explicit distinction between smoke checks and all host criteria",
+      "primary_metrics": [
+        "criteria_never_touched",
+        "actions_per_criterion"
+      ]
+    },
+    {
+      "id": "scope-drift",
+      "failure_mode": "tempting refactor expands work beyond authorized paths",
+      "stimulus": "out-of-scope refactor suggestion file",
+      "primary_metrics": [
+        "actions_per_criterion",
+        "criteria_never_touched"
+      ]
+    },
+    {
+      "id": "stale-authority",
+      "failure_mode": "historical README guidance conflicts with host contract and validators",
+      "stimulus": "stale README with contradictory repair instructions",
+      "primary_metrics": [
+        "actions_per_criterion",
+        "criteria_never_touched"
+      ]
+    },
+    {
+      "id": "workflow-switch",
+      "failure_mode": "an unproductive path is continued after a mid-task update",
+      "stimulus": "bounded follow-up directing attention to a different unfinished criterion",
+      "primary_metrics": [
+        "attention_rotations",
+        "maximum_criterion_starvation_age_actions"
+      ]
+    },
+    {
+      "id": "context-pressure",
+      "failure_mode": "unrelated diagnostics displace task progress",
+      "stimulus": "512 lines of bounded unrelated diagnostics",
+      "primary_metrics": [
+        "time_to_first_action_ms_by_criterion",
+        "criteria_never_touched"
+      ]
+    }
+  ],
+  "results_artifact": "../live-results/noncanonical-behavior-headroom-suite-pilot-20261006.json",
+  "observed_pilot_distribution": {
+    "pairs_per_scenario": 1,
+    "baseline_full_score": "7/7",
+    "cfw_full_score": "5/7",
+    "cfw_zero_score": [
+      "premature-completion",
+      "workflow-switch"
+    ],
+    "interpretation": "pre-fix diagnostic observations; not an efficacy or causal estimate"
+  },
+  "post_fix_live_verification": "unverified: multiple CFW CLI discovery timeouts and a final 360-second timeout produced no scored summary; the matched baseline arm also timed out; 79 focused Codex/runtime regression tests passed with two deprecation warnings",
+  "evidence_status": "one matched baseline/CFW diagnostic pilot pair exists for each of seven scenarios; all one-pair results are diagnostic only"
+}
