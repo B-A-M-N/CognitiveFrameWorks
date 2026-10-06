@@ -1,0 +1,38 @@
+{
+  "schema": "generic-codex-app-server-trial-attempt/v1",
+  "trial_id": "aegiskeys-imported-triad-final-20261006",
+  "recorded_date": "2026-10-06",
+  "condition": "triad",
+  "stack": "cfw-csw-dp",
+  "model": "deepseek-v4-flash",
+  "codex": "regular packaged Codex CLI through generic App Server",
+  "tree_state": "dirty development trees",
+  "auth": {
+    "mode": "external_provider",
+    "provider_id": "freeinference",
+    "provider_base_url": "https://freeinference.org/v1",
+    "wire_api": "responses",
+    "credential_source": "AegisKeys child-only injection"
+  },
+  "host_startup": {
+    "codex_thread_started": true,
+    "turn_started": true,
+    "private_dp_bridge_open": true,
+    "cfw_authority_verified": true,
+    "shared_csw_authority_verified": true,
+    "dp_control_ticks_committed": 2,
+    "model_visible_dp_tools": 0,
+    "native_feature_catalog_reviewed": true
+  },
+  "outcome": {
+    "turn_status": "failed",
+    "provider_http_status": 401,
+    "failure_message": "Invalid or expired API key",
+    "assistant_message_present": false,
+    "dynamic_tool_calls": 0,
+    "model_execution_observed": false,
+    "efficacy_scored": false,
+    "trial_valid": false
+  },
+  "interpretation": "The host boundary initialized, but FreeInference rejected the stored OpenAI-compatible credential on the first Responses request. This is an authentication diagnostic, not a behavioral result. No credential value or provider request identifier is retained."
+}

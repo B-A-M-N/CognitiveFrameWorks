@@ -45,6 +45,14 @@ calls. The attempt is unscored and does not count toward any trial result. The
 other FreeInference profiles in AegisKeys target its Anthropic route and were
 not substituted for the Codex Responses endpoint.
 
+The later [`noncanonical-aegiskeys-freeinference-triad-final-20261006.json`](noncanonical-aegiskeys-freeinference-triad-final-20261006.json)
+attempt confirms that CFW, shared CSW authority, and the private DP bridge
+initialized successfully, with zero model-visible DP tools and two committed
+DP control ticks. The first Responses request still returned `401`; no
+assistant output, model tool call, or behavioral score was produced. Further
+provider calls are paused until the OpenAI-compatible AegisKeys entry is
+updated.
+
 ## Noncanonical host-boundary diagnostics
 
 The `gate-eval-*.json` files exercise whether the host rejects one protected
