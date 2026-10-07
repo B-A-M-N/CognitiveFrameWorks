@@ -1,84 +1,134 @@
 from __future__ import annotations
 
-from runtime_contract.metacognition import (CompletionReadiness,
-                                             MetacognitiveController,
-                                             MetacognitiveState)
-from runtime_contract.system_one import WorkflowProgressFact
+from runtime_contract.task_evidence import CompletionReadiness, TaskEvidenceState
+from runtime_session.standalone_behavior_policy import (
+    StandaloneBehaviorFacts, StandaloneBehaviorPolicy,
+    render_standalone_behavior_guidance,
+)
+from runtime_contract.behavior_facts import WorkflowProgressFact
+from runtime_contract.standalone_attention import StandaloneAttentionState
 from runtime_contract.protocol_artifact import PROTOCOL_SCHEMA
 
 
-def test_retry_accounting_only_changes_when_committed_and_survives_restore():
-    state = MetacognitiveState()
+def test_global_retry_and_recovery_counters_are_not_owned_by_cfw_metacognition():
+    state = TaskEvidenceState()
+    snapshot = state.snapshot()
+    assert not {
+        "actions_since_goal_progress", "goal_directed_actions_since_goal_progress",
+        "recovery_epochs", "repeated_branch_count",
+    } & snapshot.keys()
 
-    # A proposal, including one that the host later blocks, is not history.
-    blocked = state.make_candidate("retry", result_class="equivalent_retry")
-    assert state.repeated_branch_count == 0
+    # Older journals remain readable, but their global counters are discarded.
+    legacy = dict(snapshot)
+    legacy.update({
+        "actions_since_goal_progress": 12,
+        "goal_directed_actions_since_goal_progress": 3,
+        "recovery_epochs": 2,
+        "repeated_branch_count": 4,
+    })
+    restored = TaskEvidenceState()
+    restored.restore(legacy)
+    assert not {
+        "actions_since_goal_progress", "goal_directed_actions_since_goal_progress",
+        "recovery_epochs", "repeated_branch_count",
+    } & restored.snapshot().keys()
 
-    state.commit_candidate(state.make_candidate("retry", result_class="changed_hypothesis"))
-    assert state.repeated_branch_count == 0
 
-    state.commit_candidate(state.make_candidate("retry", result_class="equivalent_retry"))
-    assert state.repeated_branch_count == 1
+def test_host_state_transition_advances_revision_without_adding_global_state():
+    state = TaskEvidenceState()
+    revision = state.logical_revision
 
-    restored = MetacognitiveState()
-    restored.restore(state.snapshot())
-    assert restored.repeated_branch_count == 1
+    state.mark_host_state_transition()
 
-    # Keep the blocked candidate deliberately uncommitted.
-    assert blocked.result_class == "equivalent_retry"
-    assert restored.repeated_branch_count == 1
+    assert state.logical_revision == revision + 1
+    assert not {"recovery_epochs", "repeated_branch_count"} & state.snapshot().keys()
+    assert "criterion_attention" not in state.snapshot()
+    assert not hasattr(state, "active_attention_window")
+
+
+def test_observed_artifact_change_resets_local_verification_budget():
+    state = TaskEvidenceState()
+    verification = state.make_candidate(
+        "action", action_class="test", target_ref="retry-validator",
+        affected_criterion_ids=("retry_schedule",))
+    for _ in range(2):
+        state.commit_candidate(
+            verification, verification_relation="required_verification")
+
+    assert state.verification_limit_exceeded(
+        verification, relation="required_verification",
+        max_actions=2, max_repeats=1) == "verification_budget_exhausted"
+
+    state.record_activity(
+        "action", action_class="write", artifact_changed=True,
+        affected_criterion_ids=("retry_schedule",))
+
+    assert state.verification_limit_exceeded(
+        verification, relation="required_verification",
+        max_actions=2, max_repeats=1) is None
 
 
 def test_progress_redirects_are_bounded_and_yield_attention_until_new_evidence():
-    state = MetacognitiveState()
+    state = TaskEvidenceState()
     state.ensure_criteria({"acceptance_criteria": [
         {"criterion_id": item, "claim": "unfinished", "kind": "code_behavior"}
         for item in ("C1", "C2", "C3", "C4")
     ]})
+    attention = StandaloneAttentionState()
+    attention.sync_criteria(state.criteria)
 
-    assert state.record_progress_redirect(
-        action_digest="action-a", criterion_id="C1") == "redirect"
-    assert state.record_progress_redirect(
-        action_digest="action-a", criterion_id="C1") == "repeat"
-    assert state.take_progress_redirect_guidance() == "C1"
-    assert state.take_progress_redirect_guidance() is None
+    assert attention.record_progress_redirect(
+        action_digest="action-a", criterion_id="C1", criteria=state.criteria) == "redirect"
+    assert attention.record_progress_redirect(
+        action_digest="action-a", criterion_id="C1", criteria=state.criteria) == "repeat"
+    assert attention.take_progress_redirect_guidance() == "C1"
+    assert attention.take_progress_redirect_guidance() is None
 
-    assert state.record_progress_redirect(
-        action_digest="action-b", criterion_id="C1") == "yield"
-    assert state.active_attention_window() == ("C2", "C3", "C4")
+    assert attention.record_progress_redirect(
+        action_digest="action-b", criterion_id="C1", criteria=state.criteria) == "yield"
+    assert attention.active_attention_window(state.criteria) == ("C2", "C3", "C4")
 
-    restored = MetacognitiveState()
-    restored.restore(state.snapshot())
+    restored = StandaloneAttentionState()
+    restored.restore(attention.snapshot(), criteria=state.criteria)
     assert restored.progress_redirected is True
     assert restored.progress_redirect_guidance_pending is True
     assert restored.consume_progress_redirect_yield("C2") is True
     assert restored.consume_progress_redirect_yield("C2") is False
     assert restored.take_progress_redirect_guidance() == "C1"
     assert restored.record_progress_redirect(
-        action_digest="action-c", criterion_id="C1") == "limit"
+        action_digest="action-c", criterion_id="C1", criteria=state.criteria) == "limit"
 
     prior_epoch = restored.progress_redirect_epoch
-    restored.record_activity("action", artifact_changed=True)
+    fact = state.record_activity("action", artifact_changed=True)
+    restored.record_activity(fact)
     assert restored.progress_redirect_epoch == prior_epoch + 1
     assert restored.progress_redirected is False
     assert restored.record_progress_redirect(
-        action_digest="action-a", criterion_id="C1") == "redirect"
+        action_digest="action-a", criterion_id="C1", criteria=state.criteria) == "redirect"
 
 
-def test_metacognitive_controller_does_not_repeat_redirect_after_yield():
-    controller = MetacognitiveController()
-    state = MetacognitiveState()
+def test_standalone_behavior_policy_does_not_repeat_redirect_after_yield():
+    policy = StandaloneBehaviorPolicy()
+    state = TaskEvidenceState()
     state.ensure_criteria({"acceptance_criteria": [
         {"criterion_id": "C1", "claim": "unfinished", "kind": "code_behavior"},
         {"criterion_id": "C2", "claim": "unfinished", "kind": "code_behavior"},
     ]})
-    state.record_progress_redirect(action_digest="action-a", criterion_id="C1")
-    state.take_progress_redirect_guidance()
-    state.record_progress_redirect(action_digest="action-b", criterion_id="C1")
-    state.take_progress_redirect_guidance()
+    attention = StandaloneAttentionState()
+    attention.sync_criteria(state.criteria)
+    attention.record_progress_redirect(
+        action_digest="action-a", criterion_id="C1", criteria=state.criteria)
+    attention.take_progress_redirect_guidance()
+    attention.record_progress_redirect(
+        action_digest="action-b", criterion_id="C1", criteria=state.criteria)
+    attention.take_progress_redirect_guidance()
 
-    decision = controller.evaluate(
-        state, support_actions_since_progress=5, support_action_limit=5,
+    decision = policy.decide(
+        StandaloneBehaviorFacts(
+            active_criterion_ids=attention.active_attention_window(state.criteria),
+            progress_redirect_guidance_pending=attention.progress_redirect_guidance_pending,
+            progress_redirected=attention.progress_redirected),
+        support_actions_since_progress=5, support_action_limit=5,
         total_actions_since_progress=15, total_action_limit=15,
         recovery_epochs_since_progress=0, max_recovery_epochs=3,
         same_approach_retries=0, max_same_approach_retries=2)
@@ -87,16 +137,33 @@ def test_metacognitive_controller_does_not_repeat_redirect_after_yield():
     assert decision.active_criterion_ids == ("C2", "C1")
 
 
+def test_total_action_budget_requires_explicit_goal_reanchor_guidance():
+    policy = StandaloneBehaviorPolicy()
+    decision = policy.decide(
+        StandaloneBehaviorFacts(active_criterion_ids=("C1", "C2")),
+        support_actions_since_progress=0, support_action_limit=5,
+        total_actions_since_progress=15, total_action_limit=15,
+        recovery_epochs_since_progress=0, max_recovery_epochs=3,
+        same_approach_retries=0, max_same_approach_retries=2)
+
+    assert decision.mode == "REPLAN"
+    assert decision.goal_reanchor_required is True
+    assert "Re-anchor the next action" in render_standalone_behavior_guidance(decision)
+
+
 def test_completion_readiness_requires_boundary_evidence_and_complete_workflows():
-    controller = MetacognitiveController()
-    state = MetacognitiveState()
+    policy = StandaloneBehaviorPolicy()
+    state = TaskEvidenceState()
     state.ensure_criteria({"acceptance_criteria": [
         {"criterion_id": "C1", "claim": "done", "kind": "code_behavior"}]})
     state.mark_criterion_satisfied("C1", evidence_ref="criterion-proof",
                                    evidence_kind="validator_result")
 
-    decision = controller.evaluate(
-        state, support_actions_since_progress=0, support_action_limit=5,
+    decision = policy.decide(
+        StandaloneBehaviorFacts(
+            active_criterion_ids=StandaloneAttentionState().active_attention_window(
+                state.criteria)),
+        support_actions_since_progress=0, support_action_limit=5,
         total_actions_since_progress=0, total_action_limit=15,
         recovery_epochs_since_progress=0, max_recovery_epochs=3,
         same_approach_retries=0, max_same_approach_retries=2,
@@ -106,8 +173,11 @@ def test_completion_readiness_requires_boundary_evidence_and_complete_workflows(
             pending_verification_obligations=0))
     assert decision.mode == "VERIFY"
 
-    ready = controller.evaluate(
-        state, support_actions_since_progress=0, support_action_limit=5,
+    ready = policy.decide(
+        StandaloneBehaviorFacts(
+            active_criterion_ids=StandaloneAttentionState().active_attention_window(
+                state.criteria)),
+        support_actions_since_progress=0, support_action_limit=5,
         total_actions_since_progress=0, total_action_limit=15,
         recovery_epochs_since_progress=0, max_recovery_epochs=3,
         same_approach_retries=0, max_same_approach_retries=2,
@@ -139,7 +209,7 @@ def test_workflow_progress_projection_has_no_state_machine_only_fields():
 
 
 def test_old_workflow_snapshot_does_not_infer_completion():
-    old = MetacognitiveState().snapshot()
+    old = TaskEvidenceState().snapshot()
     old["workflows"] = [{
         "statework_id": "release", "domain": None, "purpose": None,
         "current_state": None, "previous_state": None, "edge_id": None,
@@ -151,14 +221,14 @@ def test_old_workflow_snapshot_does_not_infer_completion():
         "step_id": "final-step", "completed": None,
     }]
 
-    restored = MetacognitiveState()
+    restored = TaskEvidenceState()
     restored.restore(old)
 
     assert restored.workflows[0].completed is False
 
 
 def test_restore_preserves_multiple_subjects_for_one_statework():
-    state = MetacognitiveState()
+    state = TaskEvidenceState()
     for subject_ref, step_id in (("repo-a", "inspect-a"), ("repo-b", "inspect-b")):
         state.record_workflow_progress(
             statework_id="gitter", subject_ref=subject_ref,
@@ -167,7 +237,7 @@ def test_restore_preserves_multiple_subjects_for_one_statework():
             work_class="inspect", domain_effect="repository_observed",
             current_position="OBSERVED")
 
-    restored = MetacognitiveState()
+    restored = TaskEvidenceState()
     restored.restore(state.snapshot())
 
     assert {(item.statework_id, item.subject_ref) for item in restored.workflows} == {

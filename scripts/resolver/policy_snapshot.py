@@ -12,7 +12,7 @@ from runtime_contract.composite_snapshot import (
     CFWPolicySnapshot, CompositeCognitiveRuntimeSnapshot,
 )
 from runtime_contract.paths import runtime_asset_root
-from runtime_contract.task import TaskRequest, SystemOnePolicy
+from runtime_contract.task import TaskRequest
 from runtime_contract.workflow_port import WorkflowResolution
 from resolver.common import _frozen_mapping, _thaw, sha256_bytes
 from resolver.guards import load_guard_pack, semantic_guard_hash
@@ -54,7 +54,6 @@ class PolicySnapshot:
     contracts: Mapping[str, Any] = field(default_factory=dict)
     goal_contract: Mapping[str, Any] = field(default_factory=dict)
     goal_contract_hash: str = ""
-    system_one_policy: Mapping[str, Any] = field(default_factory=dict)
     phase: Optional[str] = None
     domain_tags: Tuple[str, ...] = ()
     task_shape: str = "implement"
@@ -86,7 +85,6 @@ class PolicySnapshot:
     def __post_init__(self) -> None:
         object.__setattr__(self, "contracts", _freeze_contracts(self.contracts))
         object.__setattr__(self, "goal_contract", _freeze_contracts(self.goal_contract))
-        object.__setattr__(self, "system_one_policy", _freeze_contracts(self.system_one_policy))
         object.__setattr__(self, "shared_evidence_refs", tuple(self.shared_evidence_refs))
         object.__setattr__(self, "adopted_profile_hashes", tuple(self.adopted_profile_hashes))
         object.__setattr__(self, "shared_workflow_memberships", tuple(
@@ -129,7 +127,6 @@ class PolicySnapshot:
             "subject_ref": self.subject_ref,
             "goal_contract": _thaw(self.goal_contract),
             "goal_contract_hash": self.goal_contract_hash,
-            "system_one_policy": _thaw(self.system_one_policy),
             "agent_id": self.agent_id,
             "agent_instance_id": self.agent_instance_id,
             "attempt_id": self.attempt_id,
@@ -258,7 +255,6 @@ class EffectivePolicy:
     pipeline_hash: str
     runtime_kernel_hash: str
     calibration_hash: str
-    system_one_policy: Mapping[str, Any] = field(default_factory=dict)
     subject_ref: Optional[str] = None
     goal_contract_hash: str = ""
     signal_schema_hash: str = ""
@@ -307,7 +303,6 @@ class EffectivePolicy:
             "pipeline_hash": self.pipeline_hash,
             "runtime_kernel_hash": self.runtime_kernel_hash,
             "calibration_hash": self.calibration_hash,
-            "system_one_policy": _thaw(self.system_one_policy),
             "subject_ref": self.subject_ref,
             "goal_contract_hash": self.goal_contract_hash,
             "signal_schema_hash": self.signal_schema_hash,

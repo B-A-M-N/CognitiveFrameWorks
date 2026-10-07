@@ -1,0 +1,2615 @@
+{
+  "auth_mode": "external-provider",
+  "canonical_clean_commits": false,
+  "completed_pair_count": 3,
+  "conditions": [
+    "baseline",
+    "cfw"
+  ],
+  "evaluation_id": "codex-app-server-coding-20261006T144540Z",
+  "evaluation_status": "partial_pre_validator_reuse",
+  "fixture_id": "codex-app-server-coding-v1",
+  "internal_inference_boundaries_intercepted": false,
+  "max_turns": 3,
+  "model": "deepseek-v4-flash",
+  "ordering_seed": 20261005,
+  "provider_base_url": "https://freeinference.org/v1",
+  "provider_env_key": "FREEINFERENCE_API_KEY",
+  "provider_id": "freeinference",
+  "repository_state": {
+    "cfw": {
+      "head": "89e76d0c1290ceb07ee156ca202ac3d8fb7c2af4",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 241,
+      "untracked_file_hashes": {
+        "contracts/runtime-event.schema.json": "bc538f28064e08dadbccc01323bd2020ef6b9a4a7644abf63c6719b0e7237680",
+        "evaluation_fixtures/codex-app-server-coding-v1/.cognitive-demo.json": "c957910641fb50707579d5410281805d1352ce7f5a4006e27175fc9efdb7940d",
+        "evaluation_fixtures/codex-app-server-coding-v1/README.md": "2d4c23b545df2513347cc0a037126d63d010395452321e7f758df8cb49ebe28b",
+        "evaluation_fixtures/codex-app-server-coding-v1/src/repair.py": "1950272ec25f471a26892258a6805a74762e496f41117d3b89b06f1a50e37a95",
+        "evaluation_fixtures/codex-app-server-coding-v1/tests/test_integration.py": "5a17fb8e3264f184a9c9d720231d94cd045cf97e624ab5fe5c284a684224ace0",
+        "evaluation_fixtures/codex-app-server-coding-v1/tests/test_parser.py": "c9d0ce1c6c70281fbbcb10ef71d76f17f55fdd5be63d026641d9237c36f5dff6",
+        "evaluation_fixtures/codex-app-server-coding-v1/tests/test_retry.py": "32579f21e4e3fe749418f47502b483cb84ee743506721a22eda236449d7bb42e",
+        "evaluation_fixtures/codex-app-server-coding-v1/tests/test_state.py": "c74464790b2cb80752ac82689b80b5d9d15ce59ec6c7e8de9df323f67c0ea182",
+        "evaluation_fixtures/codex-app-server-host-v1.json": "f1277aacc6427f526ca11cc5a3b06e70a7e4d3ba4a835bf070a323178967d6f0",
+        "evaluation_fixtures/codex-app-server-live-gate-v1.json": "25986ab03ad1c4fc86798877f71567642270ad7277c59960761e77762f5be127",
+        "evaluation_fixtures/live-results/README.md": "272f3967c43eb006e99b3dac338622ed1bef18a8e723bd10137e3add446ec47b",
+        "evaluation_fixtures/live-results/coding-eval-20261005T200951Z.json": "d44eae21467de291ee7d123a8b75381160f95474da3f88e4b26ee9048db601e4",
+        "evaluation_fixtures/live-results/coding-eval-20261005T204440Z.json": "bfe633e998c508f643d3bbcddf5729a9f770d932d8f8cf83490c52f6543f5e47",
+        "evaluation_fixtures/live-results/coding-eval-20261006T044239Z.json": "cf8c556b54f603fecdb8f92cde1f450d620cf877cf422bef404c7c56d06e00e1",
+        "evaluation_fixtures/live-results/coding-eval-20261006T051814Z.json": "71cca6fbc4d9dbfc6ffa5ffc15529d19a3d7834ee3cfcafda34b9a3e63009266",
+        "evaluation_fixtures/live-results/gate-eval-20261005T184915Z.json": "4370e58f49f511537789e34746ff416217744137aba7bc6ceae9912375be252d",
+        "evaluation_fixtures/live-results/gate-eval-20261005T190706Z.json": "2346f54a47c0c0bd4c754465206250c324c052d05c3e415c917d633d7093b759",
+        "evaluation_fixtures/live-results/generic-codex-multipath-approved-20261005.json": "f2b61d5dcb104f5f4bbcf99a63e407ca953d5b56d42993e08c2bc6ca9fc829e6",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-20261005.json": "5dd18b1141e460655f26a1f433e59ea986bf960ea1850272338b12a3f9b970a7",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-direct-cli-20261006.json": "b07fa65d828b7d6b9413b3e355d65ae408d715ed9af3026ca1d119a8933d3305",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-direct-sanitized-20261006.json": "4f1734672fc5ba4ccb809ca0198bfe09f974f344472d9094aac97835aee85db2",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-host-policy-20261005.json": "57ea712022acadcc9803c7ec40ef9aeaac560fce1681679e21e2f0b7f10d2f09",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-initialized-20261006.json": "c481d7b23aca5c039029c1d80586968f3e576fb53f7112da3ffb4d8b6b1097f2",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-native-features-20261006.json": "00c8c7c911b8e6e794aa72f0237b25242936f043bafda852307b09d783d6643a",
+        "evaluation_fixtures/live-results/generic-codex-multipath-corrected-20261006.json": "df7e7a023deca1ffafbf1db901efca5560ce52a1f5727e57116ea3cb9ebfef98",
+        "evaluation_fixtures/live-results/generic-codex-multipath-diagnostic-direct-cli-20261006.json": "2ded81a3d61be329ab94ca8be3cc6fb110ece078a1d7b02dbae810a2ddf570d9",
+        "evaluation_fixtures/live-results/generic-codex-multipath-fullconfig-retry-20261006.json": "10caf672da98e8e6acc4226f846d71f3841b7bd17b483587d8dd6ff1a6a51abe",
+        "evaluation_fixtures/live-results/generic-codex-multipath-postfeatures-20261006.json": "c5a21b0ec3609c6673e17ec4ba09a653ddcf4b70f0ba29a21fa86166ff49e3c3",
+        "fixed.py": "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772",
+        "integration_tests/__init__.py": "4fdc961528226e57d5f1936364921c8c453ea96b9fc29c6fda10b6e2641b58dc",
+        "integration_tests/codex_eval/__init__.py": "dc231c3881a026b2e69f39b734126f7282c42c4e49e5cd8e502472d5f47872c3",
+        "integration_tests/codex_eval/actions.py": "d11bfff5da2be0085774ae94341ba554ce59890312ac18f4992798946cd047ba",
+        "integration_tests/codex_eval/baseline.py": "1baadaca1968a0884a418b47329163e9f84b9584aa0caae5fe13121d1aa639da",
+        "integration_tests/codex_eval/common.py": "81211eded6b2b762e48af175dfb761bbc4037834d75fee78558f3081f63bca85",
+        "integration_tests/codex_eval/csw_setup.py": "ecd43a7de6dfd2d26ee650e679ea39e474d5d9dc60f02fc1a5626883c6b4a963",
+        "integration_tests/codex_eval/fixture.py": "f817bb68627119a7b246e1d65d039941a9e92a8957f35a40de8821648a9b8c3e",
+        "integration_tests/codex_eval/launch.py": "7882c298083a834783061571b9e9e1504d4ea662aee1b0231ba5f714019c1716",
+        "integration_tests/codex_eval/report.py": "140f9f9c3a065dd0c052f3b2fa06a948914ce9ac74a5d56bdeb399e935c2aed5",
+        "integration_tests/codex_eval/scoring.py": "ac0f571245e2f71f6860bfd1df4d2d7bab85e72a1231c1211603d68c65be2862",
+        "integration_tests/codex_eval/treatment.py": "12869423ecd567f79d9a906bd020303bdf8c7c69e4b34ee8b1b8a7a8fed1ea24",
+        "integration_tests/codex_eval/triad_setup.py": "1410019f58253b3ebe9203a2edb0646a2352dd5b3fec362c7dc772e20132d195",
+        "integration_tests/codex_eval/validators.py": "9d994c77c8e2655b770a253c4cc190ef1e5614c0f3309b713aa170c016e17534",
+        "integration_tests/conftest.py": "890be7c2b38b2f0793df94a12d34bc863adee492005a10941329a6a296b9a775",
+        "integration_tests/live_codex_app_server_coding_trial.py": "722130986a703520fb8c38c80e9e1fced78af7e6c041bc465b71a08dcdef9264",
+        "integration_tests/live_codex_app_server_trial.py": "cfec12b2bcf78c994ef2e7b828992df4c476f7a8977694b1db293b7eb690ec42",
+        "integration_tests/run_codex_app_server_coding_evaluation.py": "132aaa5a4d9c696aa1ba1b96a9134d3a8664478154a2d3aa3892a867a5a0f2dc",
+        "integration_tests/run_codex_app_server_live_evaluation.py": "6127c501ea253405e230ea2f5d1e5d328e4ee28c61544e8ab628f0d48fc1f34a",
+        "integration_tests/run_codex_dynamic_tool_probe.py": "7e55e8e72636ecb856c5075d364a258ebd01b79909e4c495c2c7ddfa8e49ebb1",
+        "integration_tests/test_codex_app_server_adapter.py": "d4fe3996e8408b268ba141a27960d5e8d588de6bce0d603bfd5ccc5964c7fd75",
+        "integration_tests/test_codex_app_server_coding_evaluation.py": "af89dfcc5b80914c61603b1922413fe89cf1af97bca32bce8936f9acf962877e",
+        "integration_tests/test_codex_host_profiles.py": "763cb7121b8cfd85e52bff40e8fffe9caaa05286923512b393f4293090d0180e",
+        "integration_tests/test_codex_multi_path_workflow.py": "0f863e60809522d99249ae8dbef974818a353d84098694331eb16abc5499117d",
+        "integration_tests/test_cohort_runtime_harness.py": "d53312c4f9b79cbb03a8790cbc53ea730fb50d943dcba8b45d4a8dcf934cee84",
+        "integration_tests/test_combined_authorities.py": "2b206e61ccbe2cdfec92d3175f9869ee1854c1602399db185a28a6a997f0b0cf",
+        "integration_tests/test_convergence.py": "a4969034f436bfc4b89fdbd26f7931fb23b41ce2d0c05ed64b3ffce65ba705c4",
+        "integration_tests/test_current_cross_repo_wire_contracts.py": "917e8023f035f6e2d73e1b56fcbc737872e83fd47948e590994f6dd99eb86ae4",
+        "integration_tests/test_digital_psychology_adapter.py": "e91abc0b36b3b7722de8c9b0d38711440ac0b794784ba650ed854d58b6df359c",
+        "integration_tests/test_goal_fidelity.py": "c222c57c85297b1230879d5bb509f257bfc82382357298aff4cfad6a932bfda8",
+        "integration_tests/test_lease_boundary_contract.py": "e72374490f054c0108020a0ca706e2ffa5d7b323158e3b3db326aab896701d69",
+        "integration_tests/test_live_codex_app_server_coding_trial.py": "fdee53e0bb71d5776f4da7bbdb47ae3f29953336be927f63e9682ce3e3a0bc08",
+        "integration_tests/test_p0_boundaries.py": "9bf2a1daed1f26b79340751cc3ce9afc64888aef045916f6cd664274565e3d83",
+        "integration_tests/test_real_agent_cohort_runtime.py": "2f7b8ea749bde301739fd141858752ed70b762c68cafbd86d04837f9a0011b35",
+        "integration_tests/test_routing_identity.py": "640612e911aa61842e611a893e838a142480e7ac5dfb6bf0a60b9572c367c31c",
+        "integration_tests/test_state_authority.py": "ed3d97b891cf86b2a64ee96762073fb06932409139569fdd0b45952aa3921729",
+        "integration_tests/test_subsystem_matrix.py": "bcf823c20b1792ab62c687213f2c5f2b7c523606f4b7b1fcfe4a099e82ccd2a1",
+        "integration_tests/test_system_one.py": "f836458f3d84d902c9fe53ba3c203bf94099bc3ad260103284912a2dd78a78be",
+        "integration_tests/test_ward_recovery_contract.py": "e7d489e15eaccbc6ffa11df5a4bad124b808a5530bccd4c15c7acabef5491ba4",
+        "scripts/codex_app_server_adapter.py": "7b173b08ceb883fe2ddd7776a4e5afb761e3b255bb9a607b52762c3101e1c5d4",
+        "scripts/codex_app_server_dp_bridge.py": "19a3c178f6e714cb43f87e7c79b47ffd82a5365c9bf1db229cac25fd8588ffca",
+        "scripts/codex_host/__init__.py": "b9daa03c01226eafc11f19e87f2e4b67a0d24b03ce61ccf54f772f7c2a052da5",
+        "scripts/codex_host/actions.py": "56ecf317e331dc6dabf673558737dd381a7776dd8ec8200f410538cbd6f89654",
+        "scripts/codex_host/adapter.py": "b9553b61cbde6e31379ef9c554523dff3473541b85615afc38206b16aef4d85e",
+        "scripts/codex_host/client.py": "cb3da6297f6e26156f7554f658ece045a998e421c5497aa920dc6ad3060370ad",
+        "scripts/codex_host/completion.py": "b3baab07e04c3d030f2d7bd1918dbc61124f0eabb6983121fcba2e2b319154b3",
+        "scripts/codex_host/diagnostics.py": "eabfb65cabd9590a76bfdf44430ffaa8c7506eaa60f9764f8401b3f73fc94cc4",
+        "scripts/codex_host/launch.py": "e2bdf803aefe12d3aac131e79939e700ce2c93171779b3d6d60d81fc223d0f8b",
+        "scripts/codex_host/protocol.py": "8b547b38d084bb92bf1afc56ea428a3b93fb595e6a0774675e7980e38b1587f2",
+        "scripts/codex_host/readiness.py": "e5e3ee694a0f996988fbefc1e20a4c892038bb50a7e6f4bf5220e70456083bc9",
+        "scripts/codex_host/validators.py": "0f5ae3990fb233ed6ca6f9683e6b2a832c8d0b0ea5c050817ec66868e6d9fe5e",
+        "scripts/cohort/agent_codex_host.py": "3768459969c69bfbc16e90661e49adf6144461245dac370635ea8028dabd2496",
+        "scripts/resolve_runtime.py": "e49896f2c0a1bc8ffdc666afa567609e18292179b408cccac304d36d54bb1b6e",
+        "scripts/resolver/api.py": "5b8174aa1ac2fa2887259b954b09572e027f7532a1674b75c037a14c33c056f6",
+        "scripts/runtime_contract/composite_snapshot.py": "d710bf78ac83a3abe448d3e1b0213965feb10dd322cc6a670a1fa6aa3ca32331",
+        "scripts/runtime_contract/contracts/runtime-event.schema.json": "bc538f28064e08dadbccc01323bd2020ef6b9a4a7644abf63c6719b0e7237680",
+        "scripts/runtime_contract/resources/ANCHOR/SKILL.md": "0b4a43eb860f10ddd06b0b131ed5a982f6cccc0903dbe3c2626e009335a6dfa0",
+        "scripts/runtime_contract/resources/ANCHOR/runtime.md": "82277b90767d221057631f942a249006806172c5ac740038243932d0f1756ac8",
+        "scripts/runtime_contract/resources/DOX/SKILL.md": "8e8f4d55e79a90329b20d3770e3df12090486f44b2711f8c20b62055a45c3a67",
+        "scripts/runtime_contract/resources/DOX/runtime.md": "b18d1b3ce3af1098dc501b6a88ff9ac7af84e3dea4ffc92edb1f8b625f341685",
+        "scripts/runtime_contract/resources/FLOW/SKILL.md": "922b9e51551f72f19bb441d57cd8372bf251d4713fd03bfbba9ff3e4f127cef8",
+        "scripts/runtime_contract/resources/FLOW/runtime.md": "876e4103d343a3032f1447ffcdca9f276b25504632418002d3ddf0d212967a6d",
+        "scripts/runtime_contract/resources/FUSE/SKILL.md": "23f3f733780384ca57dda55acd7df106e72d5e3bac337e86e2dd7c8d17fd2212",
+        "scripts/runtime_contract/resources/FUSE/runtime.md": "c18b5b1fb1fdbd07993cd544f24f175f5ddeed9af70b4e22e96e84b9b58a9de0",
+        "scripts/runtime_contract/resources/OWL/SKILL.md": "d93f1f447f5bcb90f727e7e27d7c2ff897158f3eb8425147cc7c52253e261b96",
+        "scripts/runtime_contract/resources/OWL/runtime.md": "f42c2f43639891a8f0fc54f5dad45cf9ca00551e360f79a25f82ddbdcb4b878b",
+        "scripts/runtime_contract/resources/SISPIS/SKILL.md": "f4f45bc94ea64b793013d76ccb42bdc0ab04d55b8ce8b96ad877ea4bc8c3a2a8",
+        "scripts/runtime_contract/resources/SISPIS/references/signal-calibration.yaml": "accb5b614778a5002e338eeb00fc4ca4a593516c48ffef8ec9bdf8a34c8ca6da",
+        "scripts/runtime_contract/resources/SISPIS/runtime.md": "1cbf4371bec75ce629f5563a222c8ae208935f8860b350d4ea13a2c153c59bb6",
+        "scripts/runtime_contract/resources/SISPIS/runtime/calibrate.py": "4c001dfd399bd8fadfb61dd06e1950755526b1edbe0c155c4adec38ff4d56352",
+        "scripts/runtime_contract/resources/WARD/SKILL.md": "2f9a5ed0b664adb41a43a74ceb9625773cf5f00f39f8e8231476cc542097e34f",
+        "scripts/runtime_contract/resources/WARD/runtime.md": "b7af210ed2294a789e601f1b849687ddb54206e62d6606d278b733f5882bc4d8",
+        "scripts/runtime_contract/resources/contracts/advice-exchange-v1.schema.json": "781f4f404df61e464be897172a213e448acaa1397be5fd32b4d54ef1ef7cd649",
+        "scripts/runtime_contract/resources/contracts/behavioral-routing-pack.schema.json": "9e09ee01d6ccdcc013a73e8ffb976fd1267f16d22f7d84563cea4e503ef0bc94",
+        "scripts/runtime_contract/resources/contracts/behavioral-routing-profile.schema.json": "2ff0028212d5ab7d0b83fca35bf6aa9ed7de6697ef2c9b4b33853d0ecb542977",
+        "scripts/runtime_contract/resources/contracts/enforcement-capabilities.json": "52149268f37650dd4c935511b62f01351b31b2944330665eacef3e1771420a66",
+        "scripts/runtime_contract/resources/contracts/guard-pack.schema.json": "f2d7cf4cbab3b9b101d992e7edb4a4e7fb8adcc938b027fbdd54908a3df8d20c",
+        "scripts/runtime_contract/resources/contracts/guard.schema.json": "56441a5e1e8537f0b4ca93cd5a7665605971fd0cf860b40adfca8a3346891249",
+        "scripts/runtime_contract/resources/contracts/qualification-results/hostile-integration-v1.result.json": "8065be88a47d4890a65de86f6f1ce4ddaad121b15d2d31e02b3c820c0399a481",
+        "scripts/runtime_contract/resources/contracts/qualification-results/operational-performance-v1.result.json": "ffc6756b1f7b9cf4c8d84802073bc6bc09ae9d4b951e32da55acf7d395142003",
+        "scripts/runtime_contract/resources/contracts/qualification-results/real-agent-behavioral-v1.result.json": "18292324142c9c4d9672bf78bc5102ec25b83d0769140b98569ea048d3c57b3a",
+        "scripts/runtime_contract/resources/contracts/qualifications/hostile-integration-v1.json": "65043e228b58e47e39ed4aaac6f182d3119802223a499993e78332a9b7a60fb5",
+        "scripts/runtime_contract/resources/contracts/qualifications/operational-performance-v1.json": "a043ede2c644a358e4bca9e721a37066429f177fa9a1e87c2b3a139596a50e42",
+        "scripts/runtime_contract/resources/contracts/qualifications/real-agent-behavioral-v1.json": "0e9a43fac010d42e3067193e1ad1c746840861f64ce2e51503df491b78da90ee",
+        "scripts/runtime_contract/resources/contracts/real-agent-benchmark-v1.json": "7762d1906c9c04439ccaa195ac220a820a1d59f01cceec44f0acc9908d96bdbc",
+        "scripts/runtime_contract/resources/contracts/routing-contract-v1.json": "688e310aa7d4b3376740cf5f2d35833641500326d631197d52e8279e86173732",
+        "scripts/runtime_contract/resources/contracts/routing-experiment-plan.schema.json": "171c559d589fa0b08b6f44de057d3b286629342049c8f4309505950a4ddcef59",
+        "scripts/runtime_contract/resources/contracts/runtime-event.schema.json": "bc538f28064e08dadbccc01323bd2020ef6b9a4a7644abf63c6719b0e7237680",
+        "scripts/runtime_contract/resources/contracts/shared-compatibility-vectors.json": "fc825db9cef2f10d3db0232718c3aaf22598704bdb30da22840050b2c5e29506",
+        "scripts/runtime_contract/resources/contracts/statework-manifest.schema.json": "6304766524823e44ce737344a67dc610a5174e50a69b46c98d662fa66da16965",
+        "scripts/runtime_contract/resources/contracts/system-one-protocol.schema.json": "a3d9be10f9e35b7088d3e68453d288f8dd111ead0bd515bfac5485fa4436f67c",
+        "scripts/runtime_contract/resources/contracts/transition-contract.schema.json": "557a037081806dc455e1607456fa78c182d59b8abbdc906f666dfccf06c272d4",
+        "scripts/runtime_contract/resources/plugin.json": "fd7820351b4034cb976ce66d931f33dff8207ba38dec3379b83ad165e46e465b",
+        "scripts/runtime_contract/resources/shared/adapter-source.md": "2065197b577b3c5c51b1a56429befad0b28a875afae5be80c18c21435fbc9959",
+        "scripts/runtime_contract/resources/shared/integration.md": "877862039aa16e0c50323e1a7a1f88a9b84af09d9729e1c76c426a4a808d69a2",
+        "scripts/runtime_contract/resources/shared/pipeline.yaml": "04c86742042f65de4a318a8dfef748b2d7d4ae82b189fbb843734c348efdb256",
+        "scripts/runtime_contract/resources/shared/runtime-kernel.yaml": "fd0c00c7a733db5c2e399bc81685c47a5af81bd692edbe0eb91420862d33bcad",
+        "scripts/runtime_contract/resources/shared/scenarios.json": "39871a9d607a61dba07bab6eb3b854db3a607e12c238bf412c30b7f91f3b662b",
+        "scripts/runtime_contract/resources/shared/signal-registry.json": "ae37a51b110a0c96be8546931d22f9360750dd73e568fe4b0c74c4073e9d0df3",
+        "scripts/runtime_contract/resources/shared/signal.schema.json": "2b9ce3a5176b412bbe5139e86a09376a18c27d0da51466b57c4232c495d01119",
+        "scripts/runtime_contract/resources/shared/signals.md": "1fe656ba9a75e0c85e39f89e0d828327a6115072fb5d29b87f41ab48dc031e8c",
+        "scripts/runtime_contract/shared_csw_workflow_port.py": "c484313c5609e8d7b196dd97beb485f5a798f81b48ac05c855cead24bc38b773",
+        "scripts/runtime_session/standalone_route_policy.py": "c098afff336128d352767b6f2930ce2ba01b8ff3612825d696ec313d694385dc",
+        "scripts/runtime_session/state.py": "cb3391174b2061c15c23a19580d6063464e0a3b4295f34bc7371eacb45e9688a",
+        "scripts/runtime_start/__init__.py": "c0b6eae7f8ed4c9fdd231935d56ce3cddec50395010445aa017a81b41b75c9be",
+        "scripts/runtime_start/authorities.py": "21074afdfcf27f64c5b04563e032bb0895462b142990350c2ddf4d42aa2ab249",
+        "scripts/runtime_start/identity.py": "4df891b913af411c61b8dadaf5552e67af9e51c93a2d47182dec1cf76a142e57",
+        "scripts/runtime_start/initialization.py": "b6f251c0dc42adcae5740b63d9ae3938d86f3144df9357e22b1a7588bfe58a62",
+        "scripts/runtime_start/session_builder.py": "e5f027621c81184b572746baf6b3c35a41bccb40d8804051a1205cea9aed7be3",
+        "scripts/runtime_start/validation.py": "f532ae724a1737a30bf1d581045578a04d13146d9a693eab41475530e7918862",
+        "scripts/test-runtime-integration.py": "e80907a6f8a91eb32c61c8629e279f16bd8266f6c4ce01540179c2d95dc936cf",
+        "tests/test_neutral_runtime_telemetry.py": "345973b636df7b52eefcacd348b86a308466a81492f83889576ce1a9e844296a",
+        "tests/test_operator_trace_state_authority.py": "1eb91d02d554246c86be17e2686aef4d405f2243de449186b0108dcee96188f9",
+        "tests/test_standalone_provider.py": "fb5bd4e112626f99e178c059515eb632b4e95bf946b1c73a966e420c7d88d6de",
+        "tests/test_standalone_route_policy.py": "c75d08d84fbfc3e48eff17408799864ba248e1c44a099ee1947ace1fff8f84ab"
+      },
+      "untracked_manifest_sha256": "be1f162454ef13b3e698ee665750e224fa641aa7d201e4946ac77e88dfb3d430",
+      "working_tree_diff_sha256": "5bab35cbdf03aab8abd2f1e9b248ba3895afb6c39f600f2eea9bebc8e9fd93da",
+      "working_tree_dirty": true
+    },
+    "csw": {
+      "head": "a80471fb93b09e773f2a8cc41c24b096f8071b7c",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 27,
+      "untracked_file_hashes": {
+        "schemas/milestone-contract.schema.json": "610dcbdd698dec76e22be6ad8bfa183eeeeebce4b8a682c9f41ff94562cb32f5",
+        "scripts/repository_truth.py": "0d35949c7f9595dff5bf22ccc214425fd6fb8fd9fcbdababd017637dcdd02847",
+        "scripts/schemas/milestone-contract.schema.json": "610dcbdd698dec76e22be6ad8bfa183eeeeebce4b8a682c9f41ff94562cb32f5",
+        "tests/test_registry_hashes.py": "c433987fee202adf8a2f297970daed331a69213fdb388f34cbd83637ef852c0b",
+        "tests/test_state_machine_evidence_reconciliation.py": "2760fd450d351b999b969d266ccc37e514a12ef0ca68427970acea162cae8920",
+        "tests/test_store_path_migration.py": "0174e0983b7a871580ee5d952efa3d1f2ff3c6721764d3a55df6d84be7ced928",
+        "tests/test_workflow_fact_ledger.py": "55ba5c5a8b44a85cef3277dcab6e9f03186883568f1a7461f3a8787b690890b8"
+      },
+      "untracked_manifest_sha256": "381041d539eee21d34ff9d5d02ade2c657de2498d57445dba562cb1796eef41b",
+      "working_tree_diff_sha256": "82ca644141f048ca1c88d1decb23fff947faa0b3c945a8f1c9254e8a9419a01b",
+      "working_tree_dirty": true
+    },
+    "dp": {
+      "head": "f85df96ce8ec5cbda3facf765e59e9fd004c4aa6",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 81,
+      "untracked_file_hashes": {
+        "lib/compatibility.py": "56c6b17299dcbd7ff30d7fd78e466c36287030cce33125f75bd7237b51a4e32c",
+        "lib/host/dependency_closure.py": "3d6dd87894004294ba5123bb85336658de7c869350830b11d773add2644eda53",
+        "lib/host/tool_visibility.py": "fb27559cbd65021a2195aa16d565993471a948f2b148deadffdffe15afe68d47",
+        "lib/runtime/cfw_behavior_contract.py": "be7b8c4619f67ac2d0cc202841fdb92d61143d22fe88b10b8d65a20f53ebf920",
+        "lib/runtime/compatibility.py": "fc394e7298797b57894e01e2bd4c24006cd6d4df3c609e9bc59726d576e5f91d",
+        "lib/runtime_event_adapter.py": "967a5e34463ca3c840ed7074da06c159a121f0a64fe613b51a1b3a76985c2031",
+        "lib/telemetry/cfw_bridge.py": "f45ff0682a1b189c3c23b9c7199dce3a13196a22f8f7fb6e355bf3bccda52b4f",
+        "lib/telemetry/production_metrics.py": "acdb3ab309b02b7e75cf16381b3a6a05753faaa81fec7978f49ee39786011531",
+        "lib/transport/mcp_compat.py": "3daba21f9d179829a00bac68e5305780c285a667a7a860e5dca25e1568aa5f01",
+        "tests/test_cfw_telemetry_bridge.py": "af7fa772b0cf910d7ad548f6390949b8d9a2916b475b70b75032f59897631081",
+        "tests/test_control_tick_noop.py": "72678f79c884ccfa7b18b9b8536a372ef80d30f6287543f630e52f181f53edc6",
+        "tests/test_host_tool_visibility.py": "ed4ae9f636e21ff5fb9570096ac93929ed8c77e80a5a296cacda4dfdd891bf34",
+        "tests/test_mcp_transport_compat.py": "9703d0da6c68d5987bf7fab702f822ccfa846eefaf4d68a31b5f34930e0fa72e",
+        "tests/test_production_metrics.py": "cd06542ebc0dda7d7a24c45a73ac1950f0158fd2ef5966640056beb1c2229054",
+        "tests/test_runtime_event_adapter.py": "4861a05fe7dd70c4345d99cdd5487d93a96a555e4084bb83da0c1d18fbaac93f"
+      },
+      "untracked_manifest_sha256": "3b32085e54b741a8b603650e3aa0fcd1793f2f6086a4acff463abce0db3d04d2",
+      "working_tree_diff_sha256": "9ece28057854410e5a0a73d04ff1da8a21b17e39044dcc501b86b47e8152637d",
+      "working_tree_dirty": true
+    }
+  },
+  "scheduled_pair_count": 10,
+  "scope": "Matched multi-defect coding task with host-owned criterion validators; single fixture and model, not broad coding-agent efficacy evidence.",
+  "source_sha256": {
+    "app_server_adapter": "7b173b08ceb883fe2ddd7776a4e5afb761e3b255bb9a607b52762c3101e1c5d4",
+    "dp_bridge_adapter": "19a3c178f6e714cb43f87e7c79b47ffd82a5365c9bf1db229cac25fd8588ffca",
+    "dp_host_bridge": "6c799c4ead81c61c9108cfac297b8d14da9f9f08d4e0a6bd3c725674c3142132",
+    "dp_projection_manager": "5f760184b7e48cfe2427c59e7561f10ea84e564486f69a055b0d5f28685b2789",
+    "dp_transaction_coordinator": "bdcd689f601152dd2ddb184299112b17437166a2d04a5e43488d48176af8d904",
+    "fixture_files": {
+      ".cognitive-demo.json": "c957910641fb50707579d5410281805d1352ce7f5a4006e27175fc9efdb7940d",
+      "README.md": "2d4c23b545df2513347cc0a037126d63d010395452321e7f758df8cb49ebe28b",
+      "src/repair.py": "1950272ec25f471a26892258a6805a74762e496f41117d3b89b06f1a50e37a95",
+      "tests/test_integration.py": "5a17fb8e3264f184a9c9d720231d94cd045cf97e624ab5fe5c284a684224ace0",
+      "tests/test_parser.py": "c9d0ce1c6c70281fbbcb10ef71d76f17f55fdd5be63d026641d9237c36f5dff6",
+      "tests/test_retry.py": "32579f21e4e3fe749418f47502b483cb84ee743506721a22eda236449d7bb42e",
+      "tests/test_state.py": "c74464790b2cb80752ac82689b80b5d9d15ce59ec6c7e8de9df323f67c0ea182"
+    },
+    "live_trial_runner": "722130986a703520fb8c38c80e9e1fced78af7e6c041bc465b71a08dcdef9264",
+    "modular_codex_host_manifest": {
+      "files": {
+        "integration_tests/codex_eval/__init__.py": "dc231c3881a026b2e69f39b734126f7282c42c4e49e5cd8e502472d5f47872c3",
+        "integration_tests/codex_eval/actions.py": "d11bfff5da2be0085774ae94341ba554ce59890312ac18f4992798946cd047ba",
+        "integration_tests/codex_eval/baseline.py": "1baadaca1968a0884a418b47329163e9f84b9584aa0caae5fe13121d1aa639da",
+        "integration_tests/codex_eval/common.py": "81211eded6b2b762e48af175dfb761bbc4037834d75fee78558f3081f63bca85",
+        "integration_tests/codex_eval/csw_setup.py": "ecd43a7de6dfd2d26ee650e679ea39e474d5d9dc60f02fc1a5626883c6b4a963",
+        "integration_tests/codex_eval/fixture.py": "f817bb68627119a7b246e1d65d039941a9e92a8957f35a40de8821648a9b8c3e",
+        "integration_tests/codex_eval/launch.py": "7882c298083a834783061571b9e9e1504d4ea662aee1b0231ba5f714019c1716",
+        "integration_tests/codex_eval/report.py": "140f9f9c3a065dd0c052f3b2fa06a948914ce9ac74a5d56bdeb399e935c2aed5",
+        "integration_tests/codex_eval/scoring.py": "ac0f571245e2f71f6860bfd1df4d2d7bab85e72a1231c1211603d68c65be2862",
+        "integration_tests/codex_eval/treatment.py": "12869423ecd567f79d9a906bd020303bdf8c7c69e4b34ee8b1b8a7a8fed1ea24",
+        "integration_tests/codex_eval/triad_setup.py": "1410019f58253b3ebe9203a2edb0646a2352dd5b3fec362c7dc772e20132d195",
+        "integration_tests/codex_eval/validators.py": "9d994c77c8e2655b770a253c4cc190ef1e5614c0f3309b713aa170c016e17534",
+        "integration_tests/live_codex_app_server_coding_trial.py": "722130986a703520fb8c38c80e9e1fced78af7e6c041bc465b71a08dcdef9264",
+        "integration_tests/run_codex_app_server_coding_evaluation.py": "132aaa5a4d9c696aa1ba1b96a9134d3a8664478154a2d3aa3892a867a5a0f2dc",
+        "scripts/codex_app_server_adapter.py": "7b173b08ceb883fe2ddd7776a4e5afb761e3b255bb9a607b52762c3101e1c5d4",
+        "scripts/codex_app_server_dp_bridge.py": "19a3c178f6e714cb43f87e7c79b47ffd82a5365c9bf1db229cac25fd8588ffca",
+        "scripts/codex_host/__init__.py": "b9daa03c01226eafc11f19e87f2e4b67a0d24b03ce61ccf54f772f7c2a052da5",
+        "scripts/codex_host/actions.py": "56ecf317e331dc6dabf673558737dd381a7776dd8ec8200f410538cbd6f89654",
+        "scripts/codex_host/adapter.py": "b9553b61cbde6e31379ef9c554523dff3473541b85615afc38206b16aef4d85e",
+        "scripts/codex_host/client.py": "cb3da6297f6e26156f7554f658ece045a998e421c5497aa920dc6ad3060370ad",
+        "scripts/codex_host/completion.py": "b3baab07e04c3d030f2d7bd1918dbc61124f0eabb6983121fcba2e2b319154b3",
+        "scripts/codex_host/diagnostics.py": "eabfb65cabd9590a76bfdf44430ffaa8c7506eaa60f9764f8401b3f73fc94cc4",
+        "scripts/codex_host/launch.py": "e2bdf803aefe12d3aac131e79939e700ce2c93171779b3d6d60d81fc223d0f8b",
+        "scripts/codex_host/protocol.py": "8b547b38d084bb92bf1afc56ea428a3b93fb595e6a0774675e7980e38b1587f2",
+        "scripts/codex_host/readiness.py": "e5e3ee694a0f996988fbefc1e20a4c892038bb50a7e6f4bf5220e70456083bc9",
+        "scripts/codex_host/validators.py": "0f5ae3990fb233ed6ca6f9683e6b2a832c8d0b0ea5c050817ec66868e6d9fe5e"
+      },
+      "sha256": "79802c135e913bbe71856fdf9598033db35ed6b4f1e6d03231d3c19a8be1b308"
+    }
+  },
+  "summary": {
+    "conditions": {
+      "baseline": {
+        "cfw_gate_blocks": 0,
+        "cognitive_fault_trials": 0,
+        "complete_fixture_trials": 3,
+        "completion_applicable_trials": 0,
+        "completion_denials_or_incomplete": null,
+        "completion_permits": null,
+        "criteria_passed_distribution": {
+          "count": 3,
+          "max": 4.0,
+          "mean": 4.0,
+          "median": 4.0,
+          "min": 4.0
+        },
+        "efficacy_valid_trials": 3,
+        "host_valid_trials": 3,
+        "inference_ready_trials": 3,
+        "mean_criteria_passed": 4.0,
+        "mean_model_tool_calls": 20.0,
+        "mean_validator_tool_calls": 5.667,
+        "mean_wall_time_ms": 18415.891,
+        "median_wall_time_ms": 13483.479,
+        "model_started_trials": 3,
+        "model_tool_call_failures": 0,
+        "model_tool_calls_distribution": {
+          "count": 3,
+          "max": 34.0,
+          "mean": 20.0,
+          "median": 15.0,
+          "min": 11.0
+        },
+        "scheduled_trials": 3,
+        "scope_violation_trials": 0,
+        "token_usage_observed_trials": 0,
+        "trials": 3,
+        "upstream_blocked_trials": 0,
+        "valid_trials": 3,
+        "validator_channel_metrics": {
+          "baseline_host_feedback": {
+            "failed": 0,
+            "passed": 12,
+            "runs": 12,
+            "total_elapsed_ms": 3950.651,
+            "trial_elapsed_ms_distribution": {
+              "count": 3,
+              "max": 1339.08,
+              "mean": 1316.884,
+              "median": 1306.447,
+              "min": 1305.124
+            }
+          },
+          "model_turn": {
+            "failed": 5,
+            "passed": 12,
+            "runs": 17,
+            "total_elapsed_ms": 5676.643,
+            "trial_elapsed_ms_distribution": {
+              "count": 3,
+              "max": 2660.76,
+              "mean": 1892.214,
+              "median": 1673.5,
+              "min": 1342.383
+            }
+          }
+        },
+        "validator_passes_by_criterion": {
+          "event_integration": 3,
+          "parser_correctness": 3,
+          "retry_schedule": 3,
+          "state_removal": 3
+        },
+        "validator_tool_calls_distribution": {
+          "count": 3,
+          "max": 8.0,
+          "mean": 5.667,
+          "median": 5.0,
+          "min": 4.0
+        },
+        "wall_time_ms_distribution": {
+          "count": 3,
+          "max": 29488.864,
+          "mean": 18415.891,
+          "median": 13483.479,
+          "min": 12275.33
+        }
+      },
+      "cfw": {
+        "behavior_trace_outcomes": {
+          "below_4_of_4": {
+            "behavioral_mode_counts": {
+              "DELIVER": 1
+            },
+            "goal_anchor_state_counts": {
+              "pinned_host_contract": 1
+            },
+            "goal_reanchor_turns": 0,
+            "guidance_byte_distribution": {
+              "count": 1,
+              "max": 2977.0,
+              "mean": 2977.0,
+              "median": 2977.0,
+              "min": 2977.0
+            },
+            "reason_code_counts": {
+              "goal.required_criterion_pending": 1
+            },
+            "trace_turns": 1,
+            "trials": 1,
+            "turn_count_distribution": {
+              "count": 1,
+              "max": 1.0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0
+            }
+          },
+          "complete_4_of_4": {
+            "behavioral_mode_counts": {
+              "DELIVER": 2
+            },
+            "goal_anchor_state_counts": {
+              "pinned_host_contract": 2
+            },
+            "goal_reanchor_turns": 0,
+            "guidance_byte_distribution": {
+              "count": 2,
+              "max": 2977.0,
+              "mean": 2977.0,
+              "median": 2977.0,
+              "min": 2977.0
+            },
+            "reason_code_counts": {
+              "goal.required_criterion_pending": 2
+            },
+            "trace_turns": 2,
+            "trials": 2,
+            "turn_count_distribution": {
+              "count": 2,
+              "max": 1.0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0
+            }
+          }
+        },
+        "cfw_gate_blocks": 49,
+        "cognitive_fault_trials": 0,
+        "complete_fixture_trials": 2,
+        "completion_applicable_trials": 3,
+        "completion_denials_or_incomplete": 3,
+        "completion_permits": 0,
+        "criteria_passed_distribution": {
+          "count": 3,
+          "max": 4.0,
+          "mean": 2.667,
+          "median": 4.0,
+          "min": 0.0
+        },
+        "efficacy_valid_trials": 3,
+        "host_valid_trials": 3,
+        "inference_ready_trials": 3,
+        "integration_valid_trials": 3,
+        "mean_criteria_passed": 2.667,
+        "mean_model_tool_calls": 31.333,
+        "mean_validator_tool_calls": 14.333,
+        "mean_wall_time_ms": 76092.459,
+        "median_wall_time_ms": 76352.189,
+        "model_started_trials": 3,
+        "model_tool_call_failures": 0,
+        "model_tool_calls_distribution": {
+          "count": 3,
+          "max": 34.0,
+          "mean": 31.333,
+          "median": 31.0,
+          "min": 29.0
+        },
+        "scheduled_trials": 3,
+        "scope_violation_trials": 0,
+        "token_usage_observed_trials": 0,
+        "trials": 3,
+        "upstream_blocked_trials": 0,
+        "valid_trials": 3,
+        "validator_channel_metrics": {
+          "external_final_score": {
+            "failed": 4,
+            "passed": 8,
+            "runs": 12,
+            "total_elapsed_ms": 3924.709,
+            "trial_elapsed_ms_distribution": {
+              "count": 3,
+              "max": 1324.76,
+              "mean": 1308.236,
+              "median": 1311.517,
+              "min": 1288.432
+            }
+          },
+          "model_turn": {
+            "failed": 3,
+            "passed": 3,
+            "runs": 6,
+            "total_elapsed_ms": 1958.987,
+            "trial_elapsed_ms_distribution": {
+              "count": 3,
+              "max": 656.832,
+              "mean": 652.996,
+              "median": 656.743,
+              "min": 645.412
+            }
+          }
+        },
+        "validator_passes_by_criterion": {
+          "event_integration": 2,
+          "parser_correctness": 2,
+          "retry_schedule": 2,
+          "state_removal": 2
+        },
+        "validator_tool_calls_distribution": {
+          "count": 3,
+          "max": 19.0,
+          "mean": 14.333,
+          "median": 15.0,
+          "min": 9.0
+        },
+        "wall_time_ms_distribution": {
+          "count": 3,
+          "max": 120496.979,
+          "mean": 76092.459,
+          "median": 76352.189,
+          "min": 31428.209
+        }
+      }
+    },
+    "matched_pairs": {
+      "cfw": {
+        "completion_comparisons": [
+          {
+            "baseline_turn_completed": true,
+            "treatment_completion_permitted": false,
+            "treatment_turn_completed": true
+          },
+          {
+            "baseline_turn_completed": true,
+            "treatment_completion_permitted": false,
+            "treatment_turn_completed": true
+          },
+          {
+            "baseline_turn_completed": true,
+            "treatment_completion_permitted": false,
+            "treatment_turn_completed": true
+          }
+        ],
+        "mean_criteria_delta_vs_baseline": -1.333,
+        "pairs_with_both_efficacy_valid": 3,
+        "ties": 2,
+        "treatment_losses": 1,
+        "treatment_wins": 0
+      }
+    }
+  },
+  "superseded_by": "post-reuse-baseline-cfw-20261006.json",
+  "token_usage_note": "Token usage is recorded only when the App Server reports it; the pilot did not expose tokenUsage or usage fields.",
+  "trials": [
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {
+        "error": 0,
+        "item/agentMessage/delta": 562,
+        "item/completed": 49,
+        "item/started": 49,
+        "turn/completed": 1,
+        "turn/started": 1
+      },
+      "app_server_item_tool_counts": {
+        "completed": {},
+        "started": {}
+      },
+      "app_server_item_type_counts": {
+        "completed": {},
+        "started": {}
+      },
+      "assistant_message_present": true,
+      "behavior_trace": [],
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 0,
+      "cfw_gate_receipt_count": 0,
+      "cfw_gate_receipts": [],
+      "cognitive_fault": "",
+      "cognitive_host_initialized": null,
+      "completion_attempts": [],
+      "completion_decision": null,
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": null,
+      "completion_status": "",
+      "completion_validators": [],
+      "condition": "baseline",
+      "criteria_passed": 4,
+      "criteria_total": 4,
+      "criterion_results": {
+        "event_integration": true,
+        "parser_correctness": true,
+        "retry_schedule": true,
+        "state_removal": true
+      },
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": true,
+      "efficacy_valid": true,
+      "execution_phase": "",
+      "failure_domain": "",
+      "host_initialized": false,
+      "host_integration_valid": true,
+      "inference_preflight_only": false,
+      "inference_ready": true,
+      "infrastructure_valid": true,
+      "integration_invariants": {},
+      "integration_valid": true,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "deepseek-v4-flash",
+      "model_execution_observed": true,
+      "model_infrastructure_valid": true,
+      "model_tool_call_count": 34,
+      "model_validator_call_count": 4,
+      "model_visible_dp_tools": null,
+      "native_action_feature_catalog": {},
+      "native_action_feature_categories": {},
+      "native_action_features_disabled": [],
+      "native_action_features_supported": [],
+      "overall_wall_time_ms": 29488.864,
+      "pair_id": "pair-01",
+      "registered_dynamic_tool_names": [],
+      "requested_statework_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {},
+      "stack": "host-tools-baseline",
+      "thread_started": false,
+      "trial_id": "coding-20261006T144540Z-pair-01-baseline",
+      "trial_valid": true,
+      "turn_started": false,
+      "turn_status": "completed",
+      "turns": [
+        {
+          "error": {
+            "code": null,
+            "message": null
+          },
+          "status": "completed",
+          "wall_time_ms": 28148.775
+        }
+      ],
+      "upstream_blocked": false,
+      "validator_channel_metrics": {
+        "baseline_host_feedback": {
+          "failed": 0,
+          "max_elapsed_ms": 339.6,
+          "mean_elapsed_ms": 334.77,
+          "min_elapsed_ms": 330.267,
+          "passed": 4,
+          "runs": 4,
+          "total_elapsed_ms": 1339.08
+        },
+        "model_turn": {
+          "failed": 0,
+          "max_elapsed_ms": 364.751,
+          "mean_elapsed_ms": 335.596,
+          "min_elapsed_ms": 317.299,
+          "passed": 4,
+          "runs": 4,
+          "total_elapsed_ms": 1342.383
+        }
+      },
+      "workflow_ids": [],
+      "workspace_routing_required": false
+    },
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {
+        "error": 0,
+        "item/agentMessage/delta": 568,
+        "item/completed": 51,
+        "item/started": 51,
+        "turn/completed": 1,
+        "turn/started": 1
+      },
+      "app_server_item_tool_counts": {
+        "completed": {
+          "cfw_read": 13,
+          "cfw_run_validator": 15,
+          "cfw_write": 1
+        },
+        "started": {
+          "cfw_read": 13,
+          "cfw_run_validator": 15,
+          "cfw_write": 1
+        }
+      },
+      "app_server_item_type_counts": {
+        "completed": {
+          "agentMessage": 21,
+          "dynamicToolCall": 29,
+          "userMessage": 1
+        },
+        "started": {
+          "agentMessage": 21,
+          "dynamicToolCall": 29,
+          "userMessage": 1
+        }
+      },
+      "assistant_message_present": true,
+      "behavior_trace": [
+        {
+          "active_optional_components": [
+            "anchor_open",
+            "owl"
+          ],
+          "attempt_id": "attempt-1",
+          "behavioral_mode": "DELIVER",
+          "context_strategy": "standalone_contract_guidance",
+          "focus_criterion_ids": [
+            "event_integration",
+            "parser_correctness",
+            "retry_schedule"
+          ],
+          "goal_anchor_state": "pinned_host_contract",
+          "goal_contract_hash": "5b8f30c2e172c6dd73cd6cd17db8811b50f17018c34850c47d2e1a0abbe4a645",
+          "goal_reanchor_required": false,
+          "guidance_byte_count": 2977,
+          "guidance_sha256": "8a2e2e5b35011206f5d0405df2e95304a13645827999ecf577651f772e009cc4",
+          "reason_codes": [
+            "goal.required_criterion_pending"
+          ],
+          "response_strategy": "deliver",
+          "retry_recovery_counters": {
+            "recovery_epochs_since_goal_progress": 0,
+            "same_approach_retries": 0,
+            "support_actions_since_goal_progress": 0,
+            "total_actions_since_goal_progress": 0
+          },
+          "retry_recovery_mode": "RUNNING",
+          "turn_index": 1,
+          "work_mode": "delivery"
+        }
+      ],
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 14,
+      "cfw_gate_receipt_count": 29,
+      "cfw_gate_receipts": [
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        }
+      ],
+      "cognitive_fault": "",
+      "cognitive_host_initialized": null,
+      "completion_attempts": [
+        {
+          "attempt": 1,
+          "decision": "block",
+          "status": "incomplete",
+          "validators": []
+        }
+      ],
+      "completion_decision": "block",
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": false,
+      "completion_status": "incomplete",
+      "completion_validators": [],
+      "condition": "cfw",
+      "criteria_passed": 4,
+      "criteria_total": 4,
+      "criterion_results": {
+        "event_integration": true,
+        "parser_correctness": true,
+        "retry_schedule": true,
+        "state_removal": true
+      },
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": true,
+      "efficacy_valid": true,
+      "execution_phase": "completion_checked",
+      "failure_domain": "",
+      "host_initialized": true,
+      "host_integration_valid": true,
+      "inference_preflight_only": false,
+      "inference_readiness": {
+        "account_type": null,
+        "auth_mode": "external_provider",
+        "failure_class": null,
+        "provider_id": "freeinference",
+        "ready": true,
+        "requirements_loaded": true,
+        "workspace_routing_ready": true,
+        "workspace_routing_required": false
+      },
+      "inference_ready": true,
+      "infrastructure_valid": true,
+      "integration_invariants": {
+        "app_server_connected": true,
+        "cfw_action_gate_observed": true,
+        "completion_checked": true,
+        "inference_ready": true,
+        "model_execution_observed": true,
+        "model_visibility_verified": true,
+        "native_mutation_surfaces_closed": true,
+        "no_cognitive_fault": true,
+        "runtime_mode_matches": true,
+        "validator_boundary_observed": true
+      },
+      "integration_valid": true,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "deepseek-v4-flash",
+      "model_execution_observed": true,
+      "model_infrastructure_valid": true,
+      "model_tool_call_count": 29,
+      "model_validator_call_count": 15,
+      "model_visible_dp_tools": 0,
+      "native_action_feature_catalog": {
+        "disabled_host_feature_count": 47,
+        "host_policy_closed": true,
+        "policy_sha256": "82b363a94a1372a9ef42cafe5b160c67f38bf2502583d34858faa97d8b4bada2",
+        "supported_feature_count": 47,
+        "version": "codex-native-host-policy-v1"
+      },
+      "native_action_feature_categories": {
+        "execution_disabled": [
+          "shell_tool",
+          "unified_exec"
+        ],
+        "host_infrastructure_enabled": [],
+        "model_callable_disabled": [
+          "agent_message_board",
+          "apps",
+          "auth_elicitation",
+          "browser_use",
+          "browser_use_external",
+          "browser_use_full_cdp_access",
+          "code_mode",
+          "codex_apps_mcp_2026_07_28",
+          "computer_use",
+          "enable_mcp_apps",
+          "exec_permission_approvals",
+          "image_generation",
+          "in_app_browser",
+          "in_app_chat",
+          "in_app_dictation",
+          "in_app_local_automation",
+          "in_app_updates",
+          "multi_agent",
+          "multi_agent_v2",
+          "plugin_sharing",
+          "plugins",
+          "remote_plugin",
+          "request_permissions_tool",
+          "shell_zsh_fork",
+          "skill_mcp_dependency_install",
+          "skill_search",
+          "sqlite",
+          "tool_call_mcp_elicitation",
+          "tool_suggest",
+          "unified_exec_tty",
+          "unified_exec_zsh_fork",
+          "view_image",
+          "web_search_request",
+          "worktrees",
+          "write_stdin_approval"
+        ],
+        "persistent_side_effects_disabled": [
+          "daemon_auto_start",
+          "goals",
+          "hooks",
+          "memories",
+          "prevent_idle_sleep",
+          "realtime_conversation",
+          "shell_snapshot",
+          "shell_snapshot_v2",
+          "sleep_tool"
+        ],
+        "workspace_dependency_features_disabled": [
+          "workspace_dependencies"
+        ]
+      },
+      "native_action_features_disabled": [
+        "agent_message_board",
+        "apps",
+        "auth_elicitation",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "code_mode",
+        "codex_apps_mcp_2026_07_28",
+        "computer_use",
+        "daemon_auto_start",
+        "enable_mcp_apps",
+        "exec_permission_approvals",
+        "goals",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "in_app_chat",
+        "in_app_dictation",
+        "in_app_local_automation",
+        "in_app_updates",
+        "memories",
+        "multi_agent",
+        "multi_agent_v2",
+        "plugin_sharing",
+        "plugins",
+        "prevent_idle_sleep",
+        "realtime_conversation",
+        "remote_plugin",
+        "request_permissions_tool",
+        "shell_snapshot",
+        "shell_snapshot_v2",
+        "shell_tool",
+        "shell_zsh_fork",
+        "skill_mcp_dependency_install",
+        "skill_search",
+        "sleep_tool",
+        "sqlite",
+        "tool_call_mcp_elicitation",
+        "tool_suggest",
+        "unified_exec",
+        "unified_exec_tty",
+        "unified_exec_zsh_fork",
+        "view_image",
+        "web_search_request",
+        "workspace_dependencies",
+        "worktrees",
+        "write_stdin_approval"
+      ],
+      "native_action_features_supported": [
+        "agent_message_board",
+        "apps",
+        "auth_elicitation",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "code_mode",
+        "codex_apps_mcp_2026_07_28",
+        "computer_use",
+        "daemon_auto_start",
+        "enable_mcp_apps",
+        "exec_permission_approvals",
+        "goals",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "in_app_chat",
+        "in_app_dictation",
+        "in_app_local_automation",
+        "in_app_updates",
+        "memories",
+        "multi_agent",
+        "multi_agent_v2",
+        "plugin_sharing",
+        "plugins",
+        "prevent_idle_sleep",
+        "realtime_conversation",
+        "remote_plugin",
+        "request_permissions_tool",
+        "shell_snapshot",
+        "shell_snapshot_v2",
+        "shell_tool",
+        "shell_zsh_fork",
+        "skill_mcp_dependency_install",
+        "skill_search",
+        "sleep_tool",
+        "sqlite",
+        "tool_call_mcp_elicitation",
+        "tool_suggest",
+        "unified_exec",
+        "unified_exec_tty",
+        "unified_exec_zsh_fork",
+        "view_image",
+        "web_search_request",
+        "workspace_dependencies",
+        "worktrees",
+        "write_stdin_approval"
+      ],
+      "overall_wall_time_ms": 31428.209,
+      "pair_id": "pair-01",
+      "registered_dynamic_tool_names": [
+        "cfw_read",
+        "cfw_run_validator",
+        "cfw_write"
+      ],
+      "requested_statework_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "standalone_enforcing",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {
+        "item/tool/call": 29
+      },
+      "stack": "cfw-only",
+      "thread_started": true,
+      "trial_id": "coding-20261006T144540Z-pair-01-cfw",
+      "trial_valid": true,
+      "turn_started": true,
+      "turn_status": "completed",
+      "turns": [
+        {
+          "error": {
+            "code": null,
+            "message": null
+          },
+          "status": "completed",
+          "wall_time_ms": 29652.331
+        }
+      ],
+      "upstream_blocked": false,
+      "validator_channel_metrics": {
+        "external_final_score": {
+          "failed": 0,
+          "max_elapsed_ms": 335.829,
+          "mean_elapsed_ms": 322.108,
+          "min_elapsed_ms": 306.681,
+          "passed": 4,
+          "runs": 4,
+          "total_elapsed_ms": 1288.432
+        },
+        "model_turn": {
+          "failed": 0,
+          "max_elapsed_ms": 337.315,
+          "mean_elapsed_ms": 328.416,
+          "min_elapsed_ms": 319.517,
+          "passed": 2,
+          "runs": 2,
+          "total_elapsed_ms": 656.832
+        }
+      },
+      "workflow_ids": [],
+      "workspace_routing_required": false
+    },
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {
+        "error": 0,
+        "item/agentMessage/delta": 192,
+        "item/completed": 24,
+        "item/started": 24,
+        "turn/completed": 1,
+        "turn/started": 1
+      },
+      "app_server_item_tool_counts": {
+        "completed": {},
+        "started": {}
+      },
+      "app_server_item_type_counts": {
+        "completed": {},
+        "started": {}
+      },
+      "assistant_message_present": true,
+      "behavior_trace": [],
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 0,
+      "cfw_gate_receipt_count": 0,
+      "cfw_gate_receipts": [],
+      "cognitive_fault": "",
+      "cognitive_host_initialized": null,
+      "completion_attempts": [],
+      "completion_decision": null,
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": null,
+      "completion_status": "",
+      "completion_validators": [],
+      "condition": "baseline",
+      "criteria_passed": 4,
+      "criteria_total": 4,
+      "criterion_results": {
+        "event_integration": true,
+        "parser_correctness": true,
+        "retry_schedule": true,
+        "state_removal": true
+      },
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": true,
+      "efficacy_valid": true,
+      "execution_phase": "",
+      "failure_domain": "",
+      "host_initialized": false,
+      "host_integration_valid": true,
+      "inference_preflight_only": false,
+      "inference_ready": true,
+      "infrastructure_valid": true,
+      "integration_invariants": {},
+      "integration_valid": true,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "deepseek-v4-flash",
+      "model_execution_observed": true,
+      "model_infrastructure_valid": true,
+      "model_tool_call_count": 15,
+      "model_validator_call_count": 5,
+      "model_visible_dp_tools": null,
+      "native_action_feature_catalog": {},
+      "native_action_feature_categories": {},
+      "native_action_features_disabled": [],
+      "native_action_features_supported": [],
+      "overall_wall_time_ms": 13483.479,
+      "pair_id": "pair-02",
+      "registered_dynamic_tool_names": [],
+      "requested_statework_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {},
+      "stack": "host-tools-baseline",
+      "thread_started": false,
+      "trial_id": "coding-20261006T144540Z-pair-02-baseline",
+      "trial_valid": true,
+      "turn_started": false,
+      "turn_status": "completed",
+      "turns": [
+        {
+          "error": {
+            "code": null,
+            "message": null
+          },
+          "status": "completed",
+          "wall_time_ms": 12176.292
+        }
+      ],
+      "upstream_blocked": false,
+      "validator_channel_metrics": {
+        "baseline_host_feedback": {
+          "failed": 0,
+          "max_elapsed_ms": 333.519,
+          "mean_elapsed_ms": 326.612,
+          "min_elapsed_ms": 319.03,
+          "passed": 4,
+          "runs": 4,
+          "total_elapsed_ms": 1306.447
+        },
+        "model_turn": {
+          "failed": 1,
+          "max_elapsed_ms": 344.047,
+          "mean_elapsed_ms": 334.7,
+          "min_elapsed_ms": 322.09,
+          "passed": 4,
+          "runs": 5,
+          "total_elapsed_ms": 1673.5
+        }
+      },
+      "workflow_ids": [],
+      "workspace_routing_required": false
+    },
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {
+        "error": 0,
+        "item/agentMessage/delta": 4838,
+        "item/completed": 59,
+        "item/started": 59,
+        "turn/completed": 1,
+        "turn/started": 1
+      },
+      "app_server_item_tool_counts": {
+        "completed": {
+          "cfw_read": 16,
+          "cfw_run_validator": 9,
+          "cfw_write": 9
+        },
+        "started": {
+          "cfw_read": 16,
+          "cfw_run_validator": 9,
+          "cfw_write": 9
+        }
+      },
+      "app_server_item_type_counts": {
+        "completed": {
+          "agentMessage": 24,
+          "dynamicToolCall": 34,
+          "userMessage": 1
+        },
+        "started": {
+          "agentMessage": 24,
+          "dynamicToolCall": 34,
+          "userMessage": 1
+        }
+      },
+      "assistant_message_present": true,
+      "behavior_trace": [
+        {
+          "active_optional_components": [
+            "anchor_open",
+            "owl"
+          ],
+          "attempt_id": "attempt-1",
+          "behavioral_mode": "DELIVER",
+          "context_strategy": "standalone_contract_guidance",
+          "focus_criterion_ids": [
+            "event_integration",
+            "parser_correctness",
+            "retry_schedule"
+          ],
+          "goal_anchor_state": "pinned_host_contract",
+          "goal_contract_hash": "5b8f30c2e172c6dd73cd6cd17db8811b50f17018c34850c47d2e1a0abbe4a645",
+          "goal_reanchor_required": false,
+          "guidance_byte_count": 2977,
+          "guidance_sha256": "8a2e2e5b35011206f5d0405df2e95304a13645827999ecf577651f772e009cc4",
+          "reason_codes": [
+            "goal.required_criterion_pending"
+          ],
+          "response_strategy": "deliver",
+          "retry_recovery_counters": {
+            "recovery_epochs_since_goal_progress": 0,
+            "same_approach_retries": 0,
+            "support_actions_since_goal_progress": 0,
+            "total_actions_since_goal_progress": 0
+          },
+          "retry_recovery_mode": "RUNNING",
+          "turn_index": 1,
+          "work_mode": "delivery"
+        }
+      ],
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 18,
+      "cfw_gate_receipt_count": 34,
+      "cfw_gate_receipts": [
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "require_changed_hypothesis",
+          "reason_codes": [
+            "flow.goal_progress_limit"
+          ],
+          "stage": "final"
+        }
+      ],
+      "cognitive_fault": "",
+      "cognitive_host_initialized": null,
+      "completion_attempts": [
+        {
+          "attempt": 1,
+          "decision": "block",
+          "status": "incomplete",
+          "validators": []
+        }
+      ],
+      "completion_decision": "block",
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": false,
+      "completion_status": "incomplete",
+      "completion_validators": [],
+      "condition": "cfw",
+      "criteria_passed": 0,
+      "criteria_total": 4,
+      "criterion_results": {
+        "event_integration": false,
+        "parser_correctness": false,
+        "retry_schedule": false,
+        "state_removal": false
+      },
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": true,
+      "efficacy_valid": true,
+      "execution_phase": "completion_checked",
+      "failure_domain": "",
+      "host_initialized": true,
+      "host_integration_valid": true,
+      "inference_preflight_only": false,
+      "inference_readiness": {
+        "account_type": null,
+        "auth_mode": "external_provider",
+        "failure_class": null,
+        "provider_id": "freeinference",
+        "ready": true,
+        "requirements_loaded": true,
+        "workspace_routing_ready": true,
+        "workspace_routing_required": false
+      },
+      "inference_ready": true,
+      "infrastructure_valid": true,
+      "integration_invariants": {
+        "app_server_connected": true,
+        "cfw_action_gate_observed": true,
+        "completion_checked": true,
+        "inference_ready": true,
+        "model_execution_observed": true,
+        "model_visibility_verified": true,
+        "native_mutation_surfaces_closed": true,
+        "no_cognitive_fault": true,
+        "runtime_mode_matches": true,
+        "validator_boundary_observed": true
+      },
+      "integration_valid": true,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "deepseek-v4-flash",
+      "model_execution_observed": true,
+      "model_infrastructure_valid": true,
+      "model_tool_call_count": 34,
+      "model_validator_call_count": 9,
+      "model_visible_dp_tools": 0,
+      "native_action_feature_catalog": {
+        "disabled_host_feature_count": 47,
+        "host_policy_closed": true,
+        "policy_sha256": "82b363a94a1372a9ef42cafe5b160c67f38bf2502583d34858faa97d8b4bada2",
+        "supported_feature_count": 47,
+        "version": "codex-native-host-policy-v1"
+      },
+      "native_action_feature_categories": {
+        "execution_disabled": [
+          "shell_tool",
+          "unified_exec"
+        ],
+        "host_infrastructure_enabled": [],
+        "model_callable_disabled": [
+          "agent_message_board",
+          "apps",
+          "auth_elicitation",
+          "browser_use",
+          "browser_use_external",
+          "browser_use_full_cdp_access",
+          "code_mode",
+          "codex_apps_mcp_2026_07_28",
+          "computer_use",
+          "enable_mcp_apps",
+          "exec_permission_approvals",
+          "image_generation",
+          "in_app_browser",
+          "in_app_chat",
+          "in_app_dictation",
+          "in_app_local_automation",
+          "in_app_updates",
+          "multi_agent",
+          "multi_agent_v2",
+          "plugin_sharing",
+          "plugins",
+          "remote_plugin",
+          "request_permissions_tool",
+          "shell_zsh_fork",
+          "skill_mcp_dependency_install",
+          "skill_search",
+          "sqlite",
+          "tool_call_mcp_elicitation",
+          "tool_suggest",
+          "unified_exec_tty",
+          "unified_exec_zsh_fork",
+          "view_image",
+          "web_search_request",
+          "worktrees",
+          "write_stdin_approval"
+        ],
+        "persistent_side_effects_disabled": [
+          "daemon_auto_start",
+          "goals",
+          "hooks",
+          "memories",
+          "prevent_idle_sleep",
+          "realtime_conversation",
+          "shell_snapshot",
+          "shell_snapshot_v2",
+          "sleep_tool"
+        ],
+        "workspace_dependency_features_disabled": [
+          "workspace_dependencies"
+        ]
+      },
+      "native_action_features_disabled": [
+        "agent_message_board",
+        "apps",
+        "auth_elicitation",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "code_mode",
+        "codex_apps_mcp_2026_07_28",
+        "computer_use",
+        "daemon_auto_start",
+        "enable_mcp_apps",
+        "exec_permission_approvals",
+        "goals",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "in_app_chat",
+        "in_app_dictation",
+        "in_app_local_automation",
+        "in_app_updates",
+        "memories",
+        "multi_agent",
+        "multi_agent_v2",
+        "plugin_sharing",
+        "plugins",
+        "prevent_idle_sleep",
+        "realtime_conversation",
+        "remote_plugin",
+        "request_permissions_tool",
+        "shell_snapshot",
+        "shell_snapshot_v2",
+        "shell_tool",
+        "shell_zsh_fork",
+        "skill_mcp_dependency_install",
+        "skill_search",
+        "sleep_tool",
+        "sqlite",
+        "tool_call_mcp_elicitation",
+        "tool_suggest",
+        "unified_exec",
+        "unified_exec_tty",
+        "unified_exec_zsh_fork",
+        "view_image",
+        "web_search_request",
+        "workspace_dependencies",
+        "worktrees",
+        "write_stdin_approval"
+      ],
+      "native_action_features_supported": [
+        "agent_message_board",
+        "apps",
+        "auth_elicitation",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "code_mode",
+        "codex_apps_mcp_2026_07_28",
+        "computer_use",
+        "daemon_auto_start",
+        "enable_mcp_apps",
+        "exec_permission_approvals",
+        "goals",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "in_app_chat",
+        "in_app_dictation",
+        "in_app_local_automation",
+        "in_app_updates",
+        "memories",
+        "multi_agent",
+        "multi_agent_v2",
+        "plugin_sharing",
+        "plugins",
+        "prevent_idle_sleep",
+        "realtime_conversation",
+        "remote_plugin",
+        "request_permissions_tool",
+        "shell_snapshot",
+        "shell_snapshot_v2",
+        "shell_tool",
+        "shell_zsh_fork",
+        "skill_mcp_dependency_install",
+        "skill_search",
+        "sleep_tool",
+        "sqlite",
+        "tool_call_mcp_elicitation",
+        "tool_suggest",
+        "unified_exec",
+        "unified_exec_tty",
+        "unified_exec_zsh_fork",
+        "view_image",
+        "web_search_request",
+        "workspace_dependencies",
+        "worktrees",
+        "write_stdin_approval"
+      ],
+      "overall_wall_time_ms": 120496.979,
+      "pair_id": "pair-02",
+      "registered_dynamic_tool_names": [
+        "cfw_read",
+        "cfw_run_validator",
+        "cfw_write"
+      ],
+      "requested_statework_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "standalone_enforcing",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {
+        "item/tool/call": 34
+      },
+      "stack": "cfw-only",
+      "thread_started": true,
+      "trial_id": "coding-20261006T144540Z-pair-02-cfw",
+      "trial_valid": true,
+      "turn_started": true,
+      "turn_status": "completed",
+      "turns": [
+        {
+          "error": {
+            "code": null,
+            "message": null
+          },
+          "status": "completed",
+          "wall_time_ms": 118721.043
+        }
+      ],
+      "upstream_blocked": false,
+      "validator_channel_metrics": {
+        "external_final_score": {
+          "failed": 4,
+          "max_elapsed_ms": 342.869,
+          "mean_elapsed_ms": 331.19,
+          "min_elapsed_ms": 319.19,
+          "passed": 0,
+          "runs": 4,
+          "total_elapsed_ms": 1324.76
+        },
+        "model_turn": {
+          "failed": 2,
+          "max_elapsed_ms": 324.734,
+          "mean_elapsed_ms": 322.706,
+          "min_elapsed_ms": 320.678,
+          "passed": 0,
+          "runs": 2,
+          "total_elapsed_ms": 645.412
+        }
+      },
+      "workflow_ids": [],
+      "workspace_routing_required": false
+    },
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {
+        "error": 0,
+        "item/agentMessage/delta": 61,
+        "item/completed": 18,
+        "item/started": 18,
+        "turn/completed": 1,
+        "turn/started": 1
+      },
+      "app_server_item_tool_counts": {
+        "completed": {},
+        "started": {}
+      },
+      "app_server_item_type_counts": {
+        "completed": {},
+        "started": {}
+      },
+      "assistant_message_present": true,
+      "behavior_trace": [],
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 0,
+      "cfw_gate_receipt_count": 0,
+      "cfw_gate_receipts": [],
+      "cognitive_fault": "",
+      "cognitive_host_initialized": null,
+      "completion_attempts": [],
+      "completion_decision": null,
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": null,
+      "completion_status": "",
+      "completion_validators": [],
+      "condition": "baseline",
+      "criteria_passed": 4,
+      "criteria_total": 4,
+      "criterion_results": {
+        "event_integration": true,
+        "parser_correctness": true,
+        "retry_schedule": true,
+        "state_removal": true
+      },
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": true,
+      "efficacy_valid": true,
+      "execution_phase": "",
+      "failure_domain": "",
+      "host_initialized": false,
+      "host_integration_valid": true,
+      "inference_preflight_only": false,
+      "inference_ready": true,
+      "infrastructure_valid": true,
+      "integration_invariants": {},
+      "integration_valid": true,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "deepseek-v4-flash",
+      "model_execution_observed": true,
+      "model_infrastructure_valid": true,
+      "model_tool_call_count": 11,
+      "model_validator_call_count": 8,
+      "model_visible_dp_tools": null,
+      "native_action_feature_catalog": {},
+      "native_action_feature_categories": {},
+      "native_action_features_disabled": [],
+      "native_action_features_supported": [],
+      "overall_wall_time_ms": 12275.33,
+      "pair_id": "pair-03",
+      "registered_dynamic_tool_names": [],
+      "requested_statework_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {},
+      "stack": "host-tools-baseline",
+      "thread_started": false,
+      "trial_id": "coding-20261006T144540Z-pair-03-baseline",
+      "trial_valid": true,
+      "turn_started": false,
+      "turn_status": "completed",
+      "turns": [
+        {
+          "error": {
+            "code": null,
+            "message": null
+          },
+          "status": "completed",
+          "wall_time_ms": 10969.344
+        }
+      ],
+      "upstream_blocked": false,
+      "validator_channel_metrics": {
+        "baseline_host_feedback": {
+          "failed": 0,
+          "max_elapsed_ms": 339.152,
+          "mean_elapsed_ms": 326.281,
+          "min_elapsed_ms": 313.694,
+          "passed": 4,
+          "runs": 4,
+          "total_elapsed_ms": 1305.124
+        },
+        "model_turn": {
+          "failed": 4,
+          "max_elapsed_ms": 358.171,
+          "mean_elapsed_ms": 332.595,
+          "min_elapsed_ms": 300.674,
+          "passed": 4,
+          "runs": 8,
+          "total_elapsed_ms": 2660.76
+        }
+      },
+      "workflow_ids": [],
+      "workspace_routing_required": false
+    },
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {
+        "error": 0,
+        "item/agentMessage/delta": 782,
+        "item/completed": 57,
+        "item/started": 57,
+        "turn/completed": 1,
+        "turn/started": 1
+      },
+      "app_server_item_tool_counts": {
+        "completed": {
+          "cfw_read": 11,
+          "cfw_run_validator": 19,
+          "cfw_write": 1
+        },
+        "started": {
+          "cfw_read": 11,
+          "cfw_run_validator": 19,
+          "cfw_write": 1
+        }
+      },
+      "app_server_item_type_counts": {
+        "completed": {
+          "agentMessage": 25,
+          "dynamicToolCall": 31,
+          "userMessage": 1
+        },
+        "started": {
+          "agentMessage": 25,
+          "dynamicToolCall": 31,
+          "userMessage": 1
+        }
+      },
+      "assistant_message_present": true,
+      "behavior_trace": [
+        {
+          "active_optional_components": [
+            "anchor_open",
+            "owl"
+          ],
+          "attempt_id": "attempt-1",
+          "behavioral_mode": "DELIVER",
+          "context_strategy": "standalone_contract_guidance",
+          "focus_criterion_ids": [
+            "event_integration",
+            "parser_correctness",
+            "retry_schedule"
+          ],
+          "goal_anchor_state": "pinned_host_contract",
+          "goal_contract_hash": "5b8f30c2e172c6dd73cd6cd17db8811b50f17018c34850c47d2e1a0abbe4a645",
+          "goal_reanchor_required": false,
+          "guidance_byte_count": 2977,
+          "guidance_sha256": "8a2e2e5b35011206f5d0405df2e95304a13645827999ecf577651f772e009cc4",
+          "reason_codes": [
+            "goal.required_criterion_pending"
+          ],
+          "response_strategy": "deliver",
+          "retry_recovery_counters": {
+            "recovery_epochs_since_goal_progress": 0,
+            "same_approach_retries": 0,
+            "support_actions_since_goal_progress": 0,
+            "total_actions_since_goal_progress": 0
+          },
+          "retry_recovery_mode": "RUNNING",
+          "turn_index": 1,
+          "work_mode": "delivery"
+        }
+      ],
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 17,
+      "cfw_gate_receipt_count": 31,
+      "cfw_gate_receipts": [
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "allow",
+          "reason_codes": [
+            "cfw.action_policy_allow"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        },
+        {
+          "decision": "block",
+          "reason_codes": [
+            "owl.verification_action_limited"
+          ],
+          "stage": "final"
+        }
+      ],
+      "cognitive_fault": "",
+      "cognitive_host_initialized": null,
+      "completion_attempts": [
+        {
+          "attempt": 1,
+          "decision": "block",
+          "status": "incomplete",
+          "validators": []
+        }
+      ],
+      "completion_decision": "block",
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": false,
+      "completion_status": "incomplete",
+      "completion_validators": [],
+      "condition": "cfw",
+      "criteria_passed": 4,
+      "criteria_total": 4,
+      "criterion_results": {
+        "event_integration": true,
+        "parser_correctness": true,
+        "retry_schedule": true,
+        "state_removal": true
+      },
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": true,
+      "efficacy_valid": true,
+      "execution_phase": "completion_checked",
+      "failure_domain": "",
+      "host_initialized": true,
+      "host_integration_valid": true,
+      "inference_preflight_only": false,
+      "inference_readiness": {
+        "account_type": null,
+        "auth_mode": "external_provider",
+        "failure_class": null,
+        "provider_id": "freeinference",
+        "ready": true,
+        "requirements_loaded": true,
+        "workspace_routing_ready": true,
+        "workspace_routing_required": false
+      },
+      "inference_ready": true,
+      "infrastructure_valid": true,
+      "integration_invariants": {
+        "app_server_connected": true,
+        "cfw_action_gate_observed": true,
+        "completion_checked": true,
+        "inference_ready": true,
+        "model_execution_observed": true,
+        "model_visibility_verified": true,
+        "native_mutation_surfaces_closed": true,
+        "no_cognitive_fault": true,
+        "runtime_mode_matches": true,
+        "validator_boundary_observed": true
+      },
+      "integration_valid": true,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "deepseek-v4-flash",
+      "model_execution_observed": true,
+      "model_infrastructure_valid": true,
+      "model_tool_call_count": 31,
+      "model_validator_call_count": 19,
+      "model_visible_dp_tools": 0,
+      "native_action_feature_catalog": {
+        "disabled_host_feature_count": 47,
+        "host_policy_closed": true,
+        "policy_sha256": "82b363a94a1372a9ef42cafe5b160c67f38bf2502583d34858faa97d8b4bada2",
+        "supported_feature_count": 47,
+        "version": "codex-native-host-policy-v1"
+      },
+      "native_action_feature_categories": {
+        "execution_disabled": [
+          "shell_tool",
+          "unified_exec"
+        ],
+        "host_infrastructure_enabled": [],
+        "model_callable_disabled": [
+          "agent_message_board",
+          "apps",
+          "auth_elicitation",
+          "browser_use",
+          "browser_use_external",
+          "browser_use_full_cdp_access",
+          "code_mode",
+          "codex_apps_mcp_2026_07_28",
+          "computer_use",
+          "enable_mcp_apps",
+          "exec_permission_approvals",
+          "image_generation",
+          "in_app_browser",
+          "in_app_chat",
+          "in_app_dictation",
+          "in_app_local_automation",
+          "in_app_updates",
+          "multi_agent",
+          "multi_agent_v2",
+          "plugin_sharing",
+          "plugins",
+          "remote_plugin",
+          "request_permissions_tool",
+          "shell_zsh_fork",
+          "skill_mcp_dependency_install",
+          "skill_search",
+          "sqlite",
+          "tool_call_mcp_elicitation",
+          "tool_suggest",
+          "unified_exec_tty",
+          "unified_exec_zsh_fork",
+          "view_image",
+          "web_search_request",
+          "worktrees",
+          "write_stdin_approval"
+        ],
+        "persistent_side_effects_disabled": [
+          "daemon_auto_start",
+          "goals",
+          "hooks",
+          "memories",
+          "prevent_idle_sleep",
+          "realtime_conversation",
+          "shell_snapshot",
+          "shell_snapshot_v2",
+          "sleep_tool"
+        ],
+        "workspace_dependency_features_disabled": [
+          "workspace_dependencies"
+        ]
+      },
+      "native_action_features_disabled": [
+        "agent_message_board",
+        "apps",
+        "auth_elicitation",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "code_mode",
+        "codex_apps_mcp_2026_07_28",
+        "computer_use",
+        "daemon_auto_start",
+        "enable_mcp_apps",
+        "exec_permission_approvals",
+        "goals",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "in_app_chat",
+        "in_app_dictation",
+        "in_app_local_automation",
+        "in_app_updates",
+        "memories",
+        "multi_agent",
+        "multi_agent_v2",
+        "plugin_sharing",
+        "plugins",
+        "prevent_idle_sleep",
+        "realtime_conversation",
+        "remote_plugin",
+        "request_permissions_tool",
+        "shell_snapshot",
+        "shell_snapshot_v2",
+        "shell_tool",
+        "shell_zsh_fork",
+        "skill_mcp_dependency_install",
+        "skill_search",
+        "sleep_tool",
+        "sqlite",
+        "tool_call_mcp_elicitation",
+        "tool_suggest",
+        "unified_exec",
+        "unified_exec_tty",
+        "unified_exec_zsh_fork",
+        "view_image",
+        "web_search_request",
+        "workspace_dependencies",
+        "worktrees",
+        "write_stdin_approval"
+      ],
+      "native_action_features_supported": [
+        "agent_message_board",
+        "apps",
+        "auth_elicitation",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "code_mode",
+        "codex_apps_mcp_2026_07_28",
+        "computer_use",
+        "daemon_auto_start",
+        "enable_mcp_apps",
+        "exec_permission_approvals",
+        "goals",
+        "hooks",
+        "image_generation",
+        "in_app_browser",
+        "in_app_chat",
+        "in_app_dictation",
+        "in_app_local_automation",
+        "in_app_updates",
+        "memories",
+        "multi_agent",
+        "multi_agent_v2",
+        "plugin_sharing",
+        "plugins",
+        "prevent_idle_sleep",
+        "realtime_conversation",
+        "remote_plugin",
+        "request_permissions_tool",
+        "shell_snapshot",
+        "shell_snapshot_v2",
+        "shell_tool",
+        "shell_zsh_fork",
+        "skill_mcp_dependency_install",
+        "skill_search",
+        "sleep_tool",
+        "sqlite",
+        "tool_call_mcp_elicitation",
+        "tool_suggest",
+        "unified_exec",
+        "unified_exec_tty",
+        "unified_exec_zsh_fork",
+        "view_image",
+        "web_search_request",
+        "workspace_dependencies",
+        "worktrees",
+        "write_stdin_approval"
+      ],
+      "overall_wall_time_ms": 76352.189,
+      "pair_id": "pair-03",
+      "registered_dynamic_tool_names": [
+        "cfw_read",
+        "cfw_run_validator",
+        "cfw_write"
+      ],
+      "requested_statework_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "standalone_enforcing",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {
+        "item/tool/call": 31
+      },
+      "stack": "cfw-only",
+      "thread_started": true,
+      "trial_id": "coding-20261006T144540Z-pair-03-cfw",
+      "trial_valid": true,
+      "turn_started": true,
+      "turn_status": "completed",
+      "turns": [
+        {
+          "error": {
+            "code": null,
+            "message": null
+          },
+          "status": "completed",
+          "wall_time_ms": 74600.753
+        }
+      ],
+      "upstream_blocked": false,
+      "validator_channel_metrics": {
+        "external_final_score": {
+          "failed": 0,
+          "max_elapsed_ms": 336.476,
+          "mean_elapsed_ms": 327.879,
+          "min_elapsed_ms": 317.92,
+          "passed": 4,
+          "runs": 4,
+          "total_elapsed_ms": 1311.517
+        },
+        "model_turn": {
+          "failed": 1,
+          "max_elapsed_ms": 336.779,
+          "mean_elapsed_ms": 328.372,
+          "min_elapsed_ms": 319.964,
+          "passed": 1,
+          "runs": 2,
+          "total_elapsed_ms": 656.743
+        }
+      },
+      "workflow_ids": [],
+      "workspace_routing_required": false
+    }
+  ],
+  "trials_per_condition": 10
+}

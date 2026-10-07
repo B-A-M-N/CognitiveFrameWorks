@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+from digital_psychology_adapter import CFWBehaviorAdapter
 
 
 def _load_resolver():
@@ -36,7 +37,7 @@ def _projection(revision, *, cognitive_mode="DELIVER", flow_mode="off",
     }
 
 
-def test_task_handle_exposes_explicit_reversible_dp_component_port():
+def test_task_handle_exposes_explicit_reversible_component_adapter_port():
     resolve = _load_resolver()
     from cognitive_runtime import CognitiveRuntime
 
@@ -45,11 +46,11 @@ def test_task_handle_exposes_explicit_reversible_dp_component_port():
                             shape="implement", subject_ref="repo:dp-component-port"),
         telemetry_disabled=True,
     )
-    adapter = task.digital_psychology_adapter()
+    adapter = task.create_component_adapter(CFWBehaviorAdapter)
     assert adapter._session.behavior.is_external
-    assert adapter._session.behavior.metacognitive_controller is None
-    assert adapter._session.behavior.system_one_projector is None
-    assert adapter._session.behavior.semantic_signal_store is None
+    assert adapter._session.behavior.standalone_behavior_policy is None
+    assert not hasattr(adapter._session.behavior, "system_one_projector")
+    assert not hasattr(adapter._session.behavior, "semantic_signal_store")
     assert {"owl", "anchor", "fuse", "ward"}.issubset(
         adapter.available_component_ids())
     directive = {
@@ -138,7 +139,7 @@ def test_authority_identity_hashes_component_contract_semantics(monkeypatch):
         telemetry_disabled=True,
     )
     try:
-        adapter = task.digital_psychology_adapter()
+        adapter = task.create_component_adapter(CFWBehaviorAdapter)
         original = adapter.authority_identity()
         assert len(original["component_contract_hash"]) == 64
         assert len(original["capability_hash"]) == 64
@@ -161,7 +162,7 @@ def test_dp_component_overlay_changes_actual_flow_lifecycle_activation():
                             shape="performance", subject_ref="repo:dp-flow-overlay"),
         telemetry_disabled=True,
     )
-    adapter = task.digital_psychology_adapter()
+    adapter = task.create_component_adapter(CFWBehaviorAdapter)
     assert "flow" in adapter.available_component_ids()
 
     def state(revision: int, flow_mode: str) -> dict[str, object]:
@@ -209,7 +210,7 @@ def test_dp_cannot_suppress_components_selected_by_performance_or_doc_edit():
         telemetry_disabled=True,
     )
     try:
-        adapter = performance.digital_psychology_adapter()
+        adapter = performance.create_component_adapter(CFWBehaviorAdapter)
         contract = adapter.task_behavior_contract()
         assert contract["baseline_floors"]["flow"] == "normal"
         session = adapter._session
@@ -231,7 +232,7 @@ def test_dp_cannot_suppress_components_selected_by_performance_or_doc_edit():
         telemetry_disabled=True,
     )
     try:
-        adapter = documentation.digital_psychology_adapter()
+        adapter = documentation.create_component_adapter(CFWBehaviorAdapter)
         contract = adapter.task_behavior_contract()
         assert contract["baseline_floors"]["anchor"] == "normal"
         assert contract["baseline_floors"]["dox"] == "normal"
@@ -268,7 +269,7 @@ def test_dp_temporary_component_control_expires_without_a_dp_tick():
                             shape="performance", subject_ref="repo:dp-flow-local-expiry"),
         telemetry_disabled=True,
     )
-    adapter = task.digital_psychology_adapter()
+    adapter = task.create_component_adapter(CFWBehaviorAdapter)
     runtime_session = adapter._session
     state = _projection(1, leases=({
         "lease_id": "lease-flow", "intervention_id": "intv-flow-local-expiry",
@@ -299,7 +300,7 @@ def test_dp_reset_mode_reexecutes_the_selected_component_stage():
                             shape="implement", subject_ref="repo:dp-component-reset"),
         telemetry_disabled=True,
     )
-    adapter = task.digital_psychology_adapter()
+    adapter = task.create_component_adapter(CFWBehaviorAdapter)
 
     def state(revision: int, owl_mode: str) -> dict[str, object]:
         return _projection(revision, cognitive_mode="RECOVER", owl_mode=owl_mode)
@@ -313,9 +314,9 @@ def test_dp_reset_mode_reexecutes_the_selected_component_stage():
 
 
 def test_cfw_criterion_ledger_keeps_more_than_eight_items_and_rejects_overflow():
-    from runtime_contract.metacognition import MetacognitiveState
+    from runtime_contract.task_evidence import TaskEvidenceState
 
-    state = MetacognitiveState()
+    state = TaskEvidenceState()
     state.ensure_criteria({"acceptance_criteria": [{
         "criterion_id": f"criterion-{index}", "claim": f"Claim {index}",
         "kind": "functional",

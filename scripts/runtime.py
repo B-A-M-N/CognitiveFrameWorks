@@ -3,9 +3,9 @@
 
 The CLI resolver is a debugging front end; the actual agent/harness calls the
 Python API. CFW owns its component lifecycle, action authorization, and
-evidence-bound enforcement in standalone mode. When DigitalPsychology is
-enabled, DP owns whole-session behavioral policy and CFW exposes its components
-through the explicit adapter in ``scripts/digital_psychology_adapter.py``.
+evidence-bound enforcement in standalone mode. A combined deployment may bind
+an external behavioral controller through a caller-selected component adapter;
+the runtime core does not select a product-specific adapter.
 
     TaskRequest -> resolve() -> RuntimeBundle -> runtime.start(bundle)
 
@@ -49,8 +49,9 @@ from runtime_contract.evidence import (CompletionClaim, CompletionPermit,
                                         EvidenceAttestation, EvidenceLedger,
                                         EvidenceRecord, StateSegment, TerminationPermit,
                                         completion_claim_digest)
-from runtime_contract.convergence import (AttemptDescriptor, ConvergenceController,
-                                           ConvergenceIdentity, SharedBranchLedger,
+from runtime_contract.convergence import (AttemptDescriptor, AttemptEvidenceTracker,
+                                           ConvergenceController, ConvergenceIdentity,
+                                           RetryBoundaryEnforcer, SharedBranchLedger,
                                            TERMINAL_DISPOSITIONS)
 from runtime_contract.component_control import (COMPONENT_BASELINE_MODES,
                                                 COMPONENT_IDS,
@@ -61,20 +62,6 @@ from runtime_contract.telemetry import DurableTelemetryExporter
 from runtime_contract.handlers import enforcement_for_guard, handler_for_enforcement
 from runtime_contract.operator_events import OperatorEvent
 from runtime_contract.stateworks import ExecutionSegment, SegmentStatus
-from runtime_contract.behavioral_fusion import (
-    SemanticFusion, fuse_action_relation, fuse_progress_relation,
-    fuse_retry_relation, render_metacognitive_directive,
-)
-from runtime_contract.metacognition import (
-    CompletionReadiness, CriterionEvidenceBinding, MetaDecision, MetacognitiveController,
-    MetacognitiveState, SemanticSignalStore, SemanticSignals,
-)
-from runtime_contract.system_one import (ActivityFact, AttemptSemanticDescriptor,
-                                         BehavioralJudge, SystemOneCapability,
-                                         SystemOneFrame, SystemOneIdentity,
-                                         SystemOneJudgment, SystemOnePolicy,
-                                         QUESTION_REGISTRY)
-from runtime_contract.system_one_state import SystemOneStateProjector
 from runtime_contract.validators import evaluate_validator, validator_registry_hash
 from runtime_session.telemetry import HostTelemetry, OPTIONAL_EVENT_FIELDS
 from runtime_session.projection import context_for
@@ -86,6 +73,10 @@ from runtime_session.attempts import AttemptMethods
 from runtime_session.evidence import AUTHORITATIVE_EVIDENCE_KINDS, EvidenceMethods
 from runtime_session.action_gate import ActionGateMethods
 from runtime_session.standalone_behavior import StandaloneBehaviorMethods, _sispis_calibration
+from runtime_session.standalone_behavior_policy import (
+    StandaloneBehaviorDecision, StandaloneBehaviorPolicy,
+    render_standalone_behavior_guidance,
+)
 from runtime_session.host_authority import (
     HostIngress, PolicyRevocationAuthority, SharedWorkflowMembershipAuthority,
     StateAuthority, _HostCapability, create_state_authority,
@@ -94,7 +85,6 @@ from runtime_session.lifecycle import (
     ActionPreflightResult, ActionPreparation, ExecutionIdentity,
     GateDecision, LifecycleController,
     SharedWorkflowMembership,
-    _canonical_system_one_status,
 )
 from runtime_session.standalone_route_policy import (
     ChildPolicyEpoch, PolicyEpochRecord, RouteReplanRecommendation,

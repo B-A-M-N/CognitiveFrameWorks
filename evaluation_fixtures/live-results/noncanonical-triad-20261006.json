@@ -1,0 +1,50 @@
+{
+  "canonical": false,
+  "cfw_gate_receipt_count": 48,
+  "claim": "One successful integration/non-regression trial only; this does not establish behavioral superiority.",
+  "codex_cli_version": "codex-cli 0.160.0",
+  "completion_permitted": true,
+  "condition": "triad",
+  "criteria_passed": 4,
+  "criteria_total": 4,
+  "criterion_results": {
+    "event_integration": true,
+    "parser_correctness": true,
+    "retry_schedule": true,
+    "state_removal": true
+  },
+  "date": "2026-10-06",
+  "dp_control_ticks_committed": 65,
+  "dp_interventions": {
+    "active": 1,
+    "applications": 33,
+    "closed": 32,
+    "created_by_origin": {
+      "completion": 15,
+      "post_action": 1,
+      "runtime_behavior": 19,
+      "startup": 1
+    },
+    "effective": 0,
+    "ineffective": 0,
+    "unique_created": 36,
+    "unknown": 32
+  },
+  "efficacy_scored": true,
+  "feature_catalog_reviewed": true,
+  "feature_catalog_sha256": "3310a31f8ec0d7a985fb07cf6043bc060dc5c438c4b23058e14b9b1144b86714",
+  "model": "deepseek-v4-flash",
+  "model_execution_observed": true,
+  "model_tool_call_count": 24,
+  "model_validator_call_count": 5,
+  "prior_model_id_probe": {
+    "model": "gpt-6-luna",
+    "result": "endpoint returned model not found before any model tool call"
+  },
+  "provider_base_url": "https://freeinference.org/v1",
+  "provider_id": "freeinference",
+  "schema": "generic-codex-app-server-single-trial-summary/v1",
+  "status": "completed",
+  "tree_state": "dirty development workspace; not a canonical efficacy result",
+  "trial_id": "user-approved-triad-20261006-model-verified"
+}

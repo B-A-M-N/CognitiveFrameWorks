@@ -7,15 +7,6 @@ import json
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Tuple
 
-from .protocol_artifact import (PROTOCOL_HASH as SYSTEM_ONE_PROTOCOL_HASH,
-                                PROTOCOL_VERSION as SYSTEM_ONE_PROTOCOL_VERSION,
-                                QUESTION_REGISTRY,
-                                QUESTION_REGISTRY_HASH,
-                                STATE_PROJECTION_SCHEMA_HASH)
-
-MAX_SYSTEM_ONE_LATENCY_MS = 30000
-
-
 def task_goal_contract_mapping_hash(contract: Mapping[str, Any]) -> str:
     """Hash a serialized TaskGoalContract using its canonical identity rules."""
     if not isinstance(contract, Mapping):
@@ -33,98 +24,6 @@ def task_goal_contract_mapping_hash(contract: Mapping[str, Any]) -> str:
     except (TypeError, ValueError):
         return ""
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-@dataclass(frozen=True)
-class SystemOnePolicy:
-    """Pinned identity and mode for optional semantic judgments.
-
-    The default is disabled with an explicit null provider.  A host that
-    wants a real backend must declare its immutable identity before resolve().
-    """
-    mode: str = "disabled"
-    backend_id: str = "null"
-    model_id: str = "none"
-    model_revision: str = ""
-    model_content_hash: str = ""
-    provider_protocol_hash: str = ""
-    protocol_version: str = SYSTEM_ONE_PROTOCOL_VERSION
-    protocol_hash: str = SYSTEM_ONE_PROTOCOL_HASH
-    question_registry_hash: str = QUESTION_REGISTRY_HASH
-    state_projection_schema_hash: str = STATE_PROJECTION_SCHEMA_HASH
-    calibration_bundle_hash: str = ""
-    max_latency_ms: int = MAX_SYSTEM_ONE_LATENCY_MS
-    cache_size: int = 128
-    minimum_confidence: float = 0.9
-    minimum_confidence_by_question: Mapping[str, float] = field(default_factory=dict)
-    enabled_question_families: Tuple[str, ...] = tuple(QUESTION_REGISTRY)
-
-    def __post_init__(self) -> None:
-        if self.mode not in {"disabled", "shadow", "advisory"}:
-            raise ValueError("System-1 mode must be disabled, shadow, or advisory")
-        for name in ("backend_id", "model_id"):
-            value = getattr(self, name)
-            if not isinstance(value, str) or not value.strip() or len(value) > 256:
-                raise ValueError(f"System-1 {name} must be bounded non-empty text")
-        if self.protocol_version != SYSTEM_ONE_PROTOCOL_VERSION:
-            raise ValueError("unsupported System-1 protocol version")
-        if self.protocol_hash != SYSTEM_ONE_PROTOCOL_HASH:
-            raise ValueError("unsupported System-1 protocol hash")
-        for name in ("protocol_hash", "question_registry_hash", "state_projection_schema_hash"):
-            value = getattr(self, name)
-            if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
-                raise ValueError(f"System-1 {name} must be a lowercase SHA-256 digest")
-        for name in ("model_content_hash", "provider_protocol_hash", "calibration_bundle_hash"):
-            value = getattr(self, name)
-            if value and (len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value)):
-                raise ValueError(f"System-1 {name} must be a lowercase SHA-256 digest")
-        if self.model_revision and len(self.model_revision) > 256:
-            raise ValueError("System-1 model_revision is too long")
-        if (not isinstance(self.max_latency_ms, int)
-                or not 1 <= self.max_latency_ms <= MAX_SYSTEM_ONE_LATENCY_MS):
-            raise ValueError(
-                f"System-1 max_latency_ms must be between 1 and {MAX_SYSTEM_ONE_LATENCY_MS}")
-        if not isinstance(self.cache_size, int) or not 0 <= self.cache_size <= 4096:
-            raise ValueError("System-1 cache_size must be between 0 and 4096")
-        if not isinstance(self.minimum_confidence, (int, float)) or not 0 <= self.minimum_confidence <= 1:
-            raise ValueError("System-1 minimum_confidence must be between 0 and 1")
-        thresholds = dict(self.minimum_confidence_by_question)
-        if any(question not in QUESTION_REGISTRY
-               or not isinstance(value, (int, float)) or not 0 <= value <= 1
-               for question, value in thresholds.items()):
-            raise ValueError("per-question confidence thresholds are invalid")
-        families = tuple(self.enabled_question_families)
-        if (len(set(families)) != len(families)
-                or any(question not in QUESTION_REGISTRY for question in families)):
-            raise ValueError("enabled question families must be unique registered questions")
-        object.__setattr__(self, "minimum_confidence_by_question",
-                           MappingProxyType({str(key): float(value)
-                                             for key, value in thresholds.items()}))
-        object.__setattr__(self, "enabled_question_families", families)
-        if self.mode == "advisory" and (
-                not self.calibration_bundle_hash or not self.model_content_hash
-                or not self.provider_protocol_hash or not self.model_revision
-                or self.backend_id == "null" or self.model_id == "none"):
-            raise ValueError("advisory mode requires pinned provider, model, and calibration identities")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"mode": self.mode, "backend_id": self.backend_id,
-                "model_id": self.model_id, "model_revision": self.model_revision,
-                "model_content_hash": self.model_content_hash,
-                "provider_protocol_hash": self.provider_protocol_hash,
-                "protocol_version": self.protocol_version,
-                "protocol_hash": self.protocol_hash,
-                "question_registry_hash": self.question_registry_hash,
-                "state_projection_schema_hash": self.state_projection_schema_hash,
-                "calibration_bundle_hash": self.calibration_bundle_hash,
-                "max_latency_ms": self.max_latency_ms, "cache_size": self.cache_size,
-                "minimum_confidence": float(self.minimum_confidence),
-                "minimum_confidence_by_question": dict(self.minimum_confidence_by_question),
-                "enabled_question_families": list(self.enabled_question_families)}
-
-    def confidence_threshold(self, question_id: str) -> float:
-        return float(self.minimum_confidence_by_question.get(
-            question_id, self.minimum_confidence))
 
 
 @dataclass(frozen=True)
@@ -312,7 +211,6 @@ class TaskRequest:
     # The model-facing request cannot mutate this mapping after construction.
     action_registry: Mapping[str, Any] = field(default_factory=dict, repr=False)
     goal_contract: Optional[TaskGoalContract] = None
-    system_one_policy: SystemOnePolicy = field(default_factory=SystemOnePolicy)
 
     def __post_init__(self) -> None:
         for name in ("task_id", "application_id", "namespace_id"):
@@ -415,9 +313,3 @@ class TaskRequest:
             values["verification_policy"] = VerificationPolicy(**dict(values.get("verification_policy") or {}))
             contract = TaskGoalContract(**values)
         object.__setattr__(self, "goal_contract", contract)
-        system_one_policy = self.system_one_policy
-        if not isinstance(system_one_policy, SystemOnePolicy):
-            if not isinstance(system_one_policy, Mapping):
-                raise ValueError("system_one_policy must be a SystemOnePolicy or mapping")
-            system_one_policy = SystemOnePolicy(**dict(system_one_policy))
-        object.__setattr__(self, "system_one_policy", system_one_policy)

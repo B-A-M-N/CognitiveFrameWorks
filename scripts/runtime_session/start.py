@@ -5,7 +5,6 @@ from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from runtime_contract.actions import ActionDescriptor, HostExecutionContext
 from runtime_contract.telemetry import DurableTelemetryExporter
-from runtime_contract.system_one import BehavioralJudge
 from runtime_session.host_authority import (
     PolicyRevocationAuthority, SharedWorkflowMembershipAuthority, StateAuthority,
 )
@@ -28,7 +27,7 @@ __all__ = ["start", "resume_task", "DEFAULT_ACTION_REGISTRY", "RUNTIME_MODES"]
 def start(bundle: resolve_runtime.RuntimeBundle, *,
           telemetry_sink: Optional[TelemetrySink] = None,
           telemetry_exporter: Optional[DurableTelemetryExporter] = None,
-          behavioral_judge: Optional[BehavioralJudge] = None,
+          behavioral_judge: Optional[Any] = None,
           state_authority: Optional[StateAuthority] = None,
           policy_revocation_authority: Optional[PolicyRevocationAuthority] = None,
           membership_authority: Optional["SharedWorkflowMembershipAuthority"] = None,
@@ -58,7 +57,7 @@ def start(bundle: resolve_runtime.RuntimeBundle, *,
     session = build_runtime_session(
         bundle, identity=identity,
         action_registry=resolved_action_registry,
-        behavioral_judge=behavioral_judge,
+        runtime_mode=runtime_mode,
         policy_epoch_record=policy_epoch_record)
     bind_start_authorities(
         session, bundle, runtime_mode=runtime_mode,

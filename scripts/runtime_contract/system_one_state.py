@@ -1,4 +1,7 @@
-"""Pure, bounded projection of CFW metacognitive state into a provider frame."""
+"""Deprecated state projection for legacy semantic assessment artifacts.
+
+Live CFW runtime does not construct or expose this projection.
+"""
 from __future__ import annotations
 
 from typing import Mapping, Optional, Sequence
@@ -6,10 +9,9 @@ import uuid
 
 from .metacognition import MetacognitiveState
 from .protocol_artifact import QUESTION_REGISTRY
-from .system_one import (ActivityFact, AttemptSemanticDescriptor, CriterionState,
-                         QuestionSpec, SemanticState, SystemOneFrame,
-                         SystemOneIdentity, canonical_hash)
-from .task import SystemOnePolicy
+from .behavior_facts import (ActivityFact, AttemptSemanticDescriptor, CriterionState)
+from .system_one import (QuestionSpec, SemanticState, SystemOneFrame,
+                         SystemOneIdentity, SystemOnePolicy, canonical_hash)
 
 
 class SystemOneStateProjector:
@@ -70,7 +72,6 @@ class SystemOneStateProjector:
             key=lambda item: (item.statework_id, item.subject_ref)))
         activity = meta_state.recent_activity
         convergence_values = {key: max(0, int(value)) for key, value in convergence.items()}
-        committed_actions = meta_state.committed_actions_since_goal_progress
         situation = {
             "current_state": current_state[:128] if current_state else None,
             "blockers": tuple(
@@ -78,14 +79,15 @@ class SystemOneStateProjector:
                 (list(blockers) if blockers else [
                     f"{item.blocker_id}: {item.summary}" if item.summary
                     else item.blocker_id for item in meta_state.blockers])[:8]),
-            "actions_since_goal_progress": committed_actions,
+            "actions_since_goal_progress": convergence_values.get(
+                "total_actions_since_goal_progress", 0),
             "actions_since_artifact_change": meta_state.actions_since_artifact_change,
             "verification_actions_since_artifact_change": (
                 meta_state.verification_actions_since_artifact_change),
-            "recovery_epochs": max(meta_state.recovery_epochs,
-                                    convergence_values.get("recovery_epochs_since_goal_progress", 0)),
-            "repeated_branch_count": max(meta_state.repeated_branch_count,
-                                          convergence_values.get("same_approach_retries", 0)),
+            "recovery_epochs": convergence_values.get(
+                "recovery_epochs_since_goal_progress", 0),
+            "repeated_branch_count": convergence_values.get(
+                "same_approach_retries", 0),
         }
         state = SemanticState(
             task=task, situation=situation, criteria=tuple(criteria), activity=activity,

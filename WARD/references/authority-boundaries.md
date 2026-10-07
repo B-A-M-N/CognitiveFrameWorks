@@ -83,12 +83,17 @@ Complete registry of all signal types, organized by principle. Each signal carri
 
 The `required_action` field is WARD's decision on the action. It is the decisive output — more important than the weight for the proceed/block decision.
 
+The detailed action result is carried separately as `ward_result`. `BLOCK_ACTION`
+maps to `required_action: refuse` and returns to FUSE selection under the same
+valid approach. Only `RECOVER_APPROACH` maps to `required_action: recover` as an
+approach-recovery trigger; a refusal alone does not start ANCHOR recovery.
+
 | Required Action | Meaning | FUSE Response | ANCHOR Response | SISPIS Response |
 |----------------|---------|---------------|-----------------|-----------------|
 | `proceed` | Action is within authority, safe enough, and reversible or justified | Execute normally | Record action | No forced elevation |
 | `constrain` | Action is permitted but must be modified — scoped, backed up, redacted | Re-plan with WARD's constraints, then execute | Record original + constrained action | May elevate if risk is user-visible |
 | `confirm` | Action requires user consent before execution | Halt. Do not execute until confirmed | Record the pending confirmation | Force at least EXPLANATION — user must see risk to consent |
-| `refuse` | Action is not permitted — exceeds authority, destroys irreversibly, exposes secrets, or violates policy | Do not execute. Escalate to ANCHOR Recovery | Recovery Discipline trigger — approach must change | Force at least EXPLANATION — user must see why blocked |
+| `refuse` | This candidate is not permitted — exceeds authority, destroys irreversibly, exposes secrets, or violates policy | Do not execute; return to FUSE to select another candidate under the same valid approach | Record the blocked candidate; refusal alone does not trigger recovery | Force at least EXPLANATION — user must see why blocked |
 | `recover` | State recovery is required before the action can proceed | Halt. Do not execute | Recovery Discipline — recover state first, then re-evaluate | May elevate if recovery is user-visible |
 
 ---
@@ -210,11 +215,12 @@ FUSE does not call WARD for: pure reads of project files that don't match secret
 
 | WARD event | ANCHOR response |
 |------------|-----------------|
-| Action refused (`refuse`) | Recovery Discipline trigger — approach must change. The selected action is not permitted; a different approach is needed. |
+| WARD `BLOCK_ACTION` (`refuse`) | Record the blocked candidate; FUSE selects another action under the same valid approach. Refusal alone is not an approach-failure signal. |
+| WARD `RECOVER_APPROACH` (`recover`) | Recovery Discipline trigger when no permitted action fits the current approach or the approach is invalidated. |
 | Risk accepted by user (`confirm` → user approved) | Action Accountability records: action, risk, user decision, rationale |
 | Authority exceeded | State Integrity classifies the authority boundary as a constraint for future actions |
 | Constrained action | Action Accountability records: original action, WARD constraint, modified action |
-| State recovery required (`recover`) | Recovery Discipline — recover state, then re-evaluate the action |
+| State recovery required (`recover`) | Halt, recover the stale or corrupted state, then re-evaluate the action. This does not by itself mean the task approach must change. |
 
 ### DOX → WARD
 

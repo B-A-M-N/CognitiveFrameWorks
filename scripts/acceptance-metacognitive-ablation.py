@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Hostile A/B/C runtime qualification with controlled semantic fixtures.
-
-The test backend supplies known answers through DigitalPsychology's real
-SystemOneRuntime, protocol validation, and calibration path. Fixture
-calibration records exercise advisory gates; they do not qualify a model or
-represent outcome-derived production calibration.
-"""
+"""Retired CFW System-1 experiment; semantic qualification belongs in DP."""
 from __future__ import annotations
 
 import hashlib
@@ -364,7 +358,8 @@ def qualify_delivery_trace(mode: str) -> tuple[int, int, str, str]:
     decision = session._evaluate_metacognition()
     assert support >= 5 and decision.mode == "REPLAN"
     assert session.metacognitive_state.criteria[0].evidence_status == "none"
-    committed_before_evidence = session.metacognitive_state.committed_actions_since_goal_progress
+    committed_before_evidence = session.convergence.state(
+        "primary-objective").total_actions_since_goal_progress
     assert committed_before_evidence == 1
 
     # A fresh host observation explicitly bound to C1 resets the hard budget.
@@ -591,6 +586,10 @@ def qualify_routes(mode: str, cow_root: Path) -> tuple[str, str | None, tuple[st
 
 
 def main() -> int:
+    print("Deprecated: CFW no longer owns System-1. Run semantic qualification in DigitalPsychology.",
+          file=sys.stderr)
+    return 2
+
     with tempfile.TemporaryDirectory(prefix="cfw-metacognitive-ablation-") as state_dir, \
             tempfile.TemporaryDirectory(prefix="cfw-route-fixture-") as route_dir:
         old_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")

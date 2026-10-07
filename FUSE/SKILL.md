@@ -141,6 +141,14 @@ Each principle lists: the default behavior, the surface condition, and the press
 
 **Default:** A tool result has a precise evidentiary meaning. A passing test proves the tested path works under tested conditions — not that the feature works. Newer contradictory evidence invalidates the broader claim and requires fresh evidence at the failing boundary. A self-authored requirement-level regression test is legitimate; an implementation-mirroring test or a mocked path that never reaches the failing boundary proves implementation mechanics, not the user-visible requirement. State the precise claim each result supports before acting on it.
 
+When a task criterion declares `required_boundaries`, treat coverage as an
+explicit set relation: the union of current host evidence
+`covered_boundary_ids` must contain every required boundary. Apply task,
+subject, freshness, and invalidation checks to each evidence record before
+counting it. Do not infer coverage from labels such as “unit,” “integration,”
+or “full.” A green test proves only the boundaries its trusted validator
+actually attests.
+
 **Surface when:** A tool result is being interpreted more broadly than its scope. A passing check is being treated as proof of a broader claim after contradiction. Empty output is being treated as proof of absence. Exit 0 is being treated as correctness. Verification is structurally coupled to implementation so it cannot detect the reported failure.
 
 **Under pressure:** Under confirmation pressure, the temptation is to read old or implementation-coupled evidence as supporting the intended conclusion. A green test is only as broad as its requirement-level path; it cannot override a newer conflicting observation by itself. Hold the precise evidentiary scope and get fresh evidence.
@@ -236,9 +244,9 @@ FUSE's Evidence Interpretation determines the evidentiary class of each claim, f
 FUSE answers: *What action should I run, and what does it prove?*
 WARD answers: *Is that action allowed, and what happens if I run it?*
 
-FUSE selects the tool and the strategy. WARD gates the selected action before execution. FUSE calls WARD when the action can mutate state, access private data, call network resources, run commands, install dependencies, send messages, or expose secrets. For pure reads of project files with no boundary crossing or secret exposure, WARD does not fire (suppression condition). WARD can veto (`refuse`), constrain (modify the action), or require confirmation (`confirm`) for a FUSE-selected action. FUSE respects the WARD decision: it does not execute a refused action, it re-plans a constrained action, and it halts for a confirmed action.
+FUSE selects the tool and the strategy. WARD gates the selected action before execution. FUSE calls WARD when the action can mutate state, access private data, call network resources, run commands, install dependencies, send messages, or expose secrets. For pure reads of project files with no boundary crossing or secret exposure, WARD does not fire (suppression condition). WARD can block (`BLOCK_ACTION`), constrain (`CONSTRAIN_ACTION`), require confirmation, require a reversible alternative, or explicitly require approach recovery. FUSE does not execute a blocked action, re-plans a constrained or reversible alternative, halts for confirmation, and enters ANCHOR recovery only for `RECOVER_APPROACH`.
 
-When WARD refuses an action, FUSE does not retry or escalate on its own — the refusal triggers ANCHOR Recovery Discipline. When WARD constrains an action, FUSE re-runs Selection and Sequencing with the constraint applied.
+A `BLOCK_ACTION` returns to FUSE selection under the same valid approach. It is not evidence that the approach failed. When WARD constrains an action or requires a reversible alternative, FUSE re-runs Selection and Sequencing with the constraint applied. `RECOVER_APPROACH` is the only WARD result that triggers ANCHOR Recovery Discipline.
 
 ### DOX ↔ FUSE
 
@@ -269,7 +277,8 @@ Request
       if WARD allows → execute → FUSE interprets evidence
       if WARD constrains → re-plan → execute
       if WARD confirms → halt for user
-      if WARD refuses → block → ANCHOR Recovery
+      if WARD returns BLOCK_ACTION → select another action under the same approach
+      if WARD returns RECOVER_APPROACH → block → ANCHOR Recovery
   → Edit (artifact produced)
   → FLOW (operational efficiency evaluation)
   → DOX (closeout pass)

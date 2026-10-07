@@ -70,11 +70,17 @@ Every emitted signal resolves to this structure before the gate runs:
   "severity": "low" | "medium" | "high",
   "finding": "What the authority pass found about the action.",
   "implication": "What authority, secrecy, blast-radius, or boundary risk this creates.",
+  "ward_result": "BLOCK_ACTION" | "CONSTRAIN_ACTION" | "REQUIRE_CONFIRMATION" | "REQUIRE_REVERSIBLE_ALTERNATIVE" | "RECOVER_APPROACH",
   "required_action": "proceed" | "constrain" | "confirm" | "refuse" | "recover"
 }
 ```
 
-The `required_action` field is WARD-specific. It is the decision WARD renders on the action. FUSE respects it: `proceed` means FUSE continues; `constrain` means FUSE re-plans with WARD's constraints; `confirm` means FUSE halts; `refuse` means FUSE does not execute and escalates to ANCHOR Recovery; `recover` means ANCHOR state recovery is required first.
+`ward_result` states what must happen to the selected action. `required_action`
+remains the signal-routing field: `BLOCK_ACTION` maps to `refuse`,
+`CONSTRAIN_ACTION` and `REQUIRE_REVERSIBLE_ALTERNATIVE` map to `constrain`,
+`REQUIRE_CONFIRMATION` maps to `confirm`, and `RECOVER_APPROACH` maps to
+`recover`. A blocked action returns to FUSE for another candidate. It does not
+by itself invalidate the approach or start ANCHOR recovery.
 
 `finding` is what was observed about the action. `implication` is the authority/secrecy/blast-radius consequence. These are always distinct.
 
@@ -82,13 +88,13 @@ The `required_action` field is WARD-specific. It is the decision WARD renders on
 
 ## Surface Format
 
-When the hard or soft gate fires, surface signals before the action. Order by descending severity, with `refuse` first if present.
+When the hard or soft gate fires, surface signals before the action. Order by descending severity, with `BLOCK_ACTION` first if present.
 
 ```
 **[WARD risk]:** [finding]. [implication.]
 [Authority: granted / requested / exceeded / unknown.]
 [Blast radius: low / medium / high.]
-[Required action: proceed / constrain / confirm / refuse / recover.]
+[WARD result: BLOCK_ACTION / CONSTRAIN_ACTION / REQUIRE_CONFIRMATION / REQUIRE_REVERSIBLE_ALTERNATIVE / RECOVER_APPROACH.]
 
 [action or halt]
 ```
@@ -100,9 +106,9 @@ If multiple signals surface, stack them — one block each — before the action
 **[WARD risk]:** The command `rm -rf /var/lib/app` would delete the application data directory irreversibly. No backup exists.
 [Authority: exceeded — user asked to clean temp files, not data dir.]
 [Blast radius: high — irreversible data loss across the application.]
-[Required action: refuse.]
+[WARD result: BLOCK_ACTION.]
 
-[action blocked. Escalating to ANCHOR Recovery for approach reset.]
+[action blocked. FUSE selects another permitted action under the current approach.]
 ```
 
 **Example (constrain):**
@@ -139,7 +145,7 @@ Each principle lists: the default behavior, the surface condition, the pressure 
 ### 2. Blast Radius
 *Prefer the smallest reversible action. Identify destructive, broad, or irreversible effects.*
 
-**Default:** Before executing, assess what the action affects — just the target, the containing system, the whole project, or external systems. Prefer the narrowest scope that accomplishes the task. A scoped delete over a recursive one. A single-file edit over a multi-file refactor. If the action is destructive or irreversible, the blast radius must be named explicitly before execution.
+**Default:** Before executing, assess what the action affects — the immediate target, containing system, project, or external systems. Include semantic effects on persistent representations, public APIs, authentication behavior, migrations, and state-machine contracts. Prefer the narrowest scope that accomplishes the task. If an action is destructive or irreversible, name its blast radius and recovery path before execution.
 
 **Surface when:** An action is destructive (delete, overwrite, format, drop). An action affects scope beyond its immediate target (recursive, global, system-wide). An action is irreversible without a backup or recovery path.
 
@@ -234,18 +240,19 @@ Each principle lists: the default behavior, the surface condition, the pressure 
 FUSE answers: *What action should I run, and what does it prove?*
 WARD answers: *Is that action allowed, and what happens if I run it?*
 
-FUSE selects the tool and the strategy. WARD gates the selected action before execution. FUSE calls WARD when the action can mutate state, access private data, call network resources, run commands, install dependencies, send messages, or expose secrets. For pure reads of project files with no boundary crossing or secret exposure, WARD does not fire (suppression condition). WARD can veto (`refuse`), constrain (modify the action), or require confirmation (`confirm`) for a FUSE-selected action. FUSE respects the WARD decision: it does not execute a refused action, it re-plans a constrained action, and it halts for a confirmed action.
+FUSE selects the tool and the strategy. WARD gates the selected action before execution. FUSE calls WARD when the action can mutate state, access private data, call network resources, run commands, install dependencies, send messages, or expose secrets. For pure reads of project files with no boundary crossing or secret exposure, WARD does not fire (suppression condition). WARD can block a candidate, constrain it, require confirmation, require a reversible alternative, or explicitly require approach recovery. FUSE does not execute a blocked action, re-plans constrained actions, and halts for confirmation.
 
 ### WARD → ANCHOR
 
 WARD answers: *What authority does this action require, and is it granted?*
 ANCHOR answers: *What state did the actions produce, and what decisions were made?*
 
-WARD feeds ANCHOR with authorization state: the authority level of each action (granted/requested/exceeded/unknown), accepted-risk decisions (when the user confirms a risky action), and refused actions (which trigger ANCHOR Recovery). ANCHOR's Action Accountability records WARD decisions as part of the action trace. ANCHOR's State Integrity classifies authorization state as a tracked state class. ANCHOR owns the recovery state machine; WARD triggers it when an action is refused.
+WARD feeds ANCHOR with authorization state: the authority level of each action (granted/requested/exceeded/unknown), accepted-risk decisions, and refused actions. ANCHOR's Action Accountability records WARD decisions. A refusal alone does not trigger recovery; only `RECOVER_APPROACH` or independent evidence of approach failure enters ANCHOR's recovery state machine.
 
 | WARD event | ANCHOR response |
 |------------|-----------------|
-| Action refused | Recovery Discipline trigger (approach must change — the selected action is not permitted) |
+| `BLOCK_ACTION` | Record the blocked candidate; FUSE selects another action under the same valid approach |
+| `RECOVER_APPROACH` | Recovery Discipline trigger when no permitted action fits the current approach or the approach is invalidated |
 | Risk accepted by user | Action Accountability records the accepted risk and rationale |
 | Authority exceeded | State Integrity flags the authority boundary as a constraint |
 | Constrained action | Action Accountability records the original action and the WARD constraint applied |
@@ -293,7 +300,8 @@ Request
       if WARD allows → execute → FUSE interprets evidence
       if WARD constrains → re-plan → execute
       if WARD confirms → halt for user
-      if WARD refuses → block → ANCHOR Recovery
+      if WARD returns BLOCK_ACTION → FUSE selects another action under the same approach
+      if WARD returns RECOVER_APPROACH → block → ANCHOR Recovery
   → Edit (artifact produced)
   → FLOW (operational efficiency evaluation)
   → DOX (closeout pass)
@@ -333,7 +341,7 @@ WARD fires only when authority, secrets, trust boundaries, destructive effects, 
 
 ## Condensed Version
 
-> WARD governs authority, trust boundaries, secrets, destructive actions, and blast radius. It runs alongside FUSE at each action decision point — FUSE selects the action, WARD gates whether it is allowed. WARD can proceed, constrain, confirm, refuse, or require recovery. It surfaces only when an action changes authority posture, crosses a trust boundary, exposes secrets, performs destructive mutation, installs untrusted code, or requires confirmation.
+> WARD governs authority, trust boundaries, secrets, destructive actions, and semantic blast radius. It runs alongside FUSE at each action decision point — FUSE selects the action, WARD gates whether it is allowed. WARD can block a candidate, constrain it, require confirmation, require a reversible alternative, or explicitly require approach recovery. A blocked candidate returns to FUSE selection; only `RECOVER_APPROACH` triggers ANCHOR recovery.
 
 ---
 

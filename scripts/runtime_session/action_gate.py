@@ -9,10 +9,9 @@ from runtime_contract.actions import (
     ActionDescriptor, ActionObjectiveBinding, ActionStrategy, AgentActionRequest,
     ProtectedResourcePolicy,
 )
-from runtime_contract.behavioral_fusion import fuse_retry_relation
 from runtime_contract.convergence import TERMINAL_DISPOSITIONS
 from runtime_contract.handlers import handler_for_enforcement
-from runtime_contract.system_one import ActivityFact
+from runtime_contract.behavior_facts import ActivityFact
 from runtime_contract.task import task_goal_contract_mapping_hash
 from runtime_session.host_authority import _HostCapability
 from runtime_session.lifecycle import ActionPreflightResult, ActionPreparation, GateDecision
@@ -91,6 +90,10 @@ class ActionGateMethods:
         """Return the gate result with stable component-level provenance."""
         request = self._request(action)
         descriptor = self._descriptor(request)
+        if (self.identity_authority.authorities.runtime_mode == "combined_enforcing"
+                and not self.behavior.external_authority_bound):
+            return (GateDecision.BLOCK,
+                    "dp.external_behavior_authority_unbound")
         for adjustment in self.bundle.guard_pack.get("routing_adjustments", ()):
             if (adjustment.get("route_type") == "tool_policy"
                     and adjustment.get("disposition") == "suppress"
@@ -336,6 +339,13 @@ class ActionGateMethods:
                         objective_binding: Optional[ActionObjectiveBinding] = None
                         ) -> ActionPreparation:
         request = self._request(action)
+        action_request_id = f"action-request-{uuid.uuid4()}"
+        if (self.identity_authority.authorities.runtime_mode == "combined_enforcing"
+                and not self.behavior.external_authority_bound):
+            return ActionPreparation(
+                action_request_id, GateDecision.BLOCK, self._descriptor(request),
+                request.digest,
+                reason_codes=("dp.external_behavior_authority_unbound",))
         binding: Optional[ActionObjectiveBinding] = None
         if objective_binding is not None:
             self._require_host(capability)
@@ -344,9 +354,8 @@ class ActionGateMethods:
             if binding != objective_binding or binding.action_digest != request.digest:
                 raise PermissionError("objective binding is unissued, replayed, or for another action")
             if (binding.artifact_revision is not None
-                    and binding.artifact_revision != self.behavior.metacognitive.artifact_revision):
+                    and binding.artifact_revision != self.behavior.task_evidence.artifact_revision):
                 raise PermissionError("objective binding expired after an artifact revision change")
-        action_request_id = f"action-request-{uuid.uuid4()}"
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
                                      self._descriptor(request), request.digest,
@@ -401,7 +410,7 @@ class ActionGateMethods:
                                if isinstance(request.arguments.get(key), str)), None)
             criterion_ids = (binding.criterion_ids if binding
                              else descriptor.affected_criterion_ids)
-            candidate = self.behavior.metacognitive.make_candidate(
+            candidate = self.behavior.task_evidence.make_candidate(
                 "action", source="host_observed",
                 action_class=descriptor.action_class or descriptor.tool_type,
                 host_declared_relation=host_relation,
@@ -412,26 +421,17 @@ class ActionGateMethods:
                 proposed_purpose_source="host_observed",
                 affected_criterion_ids=criterion_ids)
             goal = self.bundle.pinned.get("goal_contract") or {}
-            semantic_relation = None
-            semantic_influenced = False
-            if goal:
-                semantic_descriptor = replace(descriptor, goal_relation="ambiguous")
-                self._system_one_query(
-                    questions=("action_relation", "goal_drift"), candidate=candidate,
-                    subject_ref=request.subject_ref, action_request_id=action_request_id,
-                    descriptor=semantic_descriptor)
-                semantic_decision = next((item for item in reversed(
-                    tuple(self.behavior.system_one_decisions.values()))
-                    if item.get("action_request_id") == action_request_id), None)
-                if semantic_decision is not None:
-                    semantic_relation = semantic_decision.get("fused_action_relation")
-                    semantic_influenced = bool(semantic_decision.get("influenced"))
             if binding is None:
-                if (semantic_influenced and semantic_relation in {
-                        "required_verification", "diagnostic_support", "unrelated"}):
-                    action_lane = "SUPPORT"
-                else:
-                    action_lane = "UNCLASSIFIED"
+                # Accounting is based only on the trusted host descriptor.
+                # Semantic assessment belongs to DP and cannot relabel an
+                # action or affect CFW's local progress budgets.
+                action_lane = {
+                    "advances_primary_goal": "DIRECT",
+                    "removes_concrete_blocker": "DIRECT",
+                    "required_verification": "VERIFICATION",
+                    "diagnostic_support": "SUPPORT",
+                    "unrelated": "SUPPORT",
+                }.get(host_relation, "UNCLASSIFIED")
             else:
                 action_lane = {
                     "DIRECT_GOAL": "DIRECT",
@@ -440,18 +440,6 @@ class ActionGateMethods:
                     "DIAGNOSTIC": "SUPPORT",
                     "INCIDENTAL": "SUPPORT",
                 }[binding.purpose_class]
-                if (semantic_influenced and semantic_relation
-                        and semantic_relation != binding.goal_relation):
-                    self._emit_runtime({
-                        "category": "decision", "event_type": "objective_binding_disagreement",
-                        "subject": request.subject_ref,
-                        "payload": {
-                            "summary": "semantic action meaning differs from host objective binding",
-                            "result_class": "scrutiny_increased",
-                            "binding_digest": binding.binding_digest,
-                            "host_relation": binding.goal_relation,
-                            "semantic_relation": str(semantic_relation),
-                        }})
             verification = (goal.get("verification_policy") or {})
             pinned_goal_hash = str(self.bundle.pinned.get("goal_contract_hash") or "")
             goal_anchor_valid = (
@@ -462,7 +450,7 @@ class ActionGateMethods:
                 decision = GateDecision.REQUIRE_GOAL_REANCHOR
                 gate_reason = "flow.goal_contract_identity_invalid"
             if goal_anchor_valid and host_relation == "required_verification":
-                violation = self.behavior.metacognitive.verification_limit_exceeded(
+                violation = self.behavior.task_evidence.verification_limit_exceeded(
                     candidate, relation=host_relation,
                     max_actions=int(verification.get(
                         "max_verification_actions_without_artifact_change", 2) or 2),
@@ -475,27 +463,46 @@ class ActionGateMethods:
                         "category": "blocker", "event_type": "verification_action_limited",
                         "subject": request.subject_ref,
                         "payload": {"summary": violation, "result_class": "blocked"}})
+            controller = self.attempts.controller
             if (goal_anchor_valid and goal.get("work_mode") == "delivery"
-                    and self.attempts.controller is not None
-                    and host_relation not in {
+                    and controller is not None):
+                convergence_state = controller.state("primary-objective")
+                support_limit = int(verification.get(
+                    "support_actions_before_goal_reanchor", 5) or 5)
+                total_action_limit = int(verification.get(
+                    "max_committed_actions_without_goal_progress", 15) or 15)
+                support_limit_reached = (
+                    host_relation not in {
                         "advances_primary_goal", "removes_concrete_blocker",
                         "required_verification"}
-                    and self.attempts.controller.needs_goal_reanchor(
-                        cause_id="primary-objective",
-                        support_limit=int(verification.get(
-                            "support_actions_before_goal_reanchor", 5) or 5),
-                        total_action_limit=int(verification.get(
-                            "max_committed_actions_without_goal_progress", 15) or 15))):
-                attention = self.behavior.metacognitive.active_attention_window()
+                    and controller.needs_goal_reanchor(
+                        cause_id="primary-objective", support_limit=support_limit))
+                # Preserve verification and concrete blocker-removal actions;
+                # the total budget also interrupts direct actions that have
+                # repeatedly failed to produce host-observed goal progress.
+                total_action_limit_reached = (
+                    host_relation not in {
+                        "removes_concrete_blocker", "required_verification"}
+                    and convergence_state.total_actions_since_goal_progress
+                    >= total_action_limit)
+            else:
+                support_limit_reached = False
+                total_action_limit_reached = False
+            if support_limit_reached or total_action_limit_reached:
+                attention_state = self._standalone_attention()
+                attention = attention_state.active_attention_window(
+                    self.behavior.task_evidence.criteria)
                 focused_criterion = next(
                     (item for item in criterion_ids if item in attention),
                     next(iter(criterion_ids), next(iter(attention), None)))
-                yielded_action = self.behavior.metacognitive.consume_progress_redirect_yield(
+                yielded_action = attention_state.consume_progress_redirect_yield(
                     focused_criterion)
                 redirect = ("yield_allowance" if yielded_action else
-                            self.behavior.metacognitive.record_progress_redirect(
+                            attention_state.record_progress_redirect(
                                 action_digest=request.digest,
-                                criterion_id=focused_criterion))
+                                criterion_id=focused_criterion,
+                                criteria=self.behavior.task_evidence.criteria))
+                self._journal_standalone_attention()
                 self._emit_runtime({
                     "category": "decision",
                     "event_type": "progress_redirect_transition",
@@ -504,8 +511,7 @@ class ActionGateMethods:
                         "summary": "bounded standalone progress redirect evaluated",
                         "result_class": redirect,
                         "criterion_id": focused_criterion or "",
-                        "progress_redirect_epoch": (
-                            self.behavior.metacognitive.progress_redirect_epoch),
+                        "progress_redirect_epoch": attention_state.progress_redirect_epoch,
                     }})
                 if redirect == "redirect":
                     decision = GateDecision.REQUIRE_CHANGED_HYPOTHESIS
@@ -517,7 +523,6 @@ class ActionGateMethods:
             pending_request = {
                 "descriptor": descriptor.__dict__.copy(),
                 "subject_ref": request.subject_ref,
-                "sequence": self.behavior.system_one_sequence,
                 "relation": host_relation,
                 "accounting_lane": action_lane,
                 "objective_binding": binding.to_dict() if binding else None,
@@ -559,6 +564,9 @@ class ActionGateMethods:
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
         """Dispatch retry-specific structural handlers at the host boundary."""
         action = self._request(request)
+        if (self.identity_authority.authorities.runtime_mode == "combined_enforcing"
+                and not self.behavior.external_authority_bound):
+            return GateDecision.BLOCK
         if self.lifecycle_workflow.termination_disposition in TERMINAL_DISPOSITIONS:
             # A terminated task must not be revived by a retry request.
             return GateDecision.BLOCK
@@ -568,9 +576,9 @@ class ActionGateMethods:
             return GateDecision.REQUIRE_REINSPECTION
         semantic = self.attempts.semantics.get(attempt_ref)
         candidate = None
-        self.attempts.clear_semantic_retry(attempt_ref)
+        retry_relation = "different_fingerprint"
         if not self.behavior.is_external and semantic is not None:
-            candidate = self.behavior.metacognitive.make_candidate(
+            candidate = self.behavior.task_evidence.make_candidate(
                 "retry", source="host_observed",
                 action_class=semantic.planned_action_class,
                 host_declared_relation="ambiguous",
@@ -578,60 +586,40 @@ class ActionGateMethods:
                 proposed_purpose=semantic.hypothesis_summary,
                 proposed_purpose_source=semantic.source,
                 affected_criterion_ids=semantic.affected_criterion_ids)
-            if self._system_one_policy().mode != "disabled":
-                state = self.attempts.controller.state(attempt.cause_id) if self.attempts.controller else None
-                deterministic_same = bool(state and
-                    state.action_fingerprint == attempt.action_plan_digest
+            state = (self.attempts.controller.state(attempt.cause_id)
+                     if self.attempts.controller else None)
+            if (state is not None
+                    and state.action_fingerprint == attempt.action_plan_digest
                     and state.hypothesis_fingerprint == attempt.premise_digest
-                    and state.premise_digest == attempt.premise_digest)
-                judgment = None
-                decision = None
-                if not deterministic_same:
-                    judgment = self._system_one_query(
-                        questions=("retry_relation",), candidate=candidate,
-                        subject_ref=action.subject_ref)
-                    decision = (self.behavior.system_one_decisions.get(judgment.request_id)
-                                if judgment else None)
-                retry_relation = fuse_retry_relation(
-                    deterministic_same=deterministic_same, judgment=judgment,
-                    policy=self._system_one_policy(),
-                    calibrated=tuple((decision or {}).get("calibrated_question_ids") or ()))
-                if retry_relation == "equivalent_retry" and not deterministic_same:
-                    # Inference can collapse novelty to the already-recorded branch;
-                    # it cannot create a new branch or reset any host budget.
-                    self.attempts.mark_semantic_retry(attempt_ref)
-        try:
-            for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
-                if enforcement.get("mode") != "structural":
-                    continue
-                handler = handler_for_enforcement(enforcement)
-                if handler and "before_retry" in getattr(handler, "hooks", ()):
-                    result = handler.before_retry(self, action, enforcement)
-                    if result == "block":
-                        if (self.attempts.controller is not None
-                                and self.attempts.controller.state(attempt.cause_id).disposition == "BLOCKED"):
-                            state = self.attempts.controller.state(attempt.cause_id)
-                            self.request_termination(
-                                self.identity_authority._host_capability, disposition="BLOCKED",
-                                reason="Autonomous recovery limit reached without primary-goal progress.",
-                                cause_id=attempt.cause_id,
-                                evidence_refs=([state.last_failure_evidence_ref]
-                                               if state.last_failure_evidence_ref else ()))
-                        return GateDecision.BLOCK
-                    if result == "require_reinspection":
-                        return GateDecision.REQUIRE_REINSPECTION
-                    if result == "require_changed_hypothesis":
-                        return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
-                    if result == "require_goal_reanchor":
-                        return GateDecision.REQUIRE_GOAL_REANCHOR
-            retry_relation = ("equivalent_retry" if attempt_ref in self.attempts.semantic_retry_same
-                              else "different_fingerprint")
-            if not self.behavior.is_external and candidate is not None:
-                self.attempts.record_pending_retry(
-                    attempt_ref, replace(candidate, result_class=retry_relation))
-            return GateDecision.ALLOW
-        finally:
-            self.attempts.clear_semantic_retry(attempt_ref)
+                    and state.premise_digest == attempt.premise_digest):
+                retry_relation = "equivalent_retry"
+        for enforcement in self.bundle.guard_pack.get("structural_handlers", {}).values():
+            if enforcement.get("mode") != "structural":
+                continue
+            handler = handler_for_enforcement(enforcement)
+            if handler and "before_retry" in getattr(handler, "hooks", ()):
+                result = handler.before_retry(self, action, enforcement)
+                if result == "block":
+                    if (self.attempts.controller is not None
+                            and self.attempts.controller.state(attempt.cause_id).disposition == "BLOCKED"):
+                        state = self.attempts.controller.state(attempt.cause_id)
+                        self.request_termination(
+                            self.identity_authority._host_capability, disposition="BLOCKED",
+                            reason="Autonomous recovery limit reached without primary-goal progress.",
+                            cause_id=attempt.cause_id,
+                            evidence_refs=([state.last_failure_evidence_ref]
+                                           if state.last_failure_evidence_ref else ()))
+                    return GateDecision.BLOCK
+                if result == "require_reinspection":
+                    return GateDecision.REQUIRE_REINSPECTION
+                if result == "require_changed_hypothesis":
+                    return GateDecision.REQUIRE_CHANGED_HYPOTHESIS
+                if result == "require_goal_reanchor":
+                    return GateDecision.REQUIRE_GOAL_REANCHOR
+        if not self.behavior.is_external and candidate is not None:
+            self.attempts.record_pending_retry(
+                attempt_ref, replace(candidate, result_class=retry_relation))
+        return GateDecision.ALLOW
 
     def _request(self, action: Mapping[str, Any] | AgentActionRequest) -> AgentActionRequest:
         return action if isinstance(action, AgentActionRequest) else AgentActionRequest.from_mapping(action)

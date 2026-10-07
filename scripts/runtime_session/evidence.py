@@ -14,13 +14,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from runtime_contract.actions import ActionDescriptor, ActionObjectiveBinding, AgentActionRequest
-from runtime_contract.behavioral_fusion import fuse_progress_relation
 from runtime_contract.evidence import (
     EvidenceAttestation, EvidenceRecord, StateSegment, _normalize_boundary_ids,
 )
 from runtime_contract.handlers import handler_for_enforcement
 from runtime_contract.stateworks import SegmentStatus
-from runtime_contract.system_one import ActivityFact, SystemOneJudgment
+from runtime_contract.behavior_facts import ActivityFact
 from runtime_contract.validators import evaluate_validator, validator_registry_hash
 from runtime_session.host_authority import _HostCapability
 from runtime_session.lifecycle import GateDecision
@@ -255,10 +254,10 @@ class EvidenceMethods:
         self._require_host(capability)
         request = self._request(action)
         criteria = tuple(criterion_ids)
-        known = {item.criterion_id for item in self.behavior.metacognitive.criteria}
+        known = {item.criterion_id for item in self.behavior.task_evidence.criteria}
         if not set(criteria).issubset(known):
             raise ValueError("objective binding references an unknown task criterion")
-        if artifact_revision is not None and artifact_revision != self.behavior.metacognitive.artifact_revision:
+        if artifact_revision is not None and artifact_revision != self.behavior.task_evidence.artifact_revision:
             raise ValueError("objective binding references a stale artifact revision")
         binding = ActionObjectiveBinding(
             action_digest=request.digest, purpose_class=purpose_class,
@@ -504,11 +503,11 @@ class EvidenceMethods:
                         "acceptance_criteria", ())}
         if declared and any(item not in declared for item in criteria):
             raise ValueError("blocker references an unknown acceptance criterion")
-        self.behavior.metacognitive.record_blocker(
+        self.behavior.task_evidence.record_blocker(
             blocker_id, summary, criteria, evidence_ref=evidence_ref)
         self._journal("metacognitive_blocker_recorded",
                       blocker_id=blocker_id[:128], evidence_ref=evidence_ref,
-                      snapshot=self.behavior.metacognitive.snapshot())
+                      snapshot=self.behavior.task_evidence.snapshot())
         self._emit_runtime({
             "category": "blocker", "event_type": "host_blocker_recorded",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -521,14 +520,14 @@ class EvidenceMethods:
         if not isinstance(blocker_id, str) or not blocker_id.strip() or len(blocker_id) > 128:
             raise ValueError("blocker ID must be bounded non-empty text")
         record = self._host_blocker_evidence(evidence_ref)
-        existing = next((item for item in self.behavior.metacognitive.blockers
+        existing = next((item for item in self.behavior.task_evidence.blockers
                          if item.blocker_id == blocker_id), None)
         if existing is None:
             raise ValueError("cannot clear an unknown metacognitive blocker")
-        self.behavior.metacognitive.clear_blocker(blocker_id)
+        self.behavior.task_evidence.clear_blocker(blocker_id)
         self._journal("metacognitive_blocker_cleared", blocker_id=blocker_id[:128],
                       evidence_ref=evidence_ref,
-                      snapshot=self.behavior.metacognitive.snapshot())
+                      snapshot=self.behavior.task_evidence.snapshot())
         self._emit_runtime({
             "category": "blocker", "event_type": "host_blocker_cleared",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -613,16 +612,19 @@ class EvidenceMethods:
                 candidate = replace(
                     pending["candidate"], result_class=result_class[:64],
                     artifact_changed=changed, evidence_kinds=evidence_kinds)
-                candidate = self.behavior.metacognitive.commit_candidate(
+                candidate = self.behavior.task_evidence.commit_candidate(
                     candidate,
                     verification_relation=("required_verification"
                                            if pending.get("relation") == "required_verification"
                                            else None))
+                self._record_standalone_activity(candidate)
                 retry_candidate = pending.get("retry_candidate")
                 if isinstance(retry_candidate, ActivityFact):
-                    self.behavior.metacognitive.commit_candidate(retry_candidate)
+                    retry_candidate = self.behavior.task_evidence.commit_candidate(
+                        retry_candidate)
+                    self._record_standalone_activity(retry_candidate)
             else:
-                candidate = self.behavior.metacognitive.record_activity(
+                candidate = self.behavior.task_evidence.record_activity(
                     "tool_result", source="host_observed",
                     action_class=(descriptor.action_class if descriptor else tool_type[:64]),
                     host_declared_relation=(pending.get("relation", "ambiguous")
@@ -633,8 +635,9 @@ class EvidenceMethods:
                     affected_criterion_ids=(descriptor.affected_criterion_ids
                                             if descriptor else ()),
                     evidence_kinds=evidence_kinds)
-            self._journal("system_one_projection_changed",
-                          snapshot=self.behavior.metacognitive.snapshot())
+                self._record_standalone_activity(candidate)
+            self._journal("metacognitive_state_changed",
+                          snapshot=self.behavior.task_evidence.snapshot())
         if (not self.behavior.is_external and self.attempts.controller is not None
                 and (self.bundle.pinned.get("goal_contract") or {}).get("work_mode") == "delivery"):
             lane = str((pending or {}).get("accounting_lane") or "UNCLASSIFIED")
@@ -657,46 +660,11 @@ class EvidenceMethods:
                 self._record_support_action_event(
                     evidence_id=evidence_id, subject_ref=subject_ref,
                     support_count=state.support_actions_since_goal_progress)
-        if (not self.behavior.is_external
-                and self._system_one_policy().mode != "disabled"):
-            self._system_one_query(
-                questions=("progress_relation",), candidate=candidate,
-                subject_ref=subject_ref,
-                action_request_id=action_request_id,
-                action_invocation_id=invocation_id)
-            decision = next((item for item in reversed(tuple(self.behavior.system_one_decisions.values()))
-                             if item.get("action_invocation_id") == invocation_id), None)
-            judgment_data = dict((decision or {}).get("judgment") or {})
-            try:
-                judgment = (SystemOneJudgment.from_mapping(judgment_data)
-                            if judgment_data else None)
-            except (TypeError, ValueError):
-                judgment = None
-            criterion_id = next((item for item in (descriptor.affected_criterion_ids
-                                                    if descriptor else ())
-                                 if any(row.criterion_id == item and row.status != "satisfied"
-                                        for row in self.behavior.metacognitive.criteria)), None)
-            criterion = next((row for row in self.behavior.metacognitive.criteria
-                              if row.criterion_id == criterion_id), None)
-            host_progress_class = str(result_data.get("progress_class") or "")
-            fused_progress = fuse_progress_relation(
-                host_progress_class=host_progress_class,
-                criterion_id=criterion_id,
-                judgment=judgment, policy=self._system_one_policy(),
-                calibrated=tuple((decision or {}).get("calibrated_question_ids") or ()))
-            self._emit_runtime({
-                "category": "tool_result", "event_type": "progress_relation_fused",
-                "subject": subject_ref,
-                "evidence_refs": [evidence_id, *supporting_refs],
-                "payload": {"summary": "System-1 supplied a non-authoritative progress meaning hint",
-                            "result_class": fused_progress.relation,
-                            "progress_relation": fused_progress.relation,
-                            "criterion_id": criterion_id or "",
-                            "model_influenced": fused_progress.model_influenced,
-                            "source_decision_id": fused_progress.decision_id or ""}})
         if action_request_id:
             self.actions.take_pending_request(action_request_id)
         self._complete_action(capability)
+        if not self.behavior.is_external:
+            self._evaluate_standalone_behavior()
         return evidence_id
     def _record_support_action_event(self, *, evidence_id: str,
                                      subject_ref: Optional[str], support_count: int) -> None:
@@ -767,7 +735,7 @@ class EvidenceMethods:
                 (self.evidence.ledger.get(invocation["evidence_id"]).covered_boundary_ids
                  if self.evidence.ledger.get(invocation["evidence_id"]) is not None else ())))
         if not self.behavior.is_external:
-            self.behavior.metacognitive.record_activity(
+            self.behavior.task_evidence.record_activity(
                 "validation", source="validator", result_class=evidence_type,
                 progress_class="VALIDATION_EVIDENCE", evidence_kinds=(evidence_type,))
         if not self.behavior.is_external and self.attempts.controller is not None:
@@ -920,7 +888,7 @@ class EvidenceMethods:
             state_key = (statework_id, subject_ref)
             self.lifecycle_workflow.statework_states[state_key] = str(next_state)
             self.lifecycle_workflow.statework_entry_times[state_key] = timestamp
-            self.behavior.metacognitive.record_workflow_progress(
+            self.behavior.task_evidence.record_workflow_progress(
                 statework_id=statework_id, subject_ref=subject_ref,
                 engine_kind=decision.engine_kind,
                 workflow_revision=decision.revision, step_id=decision.step_id,
@@ -944,7 +912,7 @@ class EvidenceMethods:
                           transition=metadata, progress_class="WORKFLOW_PROGRESS",
                           csw_progress_class=decision.progress_class)
         else:
-            self.behavior.metacognitive.record_workflow_progress(
+            self.behavior.task_evidence.record_workflow_progress(
                 statework_id=statework_id, subject_ref=subject_ref,
                 engine_kind=decision.engine_kind, step_id=decision.step_id,
                 workflow_revision=decision.revision, progress_class=decision.progress_class,
@@ -1011,7 +979,7 @@ class EvidenceMethods:
                 contract_hash=contract_hash)
             workflow_complete = bool(snapshot.completed)
         else:
-            workflow_fact = next((item for item in self.behavior.metacognitive.workflows
+            workflow_fact = next((item for item in self.behavior.task_evidence.workflows
                                   if item.statework_id == active_producer
                                   and item.subject_ref == expected_subject), None)
             workflow_complete = bool(workflow_fact and workflow_fact.completed)

@@ -371,3 +371,58 @@ def test_flow_activation_uses_bounded_semantic_change_impact():
             host.on_artifact(impact_facts={"fanout": 257})
     finally:
         task.close()
+
+
+def test_cfw_runtime_core_does_not_embed_harness_protocol_names():
+    # Harness-specific naming belongs in runtime-core integrations, not in
+    # reusable CFW runtime contracts/session substrate.
+    core_dirs = (ROOT / "scripts" / "runtime_contract",
+                 ROOT / "scripts" / "runtime_session",
+                 ROOT / "scripts" / "runtime_host")
+    forbidden_tokens = (
+        "codex_host", "thread/start", "turn/start", "item/tool/call",
+        "CODEX_HOME", "Claude", "Athena",
+    )
+    violations = []
+    for core_dir in core_dirs:
+        for path in sorted(core_dir.rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            for token in forbidden_tokens:
+                if token.casefold() in source.casefold():
+                    violations.append(
+                        f"{path.relative_to(ROOT)} contains {token!r}")
+    assert not violations, "CFW runtime core contains harness names:\n" + "\n".join(
+        violations)
+
+
+def test_codex_wire_methods_are_owned_by_runtime_core():
+    codex_dir = ROOT / "scripts" / "codex_host"
+    compatibility_modules = tuple(sorted(codex_dir.glob("*.py")))
+    protocol_names = (
+        "CODEX_HOME", "thread/start", "thread/resume", "turn/start",
+        "turn/interrupt", "item/tool/call", "turn/completed",
+    )
+    violations = [
+        f"{path.relative_to(ROOT)} contains {token!r}"
+        for path in compatibility_modules
+        for token in protocol_names
+        if token in path.read_text(encoding="utf-8")
+    ]
+    assert not violations, "Codex wire details remain in CFW compatibility modules:\n" + "\n".join(
+        violations)
+    from cognitive_runtime_core.integrations.codex.protocol import CodexWireMethod
+    from cognitive_runtime_core.integrations.codex.cfw_host.actions import (
+        CodexActionBinding as RuntimeCoreActionBinding,
+    )
+    from cognitive_runtime_core.integrations.codex.cfw_host.adapter import (
+        CodexAppServerAdapter as RuntimeCoreAdapter,
+    )
+    from codex_host.actions import CodexActionBinding
+    from codex_host.adapter import CodexAppServerAdapter
+
+    assert CodexWireMethod.THREAD_START == "thread/start"
+    assert CodexWireMethod.TURN_START == "turn/start"
+    assert CodexActionBinding is RuntimeCoreActionBinding
+    assert CodexAppServerAdapter is RuntimeCoreAdapter
+    assert CodexAppServerAdapter.__module__ == (
+        "cognitive_runtime_core.integrations.codex.cfw_host.adapter")

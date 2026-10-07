@@ -1,0 +1,114 @@
+{
+  "schema": "generic-codex-app-server-live-trial/v1",
+  "trial_id": "generic-codex-multipath-approved-20261005",
+  "product_boundary": "generic Codex App Server host adapter in CognitiveFrameWorks",
+  "condition": "triad-multipath",
+  "model": "gpt-6-luna",
+  "runtime_mode": "combined_enforcing",
+  "turn_status": "completed",
+  "turns_completed": 3,
+  "wall_time_seconds": 45.204,
+  "launcher_policy": {
+    "native_sandbox": "read-only",
+    "native_action_surfaces_disabled": false,
+    "registered_host_tools": [
+      "cfw_read",
+      "cfw_write",
+      "cfw_run_validator"
+    ],
+    "code_mode_host_disabled_during_trial": true,
+    "code_mode_disabled_during_trial": false,
+    "unified_exec_disabled_during_trial": false,
+    "unified_exec_tty_disabled_during_trial": false,
+    "unified_exec_zsh_fork_disabled_during_trial": false,
+    "known_unclosed_native_features_during_trial": [
+      "code_mode",
+      "unified_exec",
+      "unified_exec_tty",
+      "unified_exec_zsh_fork"
+    ]
+  },
+  "coding_result": {
+    "integration_valid": false,
+    "criteria_passed": 0,
+    "criteria_total": 4,
+    "criterion_results": {
+      "event_integration": false,
+      "parser_correctness": false,
+      "retry_schedule": false,
+      "state_removal": false
+    },
+    "completion_status": "incomplete",
+    "completion_decision": "validator_failed",
+    "completion_permitted": false,
+    "model_host_tool_calls": 0,
+    "model_validator_calls": 0,
+    "changed_paths": [],
+    "scope_violation_count": 0,
+    "assistant_message": "The host continues to return `code-mode host is disabled`, including for the parser validator. I can’t inspect the exact test failures, edit `src/`, or rerun the registered validators. The host reports all four validators failed; all four criteria remain unverified.",
+    "final_validator_results": [
+      {
+        "validator": "parser",
+        "status": "failed",
+        "tests_passed": 1,
+        "tests_failed": 1
+      },
+      {
+        "validator": "retry",
+        "status": "failed",
+        "tests_passed": 3,
+        "tests_failed": 3
+      },
+      {
+        "validator": "state",
+        "status": "failed",
+        "tests_passed": 1,
+        "tests_failed": 1
+      },
+      {
+        "validator": "integration",
+        "status": "failed",
+        "tests_passed": 0,
+        "tests_failed": 1
+      }
+    ]
+  },
+  "multipath_boundary": {
+    "app_server_connected": true,
+    "cfw_authority_verified": true,
+    "shared_csw_authority_verified": true,
+    "private_dp_bridge_open": true,
+    "dp_bridge_fault_free": true,
+    "dp_behavior_revision_advanced": true,
+    "model_visible_dp_tools_zero": true,
+    "multi_workflow_plan_bound": true,
+    "multi_workflow_revisions_advanced": true,
+    "no_cognitive_fault": true,
+    "model_action_gate_observed": false,
+    "host_gate_receipts": {
+      "preflight": 12,
+      "final": 12
+    },
+    "dp_observation_record_count": 24,
+    "workflow_states": {
+      "getter": {
+        "completed": false,
+        "revision": 3,
+        "state": "CHANGING"
+      },
+      "gitter": {
+        "completed": true,
+        "revision": 2,
+        "state": "OBSERVED"
+      }
+    },
+    "csw_directive_rejections": 0
+  },
+  "diagnostic_limit": "No dynamic item/tool/call request arrived. The run did not retain item type or server request summaries, so it cannot isolate why the model made no CFW tool call.",
+  "approval_scope": "one model-backed trial; no retry performed",
+  "post_trial_followup": {
+    "change": "launcher disables code_mode and the unified_exec family, retains code_mode_host, and records bounded tool-event metadata",
+    "verification": "25 focused CFW tests passed; installed CLI accepted all generated flags; local experimental schema includes thread/start.dynamicTools and item/tool/call",
+    "live_validation": "not rerun; the single approved model-backed trial was consumed"
+  }
+}

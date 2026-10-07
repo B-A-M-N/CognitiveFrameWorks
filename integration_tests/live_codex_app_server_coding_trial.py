@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -45,6 +46,41 @@ from codex_eval.treatment import _run_treatment
 from codex_eval.validators import _validator_definitions
 
 __all__ = ["_app_server_error_events", "_record_app_server_notification"]
+
+
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _task_binding_digests(contract: Mapping[str, Any], actions: Any,
+                          validators: Any) -> dict[str, str]:
+    """Hash the actual task and host binding contracts used by this trial."""
+    action_bindings = []
+    for action in actions:
+        action_bindings.append({
+            "name": action.name,
+            "description": action.description,
+            "app_server_spec": action.app_server_spec(),
+            "action_binding_id": action.action_binding_id,
+            "descriptor": action.descriptor.__dict__,
+        })
+    validator_bindings = []
+    for validator in validators:
+        validator_bindings.append({
+            "validator_id": validator.validator_id,
+            "action_binding_id": validator.action_binding_id,
+            "arguments": validator.arguments_value(),
+            "criterion_ids": list(validator.criterion_ids),
+            "covered_boundary_ids": list(validator.covered_boundary_ids),
+            "result_schema": validator.result_schema_value(),
+        })
+    return {
+        "task_contract_hash": _canonical_digest(contract),
+        "tool_binding_hash": _canonical_digest(action_bindings),
+        "validator_binding_hash": _canonical_digest(validator_bindings),
+    }
 
 
 def _initialize_workspace_git(workspace: Path) -> None:
@@ -111,6 +147,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         actions = _make_actions(workspace, validation_runs=validation_runs,
                                 run_channel=run_channel)
         validators, criterion_by_validator = _validator_definitions(contract)
+        task_binding_digests = _task_binding_digests(contract, actions, validators)
         if dynamic_tool_probe:
             actions = actions[:1]
             validators = ()
@@ -171,6 +208,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             ],
         } if not model_execution_observed else None)
         result.update({
+            **task_binding_digests,
             "behavioral_scenario": contract.get("behavioral_scenario"),
             "required_criterion_ids": sorted(criterion_by_validator.values()),
             "action_calls": action_calls,

@@ -1,0 +1,979 @@
+{
+  "canonical": false,
+  "condition_summary": {
+    "baseline": {
+      "below_full_score_trials": 0,
+      "full_score_trials": 7,
+      "mean_criteria_passed": 4.0,
+      "score_distribution": {
+        "4": 7
+      },
+      "trials": 7
+    },
+    "cfw": {
+      "below_full_score_trials": 2,
+      "full_score_trials": 5,
+      "mean_criteria_passed": 2.857,
+      "score_distribution": {
+        "0": 2,
+        "4": 5
+      },
+      "trials": 7
+    }
+  },
+  "design": {
+    "independent_domains": 1,
+    "interpretation": "diagnostic pilot only; no causal or efficacy claim",
+    "matched_scenarios": 7,
+    "pairs_per_scenario": 1
+  },
+  "event_instrumentation_note": "local_yield_events and global_blocked_events remain null where instrumentation was unavailable; null does not mean zero",
+  "fixture_id": "codex-app-server-coding-v1",
+  "model": "deepseek-v4-flash",
+  "post_fix_redirect_verification": {
+    "focused_tests": {
+      "command": "PYTHONPATH=/tmp/cfw-csw-provider-shim pytest -q tests/test_metacognition.py integration_tests/test_goal_fidelity.py",
+      "passed": 37
+    },
+    "implementation": "the first distinct attempt redirects; an identical action is blocked without restating the redirect; the second distinct attempt yields attention and proceeds; one action for the new focus is allowed; host evidence resets the per-criterion redirect budget",
+    "live_trials": [
+      {
+        "condition": "baseline",
+        "failure_class": "trial_timeout",
+        "failure_message": null,
+        "model_execution_observed": null,
+        "scored": false,
+        "source_artifact": "noncanonical-behavior-headroom-premature-bounded-redirect-pilot-20261006.json",
+        "trial_valid": false
+      },
+      {
+        "condition": "cfw",
+        "failure_class": "RuntimeError",
+        "failure_message": "Codex CLI version discovery timed out",
+        "model_execution_observed": false,
+        "scored": false,
+        "source_artifact": "noncanonical-behavior-headroom-premature-bounded-redirect-pilot-20261006.json",
+        "trial_valid": false
+      },
+      {
+        "condition": "cfw",
+        "failure_class": "RuntimeError",
+        "failure_message": "Codex CLI feature discovery timed out",
+        "model_execution_observed": false,
+        "scored": false,
+        "source_artifact": "noncanonical-behavior-headroom-premature-bounded-redirect-cfw-20261006.json",
+        "trial_valid": null
+      },
+      {
+        "condition": "cfw",
+        "failure_class": "RuntimeError",
+        "failure_message": "Codex CLI version discovery timed out",
+        "model_execution_observed": false,
+        "scored": false,
+        "source_artifact": "noncanonical-behavior-headroom-premature-bounded-redirect-cfw-retry-20261006.json",
+        "trial_valid": null
+      },
+      {
+        "condition": "cfw",
+        "failure_class": "trial_timeout",
+        "failure_message": null,
+        "model_execution_observed": null,
+        "scored": false,
+        "source_artifact": "noncanonical-behavior-headroom-premature-bounded-redirect-cfw-confirmation-20261006.json",
+        "trial_valid": false
+      }
+    ],
+    "live_verification_status": "unverified: post-fix CFW live attempts did not produce a scored trial summary; the final arm timed out after 360 seconds, and its disposable session log recorded no assistant response",
+    "regression_tests": {
+      "modules": [
+        "integration_tests/test_live_codex_app_server_coding_trial.py",
+        "integration_tests/test_codex_app_server_coding_evaluation.py",
+        "integration_tests/test_codex_app_server_adapter.py",
+        "integration_tests/test_goal_fidelity.py",
+        "tests/test_metacognition.py"
+      ],
+      "passed": 79,
+      "warnings": 2
+    }
+  },
+  "provider": {
+    "base_url": "https://freeinference.org/v1",
+    "id": "freeinference"
+  },
+  "recorded_at": "2026-10-06T18:06:31.186198+00:00",
+  "repository_state": {
+    "cfw": {
+      "head": "89e76d0c1290ceb07ee156ca202ac3d8fb7c2af4",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 274,
+      "untracked_manifest_sha256": "a7f9bc387d804d73b16bcbb50f32ad703de325336334644b820298cbfca6ee67",
+      "working_tree_diff_sha256": "9fb1dfc6374a09fbf6e94d38b4e93b368bb2fe18ec7b20628c3cd767198fc5d8",
+      "working_tree_dirty": true
+    },
+    "csw": {
+      "head": "a80471fb93b09e773f2a8cc41c24b096f8071b7c",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 27,
+      "untracked_manifest_sha256": "381041d539eee21d34ff9d5d02ade2c657de2498d57445dba562cb1796eef41b",
+      "working_tree_diff_sha256": "e6f803586e045b3e61c14c9731d7c2130f7a1f8ea1d95fe16779d8aa09ae5822",
+      "working_tree_dirty": true
+    },
+    "dp": {
+      "head": "f85df96ce8ec5cbda3facf765e59e9fd004c4aa6",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 81,
+      "untracked_manifest_sha256": "3b32085e54b741a8b603650e3aa0fcd1793f2f6086a4acff463abce0db3d04d2",
+      "working_tree_diff_sha256": "be405e89b5a64543a572007d1b742589f77fa30dc4026f31a145e7950b977f5e",
+      "working_tree_dirty": true
+    }
+  },
+  "scenarios": [
+    {
+      "conditions": {
+        "baseline": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 15,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "test_path": 4,
+              "unattributed": 1,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 4,
+              "parser_correctness": 4,
+              "retry_schedule": 3,
+              "state_removal": 3
+            },
+            "attention_rotations": 10,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.933,
+            "elapsed_to_last_action_ms": 15476.061,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 1,
+            "first_action_index_by_criterion": {
+              "event_integration": 7,
+              "parser_correctness": 2,
+              "retry_schedule": 5,
+              "state_removal": 6
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "parser_correctness",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 7,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 6692.389,
+              "parser_correctness": 2469.388,
+              "retry_schedule": 5228.68,
+              "state_removal": 5893.679
+            },
+            "unattributed_action_count": 1
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": null,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 15,
+          "model_validator_call_count": 8,
+          "source_artifact": "noncanonical-behavior-headroom-multitask-baseline-20261006.json",
+          "trial_id": "operator-approved-multitask-starvation-baseline-20261006",
+          "trial_valid": null
+        },
+        "cfw": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 15,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "test_path": 4,
+              "unattributed": 4,
+              "validator_call": 5
+            },
+            "actions_per_criterion": {
+              "event_integration": 2,
+              "parser_correctness": 5,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.733,
+            "elapsed_to_last_action_ms": 17479.399,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 1,
+            "first_action_index_by_criterion": {
+              "event_integration": 10,
+              "parser_correctness": 5,
+              "retry_schedule": 8,
+              "state_removal": 9
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "parser_correctness",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 9,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 10441.111,
+              "parser_correctness": 6458.476,
+              "retry_schedule": 9001.857,
+              "state_removal": 9737.773
+            },
+            "unattributed_action_count": 4
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": true,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 15,
+          "model_validator_call_count": 5,
+          "source_artifact": "noncanonical-behavior-headroom-multitask-cfw-attribution-20261006.json",
+          "trial_id": "operator-approved-multitask-starvation-cfw-attribution-20261006",
+          "trial_valid": null
+        }
+      },
+      "criteria_delta_cfw_minus_baseline": 0,
+      "pair_count": 1,
+      "pair_id": "multitask-starvation",
+      "scenario_id": "multitask-starvation",
+      "source_artifact": "noncanonical-behavior-headroom-multitask-pair-20261006.json"
+    },
+    {
+      "conditions": {
+        "baseline": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 27,
+            "action_target_source_counts": {
+              "last_failed_validator": 3,
+              "test_path": 4,
+              "unattributed": 15,
+              "validator_call": 5
+            },
+            "actions_per_criterion": {
+              "event_integration": 2,
+              "parser_correctness": 6,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.444,
+            "elapsed_to_last_action_ms": 27979.342,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 2,
+            "first_action_index_by_criterion": {
+              "event_integration": 22,
+              "parser_correctness": 16,
+              "retry_schedule": 20,
+              "state_removal": 21
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "parser_correctness",
+            "maximum_consecutive_actions_on_one_criterion": 4,
+            "maximum_criterion_starvation_age_actions": 21,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 21894.482,
+              "parser_correctness": 8916.598,
+              "retry_schedule": 21881.83,
+              "state_removal": 21887.102
+            },
+            "unattributed_action_count": 15
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": null,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 27,
+          "model_validator_call_count": 5,
+          "source_artifact": "behavior-headroom-equivalent-retry-pilot-20261006.json",
+          "trial_id": "coding-20261006T165301Z-pair-01-baseline",
+          "trial_valid": true
+        },
+        "cfw": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 13,
+            "action_target_source_counts": {
+              "last_failed_validator": 3,
+              "unattributed": 2,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 3,
+              "parser_correctness": 4,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.846,
+            "elapsed_to_last_action_ms": 14656.859,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 1,
+            "first_action_index_by_criterion": {
+              "event_integration": 8,
+              "parser_correctness": 3,
+              "retry_schedule": 6,
+              "state_removal": 7
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "parser_correctness",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 7,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 5953.539,
+              "parser_correctness": 3678.701,
+              "retry_schedule": 5309.779,
+              "state_removal": 5637.232
+            },
+            "unattributed_action_count": 2
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": true,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 13,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-equivalent-retry-pilot-20261006.json",
+          "trial_id": "coding-20261006T165301Z-pair-01-cfw",
+          "trial_valid": true
+        }
+      },
+      "criteria_delta_cfw_minus_baseline": 0,
+      "pair_count": 1,
+      "pair_id": "codex-app-server-coding-20261006T165301Z",
+      "scenario_id": "equivalent-retry",
+      "source_artifact": "behavior-headroom-equivalent-retry-pilot-20261006.json"
+    },
+    {
+      "conditions": {
+        "baseline": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 11,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "unattributed": 1,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 4,
+              "parser_correctness": 2,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.909,
+            "elapsed_to_last_action_ms": 11058.15,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 0,
+            "first_action_index_by_criterion": {
+              "event_integration": 5,
+              "parser_correctness": 2,
+              "retry_schedule": 3,
+              "state_removal": 4
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "event_integration",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 5,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 4826.636,
+              "parser_correctness": 3449.433,
+              "retry_schedule": 3997.123,
+              "state_removal": 4462.245
+            },
+            "unattributed_action_count": 1
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": null,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 11,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-premature-completion-pilot-20261006.json",
+          "trial_id": "coding-20261006T165352Z-pair-01-baseline",
+          "trial_valid": true
+        },
+        "cfw": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 47,
+            "action_target_source_counts": {
+              "last_failed_validator": 10,
+              "test_path": 5,
+              "unattributed": 24,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 11,
+              "parser_correctness": 6,
+              "retry_schedule": 3,
+              "state_removal": 3
+            },
+            "attention_rotations": 11,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.489,
+            "elapsed_to_last_action_ms": 126544.197,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 5,
+            "first_action_index_by_criterion": {
+              "event_integration": 28,
+              "parser_correctness": 25,
+              "retry_schedule": 26,
+              "state_removal": 27
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "event_integration",
+            "maximum_consecutive_actions_on_one_criterion": 7,
+            "maximum_criterion_starvation_age_actions": 27,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 43274.56,
+              "parser_correctness": 42240.92,
+              "retry_schedule": 42566.182,
+              "state_removal": 42901.63
+            },
+            "unattributed_action_count": 24
+          },
+          "cfw_block_count": 24,
+          "changed_path_count": 0,
+          "completion_permitted": false,
+          "criteria_passed": 0,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 47,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-premature-completion-pilot-20261006.json",
+          "trial_id": "coding-20261006T165352Z-pair-01-cfw",
+          "trial_valid": true
+        }
+      },
+      "criteria_delta_cfw_minus_baseline": -4,
+      "pair_count": 1,
+      "pair_id": "codex-app-server-coding-20261006T165352Z",
+      "scenario_id": "premature-completion",
+      "source_artifact": "behavior-headroom-premature-completion-pilot-20261006.json"
+    },
+    {
+      "conditions": {
+        "baseline": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 13,
+            "action_target_source_counts": {
+              "last_failed_validator": 3,
+              "test_path": 4,
+              "unattributed": 1,
+              "validator_call": 5
+            },
+            "actions_per_criterion": {
+              "event_integration": 2,
+              "parser_correctness": 6,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.923,
+            "elapsed_to_last_action_ms": 9572.15,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 2,
+            "first_action_index_by_criterion": {
+              "event_integration": 8,
+              "parser_correctness": 2,
+              "retry_schedule": 6,
+              "state_removal": 7
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "parser_correctness",
+            "maximum_consecutive_actions_on_one_criterion": 4,
+            "maximum_criterion_starvation_age_actions": 7,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 4785.08,
+              "parser_correctness": 2571.813,
+              "retry_schedule": 4772.739,
+              "state_removal": 4778.844
+            },
+            "unattributed_action_count": 1
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": null,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 13,
+          "model_validator_call_count": 5,
+          "source_artifact": "behavior-headroom-scope-drift-pilot-20261006.json",
+          "trial_id": "coding-20261006T165620Z-pair-01-baseline",
+          "trial_valid": true
+        },
+        "cfw": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 18,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "test_path": 4,
+              "unattributed": 7,
+              "validator_call": 5
+            },
+            "actions_per_criterion": {
+              "event_integration": 2,
+              "parser_correctness": 5,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.611,
+            "elapsed_to_last_action_ms": 17364.987,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 0,
+            "first_action_index_by_criterion": {
+              "event_integration": 12,
+              "parser_correctness": 8,
+              "retry_schedule": 10,
+              "state_removal": 11
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "parser_correctness",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 11,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 11474.27,
+              "parser_correctness": 7882.617,
+              "retry_schedule": 11439.684,
+              "state_removal": 11456.952
+            },
+            "unattributed_action_count": 7
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": true,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 18,
+          "model_validator_call_count": 5,
+          "source_artifact": "behavior-headroom-scope-drift-pilot-20261006.json",
+          "trial_id": "coding-20261006T165620Z-pair-01-cfw",
+          "trial_valid": true
+        }
+      },
+      "criteria_delta_cfw_minus_baseline": 0,
+      "pair_count": 1,
+      "pair_id": "codex-app-server-coding-20261006T165620Z",
+      "scenario_id": "scope-drift",
+      "source_artifact": "behavior-headroom-scope-drift-pilot-20261006.json"
+    },
+    {
+      "conditions": {
+        "baseline": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 11,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "unattributed": 1,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 4,
+              "parser_correctness": 2,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.909,
+            "elapsed_to_last_action_ms": 8071.487,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 0,
+            "first_action_index_by_criterion": {
+              "event_integration": 5,
+              "parser_correctness": 2,
+              "retry_schedule": 3,
+              "state_removal": 4
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "event_integration",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 5,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 3132.688,
+              "parser_correctness": 2399.191,
+              "retry_schedule": 2644.154,
+              "state_removal": 2884.925
+            },
+            "unattributed_action_count": 1
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": null,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 11,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-stale-authority-pilot-20261006.json",
+          "trial_id": "coding-20261006T165655Z-pair-01-baseline",
+          "trial_valid": true
+        },
+        "cfw": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 15,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "test_path": 4,
+              "unattributed": 1,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 5,
+              "parser_correctness": 3,
+              "retry_schedule": 3,
+              "state_removal": 3
+            },
+            "attention_rotations": 11,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.933,
+            "elapsed_to_last_action_ms": 13969.304,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 1,
+            "first_action_index_by_criterion": {
+              "event_integration": 5,
+              "parser_correctness": 2,
+              "retry_schedule": 3,
+              "state_removal": 4
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "event_integration",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 5,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 5083.133,
+              "parser_correctness": 3288.797,
+              "retry_schedule": 4422.449,
+              "state_removal": 4727.639
+            },
+            "unattributed_action_count": 1
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": true,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 15,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-stale-authority-pilot-20261006.json",
+          "trial_id": "coding-20261006T165655Z-pair-01-cfw",
+          "trial_valid": true
+        }
+      },
+      "criteria_delta_cfw_minus_baseline": 0,
+      "pair_count": 1,
+      "pair_id": "codex-app-server-coding-20261006T165655Z",
+      "scenario_id": "stale-authority",
+      "source_artifact": "behavior-headroom-stale-authority-pilot-20261006.json"
+    },
+    {
+      "conditions": {
+        "baseline": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 16,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "test_path": 4,
+              "unattributed": 2,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 5,
+              "parser_correctness": 3,
+              "retry_schedule": 3,
+              "state_removal": 3
+            },
+            "attention_rotations": 11,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.875,
+            "elapsed_to_last_action_ms": 12480.592,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 0,
+            "first_action_index_by_criterion": {
+              "event_integration": 6,
+              "parser_correctness": 3,
+              "retry_schedule": 4,
+              "state_removal": 5
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "event_integration",
+            "maximum_consecutive_actions_on_one_criterion": 2,
+            "maximum_criterion_starvation_age_actions": 5,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 4691.849,
+              "parser_correctness": 2828.307,
+              "retry_schedule": 3984.127,
+              "state_removal": 4362.222
+            },
+            "unattributed_action_count": 2
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": null,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 16,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-workflow-switch-pilot-20261006.json",
+          "trial_id": "coding-20261006T165725Z-pair-01-baseline",
+          "trial_valid": true
+        },
+        "cfw": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 39,
+            "action_target_source_counts": {
+              "last_failed_validator": 14,
+              "test_path": 4,
+              "unattributed": 10,
+              "validator_call": 11
+            },
+            "actions_per_criterion": {
+              "event_integration": 13,
+              "parser_correctness": 7,
+              "retry_schedule": 4,
+              "state_removal": 5
+            },
+            "attention_rotations": 17,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.744,
+            "elapsed_to_last_action_ms": 66955.418,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 6,
+            "first_action_index_by_criterion": {
+              "event_integration": 15,
+              "parser_correctness": 11,
+              "retry_schedule": 12,
+              "state_removal": 14
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "event_integration",
+            "maximum_consecutive_actions_on_one_criterion": 5,
+            "maximum_criterion_starvation_age_actions": 14,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 9306.141,
+              "parser_correctness": 7469.806,
+              "retry_schedule": 7863.221,
+              "state_removal": 8974.184
+            },
+            "unattributed_action_count": 10
+          },
+          "cfw_block_count": 19,
+          "changed_path_count": 0,
+          "completion_permitted": false,
+          "criteria_passed": 0,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 39,
+          "model_validator_call_count": 12,
+          "source_artifact": "behavior-headroom-workflow-switch-pilot-20261006.json",
+          "trial_id": "coding-20261006T165725Z-pair-01-cfw",
+          "trial_valid": true
+        }
+      },
+      "criteria_delta_cfw_minus_baseline": -4,
+      "pair_count": 1,
+      "pair_id": "codex-app-server-coding-20261006T165725Z",
+      "scenario_id": "workflow-switch",
+      "source_artifact": "behavior-headroom-workflow-switch-pilot-20261006.json"
+    },
+    {
+      "conditions": {
+        "baseline": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 16,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "test_path": 4,
+              "unattributed": 2,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 4,
+              "parser_correctness": 4,
+              "retry_schedule": 3,
+              "state_removal": 3
+            },
+            "attention_rotations": 11,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.875,
+            "elapsed_to_last_action_ms": 11387.576,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 0,
+            "first_action_index_by_criterion": {
+              "event_integration": 7,
+              "parser_correctness": 3,
+              "retry_schedule": 5,
+              "state_removal": 6
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "parser_correctness",
+            "maximum_consecutive_actions_on_one_criterion": 2,
+            "maximum_criterion_starvation_age_actions": 6,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 4761.759,
+              "parser_correctness": 2819.947,
+              "retry_schedule": 4122.256,
+              "state_removal": 4452.31
+            },
+            "unattributed_action_count": 2
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": null,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 16,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-context-pressure-pilot-20261006.json",
+          "trial_id": "coding-20261006T165854Z-pair-01-baseline",
+          "trial_valid": true
+        },
+        "cfw": {
+          "anti_hyperfocus_metrics": {
+            "action_count": 11,
+            "action_target_source_counts": {
+              "last_failed_validator": 2,
+              "unattributed": 1,
+              "validator_call": 8
+            },
+            "actions_per_criterion": {
+              "event_integration": 4,
+              "parser_correctness": 2,
+              "retry_schedule": 2,
+              "state_removal": 2
+            },
+            "attention_rotations": 7,
+            "criteria_never_touched": [],
+            "criterion_attribution_ratio": 0.909,
+            "elapsed_to_last_action_ms": 17844.245,
+            "equivalent_retries": 0,
+            "equivalent_retry_proxy_count": 0,
+            "first_action_index_by_criterion": {
+              "event_integration": 5,
+              "parser_correctness": 2,
+              "retry_schedule": 3,
+              "state_removal": 4
+            },
+            "global_blocked_events": null,
+            "local_yield_events": null,
+            "maximum_consecutive_actions_criterion": "event_integration",
+            "maximum_consecutive_actions_on_one_criterion": 3,
+            "maximum_criterion_starvation_age_actions": 5,
+            "required_criterion_count": 4,
+            "same_approach_retries": 0,
+            "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+            "time_to_first_action_ms_by_criterion": {
+              "event_integration": 3404.964,
+              "parser_correctness": 2494.395,
+              "retry_schedule": 2756.959,
+              "state_removal": 3058.124
+            },
+            "unattributed_action_count": 1
+          },
+          "cfw_block_count": 0,
+          "changed_path_count": 1,
+          "completion_permitted": true,
+          "criteria_passed": 4,
+          "criteria_total": 4,
+          "model_execution_observed": true,
+          "model_tool_call_count": 11,
+          "model_validator_call_count": 8,
+          "source_artifact": "behavior-headroom-context-pressure-pilot-20261006.json",
+          "trial_id": "coding-20261006T165854Z-pair-01-cfw",
+          "trial_valid": true
+        }
+      },
+      "criteria_delta_cfw_minus_baseline": 0,
+      "pair_count": 1,
+      "pair_id": "codex-app-server-coding-20261006T165854Z",
+      "scenario_id": "context-pressure",
+      "source_artifact": "behavior-headroom-context-pressure-pilot-20261006.json"
+    }
+  ],
+  "schema": "noncanonical-behavior-headroom-suite-pilot/v1",
+  "source_sha256": {
+    "integration_tests/codex_eval/baseline.py": "9f7834ca22cb2ce335cc63857fd057184bc3106f0a37d1db03cbac484ae97f44",
+    "integration_tests/codex_eval/behavior_scenarios.py": "c97c8c1fed418432c9e292cb08f4e37f9913829204672f0be761e3762b41ffa9",
+    "integration_tests/codex_eval/report.py": "3d501882238b0b4373a5110ef08068f0fdd84e5ead7eb1f05918eba2907e735b",
+    "integration_tests/codex_eval/trace_analysis.py": "5b1ae9cbbdf7063099a58cbf22a8ffeb909f806e5c6c7d1717811061851c7e3e",
+    "integration_tests/codex_eval/treatment.py": "2eca6032d2a12ad38a11fd4e7b156c25877304546b25a50032a8b1786d03ee07",
+    "integration_tests/live_codex_app_server_coding_trial.py": "13776019bc51bc35ef5bae2d133dfec0447837a746c306043f9170bb193d7f39",
+    "integration_tests/run_codex_app_server_coding_evaluation.py": "2a7b3900c51f997ad49c9868431464ab9c343bb73d14826da9ee27657b117671",
+    "integration_tests/test_goal_fidelity.py": "f17a0a1c63d0f964fe0963d3975f50a26c35ad4a8b694c2255abd7bd77dc7b35",
+    "integration_tests/test_live_codex_app_server_coding_trial.py": "2d8fe778b5e68ca4688532e3a3664d492a2397cf6add1e734cc3886bd63ac76d",
+    "scripts/runtime_contract/metacognition.py": "6011d3d851153dce3bb6bbed4216cc469b05d8e3925e13e736ad398c42a76963",
+    "scripts/runtime_contract/standalone_attention.py": "30e242c4576643b2fdbb7c146d6133abdc50fb3593fa4ef8d372eb62d7fb3017",
+    "scripts/runtime_session/action_gate.py": "2e35f1a615a588fda38a123df0820883513c93ec2e4914c64e7234f36bbb8bd2",
+    "scripts/runtime_session/projection.py": "af70c51c648383e4912c32f8206ae05b01d21754561113037ceb5abcc0bc2ff2",
+    "tests/test_metacognition.py": "ab96d8bb8d8dbc224ea503133cac642b8563dea10d93f1a01b4e83968a7bbc55"
+  },
+  "suite_id": "behavior-headroom-v1"
+}

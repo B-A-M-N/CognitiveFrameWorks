@@ -11,6 +11,8 @@ import inspect
 import json
 from typing import Any, Dict, Mapping, Optional
 
+from .convergence import RetryBoundaryEnforcer
+
 
 class CompletionBoundaryGateV1:
     version = "1"
@@ -60,7 +62,8 @@ class RetryHypothesisGateV2:
             return "block"
         action_fingerprint, hypothesis_fingerprint, premise_digest = (
             session._retry_comparison_fingerprints(descriptor))
-        return controller.evaluate_retry(
+        return RetryBoundaryEnforcer().evaluate(
+            controller,
             cause_id=descriptor.cause_id,
             action_fingerprint=action_fingerprint,
             hypothesis_fingerprint=hypothesis_fingerprint,

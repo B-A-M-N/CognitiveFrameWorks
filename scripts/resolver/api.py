@@ -52,8 +52,7 @@ from runtime_contract.paths import runtime_state_dir
 from runtime_contract.policy import freeze_contracts as _freeze_contracts
 from runtime_contract.policy import stable_hash as _stable_contract_hash
 from runtime_contract.stateworks import current_packet as _current_packet
-from runtime_contract.task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
-                                   SystemOnePolicy)
+from runtime_contract.task import AcceptanceCriterion, TaskGoalContract, TaskRequest
 from runtime_contract.advisor import BehavioralAdvisor, bounded_adjustments, validate_advice_transaction
 from runtime_contract.manifests import build_task_manifest
 from runtime_contract.handlers import (enforcement_for_guard, handler_registry_hash,

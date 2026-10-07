@@ -3,13 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-import uuid
-from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
 from runtime_contract.convergence import AttemptDescriptor
-from runtime_contract.metacognition import CriterionEvidenceBinding
-from runtime_contract.system_one import AttemptSemanticDescriptor
+from runtime_contract.task_evidence import CriterionEvidenceBinding
+from runtime_contract.behavior_facts import AttemptSemanticDescriptor
 from runtime_session.host_authority import _HostCapability
 
 
@@ -17,121 +15,16 @@ class AttemptMethods:
     """Attempt-local state, outcome, recovery, and progress recording."""
     def _retry_comparison_fingerprints(
             self, descriptor: AttemptDescriptor) -> tuple[str, str, Optional[str]]:
-        if descriptor.attempt_ref not in self.attempts.semantic_retry_same or self.attempts.controller is None:
-            return (descriptor.action_plan_digest, descriptor.premise_digest,
-                    descriptor.premise_digest)
-        prior = self.attempts.controller.state(descriptor.cause_id)
-        return (prior.action_fingerprint or descriptor.action_plan_digest,
-                prior.hypothesis_fingerprint or descriptor.premise_digest,
-                prior.premise_digest or descriptor.premise_digest)
+        """Return exact host-recorded retry identities without semantic collapse."""
+        return (descriptor.action_plan_digest, descriptor.premise_digest,
+                descriptor.premise_digest)
+
     def _record_convergence(self, reason: str) -> None:
         """Persist convergence state so resume cannot erase the budget."""
         if self.attempts.controller is None:
             return
         self._journal("convergence_recorded", reason=reason,
                       convergence=self.attempts.controller.export())
-    def _system_one_decision_for_action(self, capability: _HostCapability,
-                                        action_request_id: str) -> Optional[str]:
-        self._require_host(capability)
-        if (not isinstance(action_request_id, str)
-                or not action_request_id.startswith("action-request-")
-                or len(action_request_id) > 256):
-            raise ValueError("action_request_id must be a bounded host-generated identifier")
-        matches = [decision for decision in self.behavior.system_one_decisions.values()
-                   if decision.get("action_request_id") == action_request_id
-                   and decision.get("judgment")]
-        if not matches:
-            return None
-        matches.sort(key=lambda item: int(item.get("sequence", 0)))
-        return str(matches[-1]["decision_id"])
-    def _record_system_one_outcome(self, capability: _HostCapability, *,
-                                   decision_id: str, label: str, value: str,
-                                   evidence_ref: str, authority: str,
-                                   criterion_id: Optional[str] = None) -> str:
-        """Append T2 ground truth only from later host-attested evidence."""
-        self._require_host(capability)
-        decision = self.behavior.system_one_decisions.get(decision_id)
-        if decision is None or not decision.get("judgment"):
-            raise ValueError("System-1 outcome requires a recorded prediction")
-        outcome_key = f"{decision_id}:{label}"
-        if outcome_key in self.behavior.system_one_outcomes:
-            raise ValueError("System-1 outcome already recorded for this label")
-        label_values = {
-            "action_relation": {"advances_primary_goal", "removes_concrete_blocker",
-                                "required_verification", "diagnostic_support", "unrelated"},
-            "progress_relation": {"goal_progress", "blocker_removed", "diagnostic_progress",
-                                  "verification_progress", "recovery_progress", "no_progress"},
-            "retry_relation": {"materially_new", "same_premise_new_action",
-                               "equivalent_retry", "unrelated"},
-            "goal_drift": {"yes", "no"},
-        }
-        prediction = next((item for item in decision["judgment"].get("answers", ())
-                           if item.get("question_id") == label), None)
-        if prediction is None:
-            raise ValueError("outcome label was not included in the prediction")
-        if label == "route_preference":
-            label_values[label] = {str(item.get("label")) for item in
-                                   prediction.get("raw_probabilities", ())
-                                   if isinstance(item, Mapping)}
-        if label not in label_values or value not in label_values[label]:
-            raise ValueError("unsupported System-1 ground-truth label")
-        if authority not in {"host_evidence", "validator", "csw_fact", "operator"}:
-            raise ValueError("unsupported System-1 outcome authority")
-        record = self.evidence.ledger.get(evidence_ref)
-        if record is None or record.invalidated:
-            raise ValueError("System-1 outcome requires current host-attested evidence")
-        expected_subject = decision.get("subject_ref") or self.bundle.policy.subject_ref
-        if expected_subject and record.subject_ref != expected_subject:
-            raise ValueError("System-1 outcome evidence subject does not match its decision")
-        issuer = str(record.issuer or "")
-        issuer_prefixes = {
-            "host_evidence": ("host:", "runtime:"),
-            "validator": ("validator:",),
-            "csw_fact": ("statework:", "csw:"),
-            "operator": ("operator:",),
-        }
-        if not issuer.startswith(issuer_prefixes[authority]):
-            raise PermissionError("evidence issuer does not match declared outcome authority")
-        observed = datetime.fromisoformat(str(record.observed_at).replace("Z", "+00:00"))
-        decided = datetime.fromisoformat(str(decision["timestamp"]).replace("Z", "+00:00"))
-        if observed <= decided:
-            raise ValueError("System-1 ground truth must be observed after its prediction")
-        if label == "progress_relation" and value in {"goal_progress", "blocker_removed"}:
-            criteria = {str(item.get("criterion_id")) for item in
-                        (self.bundle.pinned.get("goal_contract") or {}).get(
-                            "acceptance_criteria", ())}
-            if not criterion_id or criterion_id not in criteria:
-                raise ValueError("goal progress outcome must match a pinned acceptance criterion")
-        elif criterion_id is not None:
-            criteria = {str(item.get("criterion_id")) for item in
-                        (self.bundle.pinned.get("goal_contract") or {}).get(
-                            "acceptance_criteria", ())}
-            if criterion_id not in criteria:
-                raise ValueError("outcome references an unknown acceptance criterion")
-        self.behavior.system_one_outcomes.add(outcome_key)
-        outcome_event_id = f"system-one-outcome-{uuid.uuid4()}"
-        self._journal("system_one_outcome_recorded", decision_id=decision_id,
-                      label=label, value=value, evidence_ref=evidence_ref,
-                      authority=authority, outcome_event_id=outcome_event_id)
-        label_key = {
-            "action_relation": "system_one_outcome_action_relation",
-            "progress_relation": "system_one_outcome_progress_relation",
-            "retry_relation": "system_one_outcome_retry_relation",
-            "goal_drift": "system_one_outcome_goal_drift",
-            "route_preference": "system_one_outcome_route_preference",
-        }[label]
-        self._emit_runtime({
-            "event_id": outcome_event_id,
-            "category": "validation", "event_type": "system_one_outcome",
-            "subject": record.subject_ref, "evidence_refs": [evidence_ref],
-            "payload": {"summary": "independent System-1 evaluation outcome",
-                        "system_one_outcome_for": decision_id,
-                        label_key: value,
-                        "system_one_outcome_authority": authority,
-                        "system_one_outcome_evidence_ref": evidence_ref,
-                        "system_one_independent_outcome": True,
-                        "criterion_id": criterion_id or ""}})
-        return outcome_event_id
     def _shared_branch_exhausted(self, descriptor: AttemptDescriptor,
                                  recovery_limit: int) -> bool:
         membership = self.identity_authority.authorities.shared_workflow_membership or {}
@@ -244,9 +137,10 @@ class AttemptMethods:
                 action_plan_digest=semantic.action_plan_digest,
                 affected_criterion_ids=semantic.affected_criterion_ids,
                 source=semantic.source)
-            self.behavior.metacognitive.record_failed_approach(failed)
-            self._journal("system_one_projection_changed",
-                          snapshot=self.behavior.metacognitive.snapshot())
+            self.behavior.task_evidence.record_failed_approach(failed)
+            self._journal("metacognitive_state_changed",
+                          snapshot=self.behavior.task_evidence.snapshot())
+            self._record_standalone_failed_approach(failed)
         self.attempts.failures.add(attempt_ref)
         self._journal("attempt_failure_recorded", attempt_ref=attempt_ref,
                       cause_id=descriptor.cause_id, evidence_ref=evidence_ref,
@@ -358,11 +252,12 @@ class AttemptMethods:
                 cause_id=progress_cause, progress_digest=digest,
                 progress_class=progress_class, evidence_ref=evidence_ref)
         self._record_convergence("goal_progress")
-        self.behavior.metacognitive.record_goal_progress(
+        fact = self.behavior.task_evidence.record_goal_progress(
             binding, claim=str(criterion.get("claim") or ""),
             kind=str(criterion.get("kind") or "acceptance"))
-        self._journal("system_one_projection_changed",
-                      snapshot=self.behavior.metacognitive.snapshot())
+        self._journal("metacognitive_state_changed",
+                      snapshot=self.behavior.task_evidence.snapshot())
+        self._record_standalone_activity(fact)
         self._emit_runtime({
             "category": "decision", "event_type": "goal_progress_recorded",
             "subject": record.subject_ref, "evidence_refs": [evidence_ref],
@@ -390,11 +285,11 @@ class AttemptMethods:
         if str(criterion.get("verification_strength") or "host_observation") == "validator":
             if not str(record.get("issuer") or "").startswith("validator:"):
                 raise ValueError("criterion requires validator-issued evidence")
-        self.behavior.metacognitive.mark_criterion_satisfied(
+        self.behavior.task_evidence.mark_criterion_satisfied(
             criterion_id, evidence_ref=evidence_ref,
             evidence_kind=str(record.get("kind") or ""))
-        self._journal("system_one_projection_changed",
-                      snapshot=self.behavior.metacognitive.snapshot())
+        self._journal("metacognitive_state_changed",
+                      snapshot=self.behavior.task_evidence.snapshot())
         self._emit_runtime({
             "category": "validation", "event_type": "criterion_verified",
             "subject": record.get("subject_ref"), "evidence_refs": [evidence_ref],
@@ -406,9 +301,9 @@ class AttemptMethods:
         if self.attempts.controller is None:
             raise PermissionError("recovery tracking requires the host convergence controller")
         state = self.attempts.controller.record_recovery_epoch(cause_id=cause_id)
-        self.behavior.metacognitive.record_recovery_epoch()
-        self._journal("system_one_projection_changed",
-                      snapshot=self.behavior.metacognitive.snapshot())
+        self.behavior.task_evidence.mark_host_state_transition()
+        self._journal("metacognitive_state_changed",
+                      snapshot=self.behavior.task_evidence.snapshot())
         self._record_convergence("recovery_epoch")
         self._emit_runtime({
             "category": "retry", "event_type": "recovery_epoch_recorded",

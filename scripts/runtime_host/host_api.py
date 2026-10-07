@@ -1,9 +1,9 @@
 """Host-facing Cognitive Runtime API.
 
 CFW remains authoritative for task-local action gates and evidence-bound
-enforcement. DigitalPsychology can coordinate behavioral changes through the
-separate ``digital_psychology_adapter`` capability. The host process and its
-protected same-user runtime directory are the trusted computing base;
+enforcement. External component adapters can coordinate bounded behavioral
+changes through the caller-selected task adapter factory. The host process
+and its protected same-user runtime directory are the trusted computing base;
 same-process Python is not an untrusted security boundary. Untrusted plugins
 must use an external IPC/RPC gateway as described in ``SECURITY.md``.
 """

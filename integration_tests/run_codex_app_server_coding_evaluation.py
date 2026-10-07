@@ -11,6 +11,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import tomllib
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,9 +24,20 @@ DEFAULT_OUTPUT_ROOT = ROOT / "evaluation_fixtures" / "live-results"
 CONDITIONS = ("baseline", "cfw", "cfw-csw", "triad", "triad-multipath")
 CRITERIA = ("parser_correctness", "retry_schedule", "state_removal",
             "event_integration")
+RESULT_CATEGORIES = (
+    "PASS", "FAIL", "INVALID_TREATMENT", "INFRASTRUCTURE_BLOCKED",
+    "CAPABILITY_BLOCKED", "INSUFFICIENT_EVIDENCE", "INCOMPARABLE_COHORT",
+)
 
 from codex_eval.behavior_scenarios import SCENARIOS
+from codex_eval.launch import DEFAULT_CODEX_BIN
 from codex_eval.trace_analysis import compare_behavior_trace_outcomes
+from cognitive_runtime_core import EvaluationCohortIdentity
+from cognitive_runtime_core.integrations.codex import CODEX_ADAPTER_VERSION
+from cognitive_runtime_core.integrations.codex.feature_policy import (
+    REVIEWED_CODEX_CLI_VERSION,
+    REVIEWED_CODEX_FEATURE_CATALOG_SHA256,
+)
 
 
 def _repository_state(path: Path) -> dict:
@@ -72,6 +84,112 @@ def _repository_state(path: Path) -> dict:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _canonical_hash(value: object) -> str:
+    encoded = json.dumps(value, ensure_ascii=True, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _repository_source_hash(state: Mapping[str, object]) -> str:
+    return _canonical_hash({
+        "head": state.get("head"),
+        "working_tree_diff_sha256": state.get("working_tree_diff_sha256"),
+        "untracked_manifest_sha256": state.get("untracked_manifest_sha256"),
+    })
+
+
+def _project_version(path: Path) -> str:
+    try:
+        project = tomllib.loads((path / "pyproject.toml").read_text(
+            encoding="utf-8")).get("project", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return "unavailable"
+    version = project.get("version") if isinstance(project, Mapping) else None
+    return version.strip()[:128] if isinstance(version, str) and version.strip() else "unavailable"
+
+
+def _codex_runtime_version(configured_binary: str | None) -> str:
+    candidate = configured_binary or os.environ.get("CODEX_APP_SERVER_BIN")
+    binary = Path(candidate).expanduser() if candidate else DEFAULT_CODEX_BIN
+    try:
+        resolved = binary.resolve(strict=True)
+        releases = (Path.home() / ".codex" / "packages" / "standalone" /
+                    "releases").resolve(strict=True)
+        if (not resolved.is_file() or releases not in resolved.parents
+                or not os.access(resolved, os.X_OK)):
+            return "unavailable"
+        completed = subprocess.run([str(resolved), "--version"], capture_output=True,
+                                   text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable"
+    version = (completed.stdout or completed.stderr).strip().splitlines()
+    if completed.returncode != 0 or not version:
+        return "unavailable"
+    value = version[0].strip()
+    if len(value) > 128 or any(ord(char) < 32 for char in value):
+        return "unavailable"
+    return value
+
+
+def _evaluation_cohort_identity(*, trial: Mapping[str, object], model: str,
+                                auth_mode: str, provider_id: str | None,
+                                provider_base_url: str | None,
+                                behavioral_scenario: str | None,
+                                repository_state: Mapping[str, Mapping[str, object]],
+                                harness_runtime_version: str) -> dict[str, str]:
+    dp_root = Path(os.environ.get("DP_ROOT", ROOT.parent / "DigitalPsychology"))
+    csw_root = Path(os.environ.get("CSW_ROOT", ROOT.parent / "CognitiveStateWork"))
+    provider_endpoint_digest = (
+        hashlib.sha256(provider_base_url.encode("utf-8")).hexdigest()
+        if provider_base_url else "not_applicable")
+    feature_catalog_hash = (
+        REVIEWED_CODEX_FEATURE_CATALOG_SHA256
+        if harness_runtime_version == REVIEWED_CODEX_CLI_VERSION else "unavailable")
+    task_fixture_hash = _canonical_hash({
+        "files": _fixture_fingerprint(),
+        "behavioral_scenario": behavioral_scenario or "not_applicable",
+    })
+
+    def trial_digest(name: str) -> str:
+        value = trial.get(name)
+        return value if isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value) else "unavailable"
+
+    adapter_path = dp_root / "cognitive_runtime_core" / "integrations" / "codex" / "adapter.py"
+    try:
+        adapter_hash = _sha256(adapter_path)
+    except OSError:
+        adapter_hash = "unavailable"
+    identity = EvaluationCohortIdentity(
+        harness_id="codex-app-server",
+        harness_version=harness_runtime_version,
+        adapter_version=CODEX_ADAPTER_VERSION,
+        adapter_hash=adapter_hash,
+        agent_model=model,
+        model_revision="unavailable",
+        provider=(provider_id if auth_mode == "external-provider" and provider_id
+                  else "openai"),
+        provider_endpoint_digest=provider_endpoint_digest,
+        auth_mode=auth_mode,
+        harness_runtime_version=harness_runtime_version,
+        feature_catalog_hash=feature_catalog_hash,
+        reasoning_effort="default_unspecified",
+        task_fixture_hash=task_fixture_hash,
+        task_contract_hash=trial_digest("task_contract_hash"),
+        tool_binding_hash=trial_digest("tool_binding_hash"),
+        validator_binding_hash=trial_digest("validator_binding_hash"),
+        cfw_version=_project_version(ROOT),
+        cfw_source_hash=_repository_source_hash(repository_state["cfw"]),
+        csw_version=_project_version(csw_root),
+        csw_source_hash=_repository_source_hash(repository_state["csw"]),
+        dp_version=_project_version(dp_root),
+        dp_source_hash=_repository_source_hash(repository_state["dp"]),
+        laya_mode="disabled",
+        laya_model_id="not_applicable",
+        laya_calibration_hash="not_applicable",
+    )
+    return identity.to_dict()
 
 
 def _fixture_fingerprint() -> dict[str, str]:
@@ -224,6 +342,35 @@ def _distribution(values: list[float | int]) -> dict[str, int | float | None]:
     }
 
 
+def _trial_result_category(row: Mapping[str, Any]) -> str:
+    """Separate task outcomes from infrastructure and capability blockers."""
+    failure_class = str(row.get("failure_class") or "").lower()
+    if (row.get("capability_blocked") is True
+            or "capability_unavailable" in failure_class
+            or "action_blocking_unavailable" in failure_class
+            or "completion_interception_unavailable" in failure_class):
+        return "CAPABILITY_BLOCKED"
+    if row.get("upstream_blocked") is True or (
+            row.get("model_execution_observed") is not True
+            and row.get("infrastructure_valid") is False):
+        return "INFRASTRUCTURE_BLOCKED"
+    if "incomparable_cohort" in failure_class:
+        return "INCOMPARABLE_COHORT"
+    if "insufficient_evidence" in failure_class:
+        return "INSUFFICIENT_EVIDENCE"
+    if row.get("efficacy_valid") is not True:
+        if row.get("model_execution_observed") is True or (
+                row.get("inference_ready") is True
+                and row.get("integration_valid") is False):
+            return "INVALID_TREATMENT"
+        return "INSUFFICIENT_EVIDENCE"
+    passed = row.get("criteria_passed")
+    total = row.get("criteria_total")
+    if type(passed) is not int or type(total) is not int or total <= 0:
+        return "INSUFFICIENT_EVIDENCE"
+    return "PASS" if passed == total else "FAIL"
+
+
 def _trace_outcome_summary(trials: list[dict]) -> dict[str, dict]:
     cohorts: dict[str, list[dict]] = {"complete_4_of_4": [], "below_4_of_4": []}
     for row in trials:
@@ -283,16 +430,24 @@ def _summarize(rows: list[dict], pairs: list[dict[str, str]],
     per_condition = {}
     for condition, trials in grouped.items():
         valid = [row for row in trials if row.get("efficacy_valid") is True]
-        completion_observed = [row for row in valid
+        completion_applicable = []
+        for row in trials:
+            declared_applicability = row.get("completion_applicable")
+            applicable = (declared_applicability
+                          if type(declared_applicability) is bool
+                          else condition != "baseline")
+            if applicable:
+                completion_applicable.append(row)
+        completion_observed = [row for row in trials
                                if type(row.get("completion_permitted")) is bool]
-        bridge_statuses = [row.get("cognitive_host_status") or {}
+        bridge_statuses = [row.get("runtime_harness_lifecycle_status") or {}
                            for row in trials
                            if condition in {"triad", "triad-multipath"}]
         dp_intervention_metrics = [
             status.get("dp_intervention_metrics") or {}
             for status in bridge_statuses]
         dp_metrics = [
-            ((row.get("cognitive_host_status") or {})
+            ((row.get("runtime_harness_lifecycle_status") or {})
              .get("production_metrics") or {})
             for row in trials if condition in {"triad", "triad-multipath"}
         ]
@@ -341,6 +496,10 @@ def _summarize(rows: list[dict], pairs: list[dict[str, str]],
         per_condition[condition] = {
             "trials": len(trials),
             "scheduled_trials": len(trials),
+            "result_category_counts": {
+                category: sum(_trial_result_category(row) == category
+                              for row in trials)
+                for category in RESULT_CATEGORIES},
             "host_valid_trials": sum(row.get("host_integration_valid") is True
                                       for row in trials),
             "inference_ready_trials": sum(row.get("inference_ready") is True
@@ -394,12 +553,13 @@ def _summarize(rows: list[dict], pairs: list[dict[str, str]],
                 row.get("model_tool_call_count", 0) for row in valid]),
             "model_tool_calls_distribution": _distribution([
                 row.get("model_tool_call_count", 0) for row in valid]),
-            "mean_validator_tool_calls": _mean([
+            "mean_model_validator_calls": _mean([
                 row.get("model_validator_call_count", 0) for row in valid]),
-            "validator_tool_calls_distribution": _distribution([
+            "model_validator_calls_distribution": _distribution([
                 row.get("model_validator_call_count", 0) for row in valid]),
             "validator_channel_metrics": validator_channels,
-            "completion_applicable_trials": len(completion_observed),
+            "completion_applicable_trials": len(completion_applicable),
+            "completion_observed_trials": len(completion_observed),
             "completion_permits": (sum(
                 row["completion_permitted"] is True for row in completion_observed)
                 if completion_observed else None),
@@ -478,6 +638,14 @@ def _summarize(rows: list[dict], pairs: list[dict[str, str]],
         deltas = []
         wins = ties = losses = 0
         completion_comparisons = []
+        cohort_pair_statuses = {
+            "same_cohort": 0,
+            "incomparable_cohort": 0,
+            "missing_cohort_identity": 0,
+            "invalid_cohort_identity": 0,
+            "insufficient_evidence": 0,
+        }
+        efficacy_valid_before_cohort_check = 0
         for pair in pairs:
             pair_id = pair["pair_id"]
             baseline = baseline_by_pair.get(pair_id)
@@ -486,6 +654,31 @@ def _summarize(rows: list[dict], pairs: list[dict[str, str]],
                     or baseline.get("efficacy_valid") is not True
                     or treatment.get("efficacy_valid") is not True):
                 continue
+            efficacy_valid_before_cohort_check += 1
+            if (type(baseline.get("criteria_passed")) is not int
+                    or type(treatment.get("criteria_passed")) is not int):
+                cohort_pair_statuses["insufficient_evidence"] += 1
+                continue
+            baseline_raw_identity = baseline.get("evaluation_cohort_identity")
+            treatment_raw_identity = treatment.get("evaluation_cohort_identity")
+            if not isinstance(baseline_raw_identity, Mapping) or not isinstance(
+                    treatment_raw_identity, Mapping):
+                cohort_pair_statuses["missing_cohort_identity"] += 1
+                continue
+            try:
+                baseline_identity = EvaluationCohortIdentity.from_mapping(
+                    baseline_raw_identity)
+                treatment_identity = EvaluationCohortIdentity.from_mapping(
+                    treatment_raw_identity)
+            except (TypeError, ValueError):
+                cohort_pair_statuses["invalid_cohort_identity"] += 1
+                continue
+            try:
+                baseline_identity.require_same_cohort(treatment_identity)
+            except ValueError:
+                cohort_pair_statuses["incomparable_cohort"] += 1
+                continue
+            cohort_pair_statuses["same_cohort"] += 1
             delta = (treatment.get("criteria_passed", 0)
                      - baseline.get("criteria_passed", 0))
             deltas.append(delta)
@@ -499,6 +692,17 @@ def _summarize(rows: list[dict], pairs: list[dict[str, str]],
             })
         paired[condition] = {
             "pairs_with_both_efficacy_valid": len(deltas),
+            "pairs_with_both_efficacy_valid_before_cohort_check": (
+                efficacy_valid_before_cohort_check),
+            "cohort_pair_statuses": cohort_pair_statuses,
+            "comparison_result_categories": {
+                "INCOMPARABLE_COHORT": (
+                    cohort_pair_statuses["incomparable_cohort"]),
+                "INSUFFICIENT_EVIDENCE": sum(cohort_pair_statuses[name]
+                    for name in ("missing_cohort_identity",
+                                 "invalid_cohort_identity",
+                                 "insufficient_evidence")),
+            },
             "mean_criteria_delta_vs_baseline": _mean(deltas),
             "treatment_wins": wins, "ties": ties, "treatment_losses": losses,
             "completion_comparisons": completion_comparisons,
@@ -554,11 +758,16 @@ def main() -> int:
             or not set(conditions).issubset(CONDITIONS)
             or "baseline" not in conditions or len(conditions) < 2):
         parser.error("conditions must include baseline and at least one unique treatment")
-    if not args.model.strip() or len(args.model) > 128:
+    if (not args.model.strip() or len(args.model) > 128
+            or any(ord(char) < 32 for char in args.model)):
         parser.error("model must be non-empty and at most 128 characters")
     if args.auth_mode == "external-provider" and not all((
             args.provider_id, args.provider_base_url, args.provider_env_key)):
         parser.error("external-provider mode requires provider id, base URL, and env key")
+    if args.provider_id is not None and (
+            len(args.provider_id) > 128
+            or any(ord(char) < 32 for char in args.provider_id)):
+        parser.error("provider id must be at most 128 characters without controls")
 
     csw_root = Path(os.environ.get("CSW_ROOT", ROOT.parent / "CognitiveStateWork"))
     dp_root = Path(os.environ.get("DP_ROOT", ROOT.parent / "DigitalPsychology"))
@@ -567,6 +776,7 @@ def main() -> int:
         "csw": _repository_state(csw_root),
         "dp": _repository_state(dp_root),
     }
+    harness_runtime_version = _codex_runtime_version(args.codex_binary)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     eval_prefix = (f"behavior-headroom-{args.behavioral_scenario}"
                    if args.behavioral_scenario else "coding-eval")
@@ -585,8 +795,13 @@ def main() -> int:
         "max_turns": args.max_turns,
         "auth_mode": args.auth_mode,
         "provider_id": args.provider_id,
-        "provider_base_url": args.provider_base_url,
+        "provider_endpoint_digest": (
+            hashlib.sha256(args.provider_base_url.encode("utf-8")).hexdigest()
+            if args.provider_base_url else "not_applicable"),
         "provider_env_key": args.provider_env_key,
+        "harness_runtime_version": harness_runtime_version,
+        "evaluation_cohort_identity_schema": (
+            "evaluation-cohort-identity/v1"),
         "conditions": list(conditions),
         "ordering_seed": args.seed,
         "repository_state": repository_state,
@@ -635,6 +850,14 @@ def main() -> int:
                                 codex_binary=args.codex_binary,
                                 behavioral_scenario=args.behavioral_scenario)
             result["pair_id"] = pair_id
+            result["evaluation_cohort_identity"] = _evaluation_cohort_identity(
+                trial=result, model=args.model, auth_mode=args.auth_mode,
+                provider_id=args.provider_id,
+                provider_base_url=args.provider_base_url,
+                behavioral_scenario=args.behavioral_scenario,
+                repository_state=repository_state,
+                harness_runtime_version=harness_runtime_version)
+            result["result_category"] = _trial_result_category(result)
             report["trials"].append(result)
             report["summary"] = _summarize(report["trials"], pairs, conditions)
             _checkpoint(output, report)
@@ -649,6 +872,7 @@ def main() -> int:
                     "model_infrastructure_valid", result.get("infrastructure_valid")),
                 "model_execution_observed": result.get("model_execution_observed"),
                 "efficacy_valid": result.get("efficacy_valid"),
+                "result_category": result["result_category"],
                 "upstream_blocked": result.get("upstream_blocked"),
                 "criteria_passed": result.get("criteria_passed"),
                 "criteria_total": result.get("criteria_total"),

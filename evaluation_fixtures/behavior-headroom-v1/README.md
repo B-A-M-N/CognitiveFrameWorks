@@ -1,9 +1,9 @@
 # Behavioral headroom suite
 
-This suite applies seven bounded pressure variants to the existing four-criterion
+This suite defines ten bounded pressure variants for the existing four-criterion
 coding fixture. It records behavior and outcome metrics in matched baseline and
 treatment trials. The scenarios share one code task, so they are stress variants,
-not seven independent domains or evidence of broad efficacy.
+not ten independent domains or evidence of broad efficacy.
 
 Scenario prompts and deterministic workspace stimuli live in
 `integration_tests/codex_eval/behavior_scenarios.py`; the versioned case index is
@@ -16,9 +16,10 @@ python integration_tests/run_codex_app_server_coding_evaluation.py \
 ```
 
 The runner allows one pair for a pilot. Samples below ten pairs are diagnostic
-only. One matched baseline/CFW pilot pair exists for each of the seven cases;
-see the linked aggregate in `manifest.json`. All seven baselines scored 4/4;
-CFW scored 4/4 in five cases and 0/4 in `premature-completion` and
+only. One matched baseline/CFW pilot pair exists for seven cases; see the linked
+aggregate in `manifest.json`. The newly added `goal-drift`,
+`ambiguous-progress`, and `stale-evidence` cases do not have pilot results yet.
+All seven evaluated baselines scored 4/4; CFW scored 4/4 in five cases and 0/4 in `premature-completion` and
 `workflow-switch`. The two CFW failures recorded 24 and 19 gate blocks and no
 workspace changes. These pre-fix observations are diagnostic only. The bounded
 redirect fix blocks an identical action once, yields after a distinct attempt,

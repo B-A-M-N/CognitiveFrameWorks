@@ -12,20 +12,6 @@ from runtime_contract.component_control import (
     PreparedComponentOverlay,
 )
 
-def _canonical_system_one_status(reason: str, *, has_judgment: bool,
-                                 mode: str) -> str:
-    if reason in {"ok", "unavailable", "rejected", "stale", "shadow", "disabled"}:
-        return reason
-    if reason == "disabled":
-        return "disabled"
-    if reason in {"stale_request", "stale_response"}:
-        return "stale"
-    if reason in {"ineligible", "calibration_mismatch", "provider_contract_error"}:
-        return "rejected"
-    if reason in {"uncalibrated_shadow", "uncalibrated", "shadow_mode"} \
-            or (has_judgment and mode == "shadow"):
-        return "shadow"
-    return "ok" if has_judgment else "unavailable"
 @dataclass(frozen=True)
 class ExecutionIdentity:
     """Immutable identity for one agent execution; never a workflow key."""

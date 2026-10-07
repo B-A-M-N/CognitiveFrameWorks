@@ -16,8 +16,10 @@ from codex_app_server_adapter import (
 from codex_host.launch import CodexLaunchProfile
 from codex_host.readiness import inspect_inference_readiness
 
-from .report import _execution_failure_class, _failure_domain
+from .report import (_execution_failure_class, _failure_domain,
+                     _validator_channel_metrics)
 from .scoring import _run_baseline_validator_set
+from .trace_analysis import bounded_payload_sha256
 from .validators import VALIDATOR_FILES
 
 
@@ -128,10 +130,13 @@ async def _run_baseline(*, workspace: Path, model: str, trial_id: str,
             "action_index": len(behavior_action_trace) + 1,
             "turn_index": len(turn_records) + 1,
             "elapsed_ms": round((time.perf_counter() - wall_started) * 1000, 3),
+            "tool": name,
             "action_class": {
                 "cfw_read": "read", "cfw_write": "write",
                 "cfw_run_validator": "validator",
             }.get(name, "other"),
+            "arguments_digest_sha256": bounded_payload_sha256(args),
+            "result_digest_sha256": bounded_payload_sha256(result),
             "criterion_ids": [target_criterion_id] if target_criterion_id else [],
             "target_criterion_id": target_criterion_id,
             "target_source": target_source,
@@ -142,8 +147,6 @@ async def _run_baseline(*, workspace: Path, model: str, trial_id: str,
                                  else {}),
             "result_class": ("failure" if passed is False
                              or result.get("success") is not True else "success"),
-            "same_approach_retry_count": 0,
-            "equivalent_retry_count": 0,
         })
         return result
 
@@ -265,9 +268,18 @@ async def _run_baseline(*, workspace: Path, model: str, trial_id: str,
                     if turn_records else "not_started",
                 "behavior_trace": [],
                 "behavior_action_trace": behavior_action_trace[-512:],
+                "action_calls": action_calls[-512:],
+                "model_tool_call_count": len(action_calls),
+                "model_validator_call_count": sum(
+                    item.get("tool") == "cfw_run_validator" for item in action_calls),
+                "validator_channel_metrics": _validator_channel_metrics(validation_runs),
                 "required_criterion_ids": sorted(criterion_by_validator.values()),
                 "assistant_message": last_message[-4000:],
                 "final_validator_results": final_results,
+                "completion_applicable": False,
+                "completion_status": "not_applicable",
+                "completion_decision": "not_applicable",
+                "completion_attempts": [],
                 "completion_permitted": None,
                 "overall_wall_time_ms": wall_ms,
                 "app_server_thread_id": thread_id,

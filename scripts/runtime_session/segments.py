@@ -16,6 +16,7 @@ class SessionLifecycleMethods:
                           action_hint: Optional[Mapping[str, Any]] = None,
                           behavior_context: str = "",
                           active_statework_ids: Optional[Sequence[str]] = None) -> str:
+        self.require_external_behavior_projection("model boundary")
         if self.lifecycle_workflow.lifecycle is not None:
             prior = set(self.lifecycle_workflow.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None
@@ -32,6 +33,7 @@ class SessionLifecycleMethods:
     def before_tool_planning(self, action_hint: Optional[Mapping[str, Any]] = None,
                              *, behavior_context: str = "",
                              active_statework_ids: Optional[Sequence[str]] = None) -> str:
+        self.require_external_behavior_projection("planning boundary")
         if self.lifecycle_workflow.lifecycle is not None:
             prior = set(self.lifecycle_workflow.active_lifecycle)
             descriptor = self._descriptor(action_hint) if action_hint is not None else None

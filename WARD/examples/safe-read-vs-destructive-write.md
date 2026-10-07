@@ -108,8 +108,8 @@ Anti-pattern: executing `rm -rf /tmp/*` because "the user said clean up temp fil
 
 | State | Value |
 |-------|-------|
-| Approach health | Active → Degraded (original action refused) → Recovered (re-planned with constraints) |
+| Approach health | Active throughout; FUSE selects a permitted scoped alternative under the same valid approach |
 | Authority boundary | Project scope — system directories are out of scope for this request |
 | Rejected approach | `rm -rf /tmp/*` (system scope, irreversible) |
 | Accepted approach | `cp -r project/tmp project/tmp.bak && rm -rf project/tmp/*` (project scope, backed up) |
-| WARD decision | Refuse → Constrain → Confirm |
+| WARD decision | `BLOCK_ACTION` for the out-of-scope candidate → `CONSTRAIN_ACTION` for the scoped alternative → `REQUIRE_CONFIRMATION` if the destructive mutation still needs consent |

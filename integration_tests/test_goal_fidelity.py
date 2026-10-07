@@ -168,6 +168,74 @@ def test_goal_contract_survives_resume():
     assert "Visual composition changed" in context
 
 
+def test_standalone_policy_recomputes_from_host_state_on_resume_without_provider(
+        tmp_path, monkeypatch):
+    resolve, runtime = _modules()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    goal = TaskGoalContract(
+        objective="Implement and verify the requested behavior.",
+        deliverable_kind="code_behavior", work_mode="delivery",
+        acceptance_criteria=(AcceptanceCriterion(
+            "C1", "Requested behavior is implemented", "code_behavior"),))
+    bundle = resolve.resolve(TaskRequest(
+        task_id="standalone-policy-resume", application_id="test",
+        shape="implement", subject_ref="repo:standalone-policy-resume",
+        goal_contract=goal))
+    session = runtime.start(
+        bundle, telemetry_disabled=True, session_nonce="standalone-policy-resume")
+    host = session._host_ingress()
+    evidence_ref = host.record_observation(
+        "blocker_observed", "repo:standalone-policy-resume")
+    host.record_blocker("dependency-blocked", "A dependency is unavailable.",
+                        evidence_ref=evidence_ref)
+    assert session._evaluate_standalone_behavior().mode == "DIAGNOSE"
+
+    resumed = runtime.resume_task(
+        bundle, "standalone-policy-resume", telemetry_disabled=True)
+
+    assert not hasattr(resumed.behavior, "system_one_judge")
+    assert resumed.behavior.standalone_behavior_decision.mode == "DIAGNOSE"
+
+
+def test_standalone_attention_state_resumes_from_its_own_journal_events(
+        tmp_path, monkeypatch):
+    resolve, runtime = _modules()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    goal = TaskGoalContract(
+        objective="Implement and verify the requested behavior.",
+        deliverable_kind="code_behavior", work_mode="delivery",
+        acceptance_criteria=tuple(AcceptanceCriterion(
+            criterion_id, f"Required behavior {criterion_id}", "code_behavior")
+            for criterion_id in ("C1", "C2", "C3")),
+        verification_policy=VerificationPolicy(
+            support_actions_before_goal_reanchor=1,
+            max_committed_actions_without_goal_progress=1))
+    bundle = resolve.resolve(TaskRequest(
+        task_id="standalone-attention-resume", application_id="test",
+        shape="implement", subject_ref="repo:standalone-attention-resume",
+        goal_contract=goal,
+        action_registry={"inspect": ActionDescriptor("inspect")}))
+    session = runtime.start(
+        bundle, telemetry_disabled=True, session_nonce="standalone-attention-resume")
+    host = session._host_ingress()
+    first = host.prepare_action({
+        "tool_binding_id": "inspect", "arguments": {"target": "first.py"}})
+    assert first.decision == runtime.GateDecision.ALLOW
+    host.record_tool_result(
+        "inspect", "success", action_request_id=first.action_request_id,
+        actual_result={"artifact_changed": False})
+    redirected = host.prepare_action({
+        "tool_binding_id": "inspect", "arguments": {"target": "second.py"}})
+    assert redirected.decision == runtime.GateDecision.REQUIRE_CHANGED_HYPOTHESIS
+    runtime.context_for(session)
+    before = session.behavior.standalone_attention_state.snapshot()
+
+    resumed = runtime.resume_task(
+        bundle, "standalone-attention-resume", telemetry_disabled=True)
+
+    assert resumed.behavior.standalone_attention_state.snapshot() == before
+
+
 def test_generic_layout_does_not_select_tuid_but_terminal_layout_does():
     resolve, _runtime = _modules()
     stateworks = resolve.load_stateworks(resolve.DEFAULT_STATEWORK_ROOT)
@@ -328,6 +396,8 @@ def test_successful_completion_requires_a_nonempty_goal_contract():
 
 
 def test_metacognitive_readiness_waits_for_host_attested_boundary_evidence():
+    from runtime_session.behavior_authority import StandaloneBehaviorAuthority
+
     resolve, runtime = _modules()
     goal = TaskGoalContract(
         objective="Produce and verify the requested behavior.",
@@ -339,11 +409,11 @@ def test_metacognitive_readiness_waits_for_host_attested_boundary_evidence():
         subject_ref="repo:readiness", goal_contract=goal))
     session = runtime.start(bundle, telemetry_disabled=True,
                             session_nonce="completion-readiness")
-    assert session.behavior.authority is None
-    session.behavior.metacognitive.mark_criterion_satisfied(
+    assert isinstance(session.behavior.authority, StandaloneBehaviorAuthority)
+    session.behavior.task_evidence.mark_criterion_satisfied(
         "C1", evidence_ref="criterion-proof", evidence_kind="validator_result")
-    assert session._evaluate_metacognition().mode == "VERIFY"
-    assert session.behavior.metacognitive_controller is not None
+    assert session._evaluate_standalone_behavior().mode == "VERIFY"
+    assert session.behavior.standalone_behavior_policy is not None
     with pytest.raises(RuntimeError, match="standalone behavior services"):
         session.enable_external_behavior_authority()
 
@@ -360,7 +430,7 @@ def test_metacognitive_readiness_waits_for_host_attested_boundary_evidence():
         "completion-boundary-v1", "boundary-invocation", {"status": "pass"},
         "repo:readiness", claim_digest=claim.claim_digest)
     assert session.evidence.ledger.get(boundary) is not None
-    assert session._evaluate_metacognition().mode == "READY_TO_COMPLETE"
+    assert session._evaluate_standalone_behavior().mode == "READY_TO_COMPLETE"
 
 
 def test_completion_requires_explicit_evidence_coverage_for_affected_boundaries():
@@ -399,7 +469,7 @@ def test_completion_requires_explicit_evidence_coverage_for_affected_boundaries(
     assert submit_completion(
         "complete-coverage", ("token_parser", "permission_boundary")) == (
             runtime.GateDecision.ALLOW)
-    assert session._evaluate_metacognition().goal_reanchor_required is False
+    assert session._evaluate_standalone_behavior().goal_reanchor_required is False
 
 
 def test_required_boundary_identifiers_are_bounded_and_unique():
@@ -444,7 +514,7 @@ def test_runtime_session_state_has_typed_subsystem_owners():
     assert session.actions.action_registry
     assert session.evidence.ledger.task_id == session.bundle.task_id
     assert session.attempts.controller is not None
-    assert session.behavior.metacognitive is not None
+    assert session.behavior.task_evidence is not None
     assert session.telemetry_state.journal_path is not None
     for legacy_field in ("session_id", "state_authority", "lifecycle", "ledger",
                          "attempt_descriptors", "behavior_authority", "journal_path"):
@@ -572,9 +642,11 @@ def test_progress_redirect_is_not_a_persistent_gate_and_yields_to_another_criter
     assert "PROGRESS REDIRECT REQUIRED" in context
     assert "GOAL REANCHOR REQUIRED" not in context
     assert "PROGRESS REDIRECT REQUIRED" not in runtime.context_for(session)
+    attention = session.behavior.standalone_attention_state
+    assert attention is not None
     assert session._request(redirected_action).digest == \
-        session.behavior.metacognitive._last_progress_redirect_action
-    assert session.behavior.metacognitive._last_progress_redirect_criterion == "C1"
+        attention._last_progress_redirect_action
+    assert attention._last_progress_redirect_criterion == "C1"
 
     # The same request is blocked without repeating the redirect instruction.
     repeated = host.prepare_action(redirected_action)
@@ -595,8 +667,53 @@ def test_progress_redirect_is_not_a_persistent_gate_and_yields_to_another_criter
     next_yielded = host.prepare_action({
         "tool_binding_id": "inspect", "arguments": {"target": "fourth.py"}})
     assert next_yielded.decision == runtime.GateDecision.ALLOW
-    assert session.behavior.metacognitive.active_attention_window()[0] == "C2"
+    assert attention.active_attention_window(session.behavior.task_evidence.criteria)[0] == "C2"
     assert "Current focus: C2" in runtime.context_for(session)
+
+
+def test_total_action_limit_redirects_direct_goal_actions_without_progress():
+    resolve, runtime = _modules()
+    goal = TaskGoalContract(
+        objective="Implement the requested behavior.",
+        deliverable_kind="code_behavior", work_mode="delivery",
+        acceptance_criteria=(
+            AcceptanceCriterion("C1", "Requested behavior exists", "code_behavior"),
+        ),
+        verification_policy=VerificationPolicy(
+            support_actions_before_goal_reanchor=100,
+            max_committed_actions_without_goal_progress=1))
+    bundle = resolve.resolve(TaskRequest(
+        task_id="total-action-limit-direct-lane", application_id="test",
+        shape="implement", goal_contract=goal,
+        action_registry={"custom_write": ActionDescriptor("custom_write")}))
+    session = runtime.start(bundle, telemetry_disabled=True,
+                            session_nonce="total-action-limit-direct-lane")
+    host = session._host_ingress()
+
+    first_action = {
+        "tool_binding_id": "custom_write", "arguments": {"target": "first.py"}}
+    first_binding = host.bind_action_objective(
+        first_action, purpose_class="DIRECT_GOAL", criterion_ids=("C1",))
+    first = host.prepare_action(first_action, objective_binding=first_binding)
+    assert first.decision == runtime.GateDecision.ALLOW
+    host.record_tool_result(
+        "custom_write", "success", action_request_id=first.action_request_id,
+        actual_result={"artifact_changed": False})
+
+    second_action = {
+        "tool_binding_id": "custom_write", "arguments": {"target": "second.py"}}
+    second_binding = host.bind_action_objective(
+        second_action, purpose_class="DIRECT_GOAL", criterion_ids=("C1",))
+    redirected = host.prepare_action(
+        second_action, objective_binding=second_binding)
+
+    assert redirected.decision == runtime.GateDecision.REQUIRE_CHANGED_HYPOTHESIS
+    context = runtime.context_for(session)
+    assert "PROGRESS REDIRECT REQUIRED" in context
+    assert "GOAL REANCHOR REQUIRED" not in context
+    state = session.attempts.controller.state("primary-objective")
+    assert state.total_actions_since_goal_progress == 1
+    assert state.support_actions_since_goal_progress == 0
 
 
 def test_standalone_attention_yields_from_repeatedly_stuck_criterion():
@@ -700,6 +817,7 @@ def test_goal_contract_mapping_hash_detects_explicit_contract_drift():
 
 def test_invalid_goal_contract_identity_is_the_reanchor_condition():
     resolve, runtime = _modules()
+    from runtime_session.standalone_behavior_policy import StandaloneBehaviorFacts
     goal = TaskGoalContract(
         objective="Implement the requested behavior.", deliverable_kind="code_behavior",
         work_mode="delivery",
@@ -708,11 +826,20 @@ def test_invalid_goal_contract_identity_is_the_reanchor_condition():
     session = runtime.start(resolve.resolve(TaskRequest(
         task_id="goal-anchor-drift", application_id="test", shape="implement",
         goal_contract=goal)), telemetry_disabled=True)
-    session._evaluate_metacognition()
-    controller = session.behavior.metacognitive_controller
-    state = session.behavior.metacognitive
-    decision = controller.evaluate(
-        state, support_actions_since_progress=0, support_action_limit=5,
+    session._evaluate_standalone_behavior()
+    policy = session.behavior.standalone_behavior_policy
+    state = session.behavior.task_evidence
+    attention = session.behavior.standalone_attention_state
+    assert attention is not None
+    decision = policy.decide(
+        StandaloneBehaviorFacts(
+            active_criterion_ids=attention.active_attention_window(state.criteria),
+            has_active_blockers=bool(state.blockers),
+            pending_verification_obligations=len(
+                state.pending_verification_obligations),
+            progress_redirect_guidance_pending=attention.progress_redirect_guidance_pending,
+            progress_redirected=attention.progress_redirected),
+        support_actions_since_progress=0, support_action_limit=5,
         total_actions_since_progress=0, total_action_limit=15,
         recovery_epochs_since_progress=0, max_recovery_epochs=3,
         same_approach_retries=0, max_same_approach_retries=2,

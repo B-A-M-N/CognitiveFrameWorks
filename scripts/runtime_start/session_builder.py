@@ -5,11 +5,12 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from runtime_contract.actions import ActionDescriptor
-from runtime_contract.convergence import ConvergenceController
+from runtime_contract.convergence import AttemptEvidenceTracker
 from runtime_contract.evidence import EvidenceLedger
 from runtime_contract.stateworks import ExecutionSegment
-from runtime_contract.system_one import BehavioralJudge
-from runtime_session.behavior_authority import StandaloneBehaviorAuthority
+from runtime_session.behavior_authority import (
+    ExternalBehaviorAuthorityPending, StandaloneBehaviorAuthority,
+)
 from runtime_session.lifecycle import ExecutionIdentity
 from runtime_session.session import RuntimeSession
 from runtime_session.standalone_route_policy import (
@@ -26,7 +27,7 @@ from runtime_start.identity import StartIdentity
 def build_runtime_session(
         bundle: Any, *, identity: StartIdentity,
         action_registry: Mapping[str, ActionDescriptor],
-        behavioral_judge: BehavioralJudge | None,
+        runtime_mode: str,
         policy_epoch_record: PolicyEpochRecord | None,
         ) -> RuntimeSession:
     """Create each subsystem aggregate before binding external authorities."""
@@ -87,16 +88,16 @@ def build_runtime_session(
     evidence_state = EvidenceState(
         ledger=EvidenceLedger(bundle.task_id, writer_token=evidence_writer_token),
         _writer_token=evidence_writer_token)
-    behavior_state = BehaviorState(
-        _authority=(StandaloneBehaviorAuthority(
-            system_one_judge=behavioral_judge,
-            route_policy=StandaloneRoutePolicy(policy_epoch_record))
-                    if behavioral_judge is not None or policy_epoch_record is not None
-                    else None))
-    behavior_state.metacognitive.ensure_criteria(pinned.get("goal_contract") or {})
+    behavior_authority = (
+        ExternalBehaviorAuthorityPending()
+        if runtime_mode == "combined_enforcing"
+        else StandaloneBehaviorAuthority(
+            route_policy=StandaloneRoutePolicy(policy_epoch_record)))
+    behavior_state = BehaviorState(_authority=behavior_authority)
+    behavior_state.task_evidence.ensure_criteria(pinned.get("goal_contract") or {})
     verification_policy = ((pinned.get("goal_contract") or {}).get(
         "verification_policy") or {})
-    convergence = ConvergenceController(
+    convergence = AttemptEvidenceTracker(
         identity={
             "namespace_id": execution_identity.namespace_id,
             "application_instance_id": execution_identity.application_instance_id,

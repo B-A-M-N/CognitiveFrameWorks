@@ -18,7 +18,10 @@ from runtime_contract.workflow_port import ProviderWorkflowPlanner  # noqa: E402
 from codex_app_server_adapter import (  # noqa: E402
     CodexActionBinding, CodexAppServerAdapter,
 )
-from codex_app_server_dp_bridge import DigitalPsychologyBridgeHost  # noqa: E402
+from digital_psychology_adapter import CFWBehaviorAdapter  # noqa: E402
+from cognitive_runtime_core.integrations.cfw import (  # noqa: E402
+    DigitalPsychologyHarnessLifecycle,
+)
 from runtime_contract.actions import default_action_registry  # noqa: E402
 from runtime_contract.task import (  # noqa: E402
     AcceptanceCriterion, TaskGoalContract,
@@ -94,6 +97,10 @@ class _AppServerClient:
     host_policy_verified = True
 
     def __init__(self):
+        self.codex_feature_catalog = {
+            "codex_cli_version": "codex-cli 0.160.0",
+            "feature_names": ["dynamic_tools"],
+        }
         self.handlers = None
         self.thread_params = None
         self.closed = False
@@ -268,7 +275,7 @@ def test_generic_codex_opens_cfw_and_dp_on_the_same_multi_workflow_authority(tmp
 
     async def bridge_factory(*, request, task_handle, host_handle, session_id,
                              **_kwargs):
-        behavior = task_handle.digital_psychology_adapter()
+        behavior = task_handle.create_component_adapter(CFWBehaviorAdapter)
         cfw_workflows = behavior.workflow_authority_identities()
         assert sorted(cfw_workflows) == ["getter", "gitter"]
         first_identity = cfw_workflows[sorted(cfw_workflows)[0]]
@@ -282,7 +289,7 @@ def test_generic_codex_opens_cfw_and_dp_on_the_same_multi_workflow_authority(tmp
             attempt_id=task_handle.attempt_id,
             workflow_id=first_identity["workflow_id"],
             subject_ref=first_identity["subject_ref"],
-            segment_id="codex-turn-0",
+            segment_id="segment-0",
             behavioral_subject=first_identity["subject_ref"],
             goal_contract_hash=str(task_handle.bundle.pinned.get(
                 "goal_contract_hash") or "") or None)
@@ -326,8 +333,9 @@ def test_generic_codex_opens_cfw_and_dp_on_the_same_multi_workflow_authority(tmp
     def unexpected_observation_factory(**_kwargs):
         raise AssertionError("this startup-only integration test does not invoke tools")
 
-    cognitive_host = DigitalPsychologyBridgeHost(
+    runtime_lifecycle = DigitalPsychologyHarnessLifecycle(
         bridge_factory=bridge_factory,
+        component_adapter_factory=CFWBehaviorAdapter,
         candidate_factory=unexpected_candidate_factory,
         observation_factory=unexpected_observation_factory)
     app_server = _AppServerClient()
@@ -340,7 +348,7 @@ def test_generic_codex_opens_cfw_and_dp_on_the_same_multi_workflow_authority(tmp
         executor=lambda _args: {"content": "test"})
     adapter = CodexAppServerAdapter(
         request=request, action_bindings=(read_binding,), model="test-model", cwd=tmp_path,
-        runtime=runtime, cognitive_host=cognitive_host,
+        runtime=runtime, runtime_harness_lifecycle=runtime_lifecycle,
         runtime_mode="combined_enforcing",
         task_start_options={"state_authority": state_authority})
 
@@ -353,8 +361,8 @@ def test_generic_codex_opens_cfw_and_dp_on_the_same_multi_workflow_authority(tmp
     async def run():
         await adapter.open(app_server)
         try:
-            cfw_workflows = adapter._task_handle.digital_psychology_adapter(
-            ).workflow_authority_identities()
+            cfw_workflows = adapter._task_handle.create_component_adapter(
+                CFWBehaviorAdapter).workflow_authority_identities()
             statework_workflows = {
                 statework_id: {**dict(identity), "statework_id": statework_id}
                 for statework_id, identity in cfw_workflows.items()}
@@ -371,8 +379,8 @@ def test_generic_codex_opens_cfw_and_dp_on_the_same_multi_workflow_authority(tmp
             assert getter_state.revision == 3
             assert all(authority.evidence_store.resolve([ref])
                        for ref in getter_prepared["evidence_refs"].values())
-            cfw_workflows = adapter._task_handle.digital_psychology_adapter(
-            ).workflow_authority_identities()
+            cfw_workflows = adapter._task_handle.create_component_adapter(
+                CFWBehaviorAdapter).workflow_authority_identities()
             dp_workflows = dp_bindings[0].workflow_authority_identities()
             assert sorted(cfw_workflows) == ["getter", "gitter"]
             assert {key: dict(value) for key, value in cfw_workflows.items()} == {
@@ -381,14 +389,14 @@ def test_generic_codex_opens_cfw_and_dp_on_the_same_multi_workflow_authority(tmp
             assert status["model_visible_dp_tools"] == 0
             assert status["runtime_mode"] == "combined_enforcing"
             assert status["cognitive_fault"] is None
-            assert status["cognitive_host_status"][
+            assert status["runtime_harness_lifecycle_status"][
                 "private_dp_bridge_open"] is True
-            assert status["cognitive_host_status"][
+            assert status["runtime_harness_lifecycle_status"][
                 "shared_csw_authority_verified"] is True
-            assert status["cognitive_host_status"][
+            assert status["runtime_harness_lifecycle_status"][
                 "shared_csw_workflow_ids"] == ["getter", "gitter"]
-            assert status["cognitive_host_status"]["dp_faulted"] is False
-            assert status["cognitive_host_status"]["production_metrics"][
+            assert status["runtime_harness_lifecycle_status"]["dp_faulted"] is False
+            assert status["runtime_harness_lifecycle_status"]["production_metrics"][
                 "counters"]["csw_directive_rejections"] == 0
             visible_tools = app_server.thread_params["dynamicTools"]
             assert [item["name"] for item in visible_tools] == ["cfw_read"]

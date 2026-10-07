@@ -106,6 +106,77 @@ def test_combined_enforcing_requires_shared_authority():
         runtime.start(bundle, telemetry_disabled=True, runtime_mode="combined_enforcing")
 
 
+def test_combined_mode_fails_closed_until_dp_binds_and_projects(tmp_path):
+    from runtime_session.behavior_authority import ExternalBehaviorAuthorityPending
+    from runtime_contract.component_control import COMPONENT_BASELINE_MODES
+    from runtime_contract.convergence import AttemptEvidenceTracker
+
+    resolve, runtime = _runtime_modules()
+    request = resolve.TaskRequest(
+        task_id="requires-dp-authority", namespace_id="ns", application_id="app",
+        application_instance_id="app-instance", subject_ref="repo:shared",
+        shape="quick", domain_tags=("terminal interface",),
+    )
+    bundle = resolve.resolve(request, cow_root=COW, requested_flows={"tuid": "discover"})
+    authority = runtime.create_state_authority(
+        COW, state_path=tmp_path / "subjects.json",
+        evidence_path=tmp_path / "evidence.json")
+    session = runtime.start(
+        bundle, telemetry_disabled=True, runtime_mode="combined_enforcing",
+        state_authority=authority)
+
+    assert isinstance(session.behavior.authority, ExternalBehaviorAuthorityPending)
+    assert isinstance(session.attempts.controller, AttemptEvidenceTracker)
+    assert not hasattr(session.attempts.controller, "evaluate_retry")
+    action = {"tool_binding_id": "read", "arguments": {}}
+    assert session.preflight_action(action).decision is runtime.GateDecision.BLOCK
+    preparation = session.prepare_action(action)
+    assert preparation.decision is runtime.GateDecision.BLOCK
+    assert preparation.reason_codes == ("dp.external_behavior_authority_unbound",)
+    with pytest.raises(RuntimeError, match="bound external behavior authority"):
+        session.before_model_call(tool_capable=True)
+    with pytest.raises(RuntimeError, match="bound external behavior authority"):
+        session.before_tool_planning()
+
+    session.enable_external_behavior_authority()
+    with pytest.raises(RuntimeError, match="external behavior projection"):
+        session.before_model_call(tool_capable=True)
+
+    session.apply_external_behavior_projection({
+        "protocol_version": "2.1.0", "behavior_revision": 1,
+        "host_action_index": 0, "cognitive_mode": "DELIVER",
+        "framework_modes": dict(COMPONENT_BASELINE_MODES),
+        "focus_criteria": [], "verification_intensity": "normal",
+        "exploration_budget": "normal", "retry_policy": "normal",
+        "recovery_level": 0, "context_strategy": "standard",
+        "response_strategy": "direct", "target_leases": [],
+    })
+    assert "TASK CONTRACT" in session.before_model_call(tool_capable=True)
+    assert session.preflight_action(
+        {"tool_binding_id": "read", "arguments": {}}).decision is runtime.GateDecision.ALLOW
+
+
+def test_combined_enforcing_rejects_cfw_owned_semantic_provider():
+    resolve, runtime = _runtime_modules()
+    request = resolve.TaskRequest(
+        task_id="reject-cfw-semantic-provider", namespace_id="ns",
+        application_id="app", application_instance_id="app-instance",
+        subject_ref="repo:shared", shape="quick",
+        domain_tags=("terminal interface",),
+    )
+    bundle = resolve.resolve(request, cow_root=COW,
+                             requested_flows={"tuid": "discover"})
+
+    class ForbiddenProvider:
+        def capability(self):
+            raise AssertionError("CFW must reject before inspecting a provider")
+
+    with pytest.raises(ValueError, match="CFW no longer accepts a System-1 provider"):
+        runtime.start(bundle, telemetry_disabled=True,
+                      runtime_mode="combined_enforcing",
+                      behavioral_judge=ForbiddenProvider())
+
+
 def test_standalone_stateworks_require_explicit_authority():
     resolve, runtime = _runtime_modules()
     request = resolve.TaskRequest(

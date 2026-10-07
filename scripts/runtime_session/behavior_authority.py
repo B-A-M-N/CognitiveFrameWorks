@@ -1,32 +1,35 @@
-"""Explicit CFW behavioral authority strategies."""
+"""Explicit CFW standalone fallback and external-authority markers."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
-
-from runtime_contract.metacognition import (
-    MetaDecision, MetacognitiveController, SemanticSignalStore, SemanticSignals,
-)
-from runtime_contract.system_one import BehavioralJudge
-from runtime_contract.system_one_state import SystemOneStateProjector
+from runtime_contract.standalone_attention import StandaloneAttentionState
 from runtime_session.standalone_route_policy import StandaloneRoutePolicy
+from runtime_session.standalone_behavior_policy import (
+    StandaloneBehaviorDecision, StandaloneBehaviorPolicy,
+)
 
 
 @dataclass
 class StandaloneBehaviorAuthority:
-    """CFW-owned metacognition and optional semantic provider services."""
+    """Minimal deterministic fallback for standalone CFW sessions."""
 
-    system_one_judge: Optional[BehavioralJudge] = None
     route_policy: StandaloneRoutePolicy = field(default_factory=StandaloneRoutePolicy)
-    system_one_projector: SystemOneStateProjector = field(
-        default_factory=SystemOneStateProjector)
-    metacognitive_controller: MetacognitiveController = field(
-        default_factory=MetacognitiveController)
-    semantic_signals: SemanticSignals = field(default_factory=SemanticSignals)
-    semantic_signal_store: SemanticSignalStore = field(
-        default_factory=SemanticSignalStore)
-    metacognitive_decision: MetaDecision = field(
-        default_factory=lambda: MetaDecision("DELIVER", "task initialized"))
+    activated: bool = False
+    attention_state: StandaloneAttentionState = field(
+        default_factory=StandaloneAttentionState)
+    standalone_behavior_policy: StandaloneBehaviorPolicy = field(
+        default_factory=StandaloneBehaviorPolicy)
+    standalone_behavior_decision: StandaloneBehaviorDecision = field(
+        default_factory=lambda: StandaloneBehaviorDecision(
+            "DELIVER", "task initialized"))
+
+
+@dataclass(frozen=True)
+class ExternalBehaviorAuthorityPending:
+    """Combined mode awaiting its host-selected external behavior adapter."""
+
+    owner: str = "digitalpsychology"
+    protocol_version: str = "1.0.0"
 
 
 @dataclass(frozen=True)
@@ -41,4 +44,5 @@ class ExternalBehaviorAuthority:
             raise ValueError("unsupported external behavioral authority")
 
 
-__all__ = ["ExternalBehaviorAuthority", "StandaloneBehaviorAuthority"]
+__all__ = ["ExternalBehaviorAuthority", "ExternalBehaviorAuthorityPending",
+           "StandaloneBehaviorAuthority"]

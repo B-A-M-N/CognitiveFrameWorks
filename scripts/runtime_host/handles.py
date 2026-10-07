@@ -1,12 +1,13 @@
 """Capability-limited handles for CFW host and agent integrations."""
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType
 from typing import Any
 
 from resolve_runtime import RuntimeBundle
 from runtime import GateDecision, RuntimeSession
+from runtime_contract.component_control import COMPONENT_BASELINE_MODES
 from runtime_session.projection import context_for
 
 from runtime_host.session_registry import HOST_SESSION_REGISTRY
@@ -50,7 +51,7 @@ class RuntimeTaskHandle:
 
     def __init__(self, session_token: str) -> None:
         self._session_token = session_token
-        self._digital_psychology_adapter = None
+        self._component_adapters: dict[int, tuple[Callable[..., Any], Any]] = {}
 
     @property
     def session_id(self) -> str:
@@ -107,7 +108,7 @@ class RuntimeTaskHandle:
     def behavioral_trace_snapshot(self) -> dict[str, Any]:
         """Return bounded host diagnostics for an evaluation turn; no model text."""
         session = HOST_SESSION_REGISTRY.resolve(self._session_token)
-        decision = session._evaluate_metacognition()
+        decision = session._evaluate_standalone_behavior()
         pinned_hash = str(session.bundle.pinned.get("goal_contract_hash") or "")
         policy_hash = str(session.bundle.policy.goal_contract_hash or "")
         if not pinned_hash:
@@ -132,9 +133,22 @@ class RuntimeTaskHandle:
         convergence = (session.attempts.controller.state("primary-objective")
                        if session.attempts.controller is not None else None)
         goal = session.bundle.pinned.get("goal_contract") or {}
+        lifecycle = session.lifecycle_workflow.lifecycle
+        component_ids = sorted({
+            stage.split("_", 1)[0].lower()
+            for stage in session.bundle.kernel
+            if stage.split("_", 1)[0].lower() in COMPONENT_BASELINE_MODES
+        })[:16]
+        component_modes = {
+            component_id: (
+                (lifecycle.component_mode(component_id) if lifecycle is not None else None)
+                or COMPONENT_BASELINE_MODES[component_id])
+            for component_id in component_ids
+        }
         return {
             "attempt_id": session.identity_authority.identity.attempt_id,
             "behavioral_mode": decision.mode,
+            "component_modes": component_modes,
             "active_optional_components": sorted(
                 session.lifecycle_workflow.active_lifecycle)[:32],
             "focus_criterion_ids": list(decision.active_criterion_ids[:8]),
@@ -155,8 +169,6 @@ class RuntimeTaskHandle:
                 "recovery_epochs_since_goal_progress": int(
                     convergence.recovery_epochs_since_goal_progress),
                 "same_approach_retries": int(convergence.same_approach_retries),
-                "equivalent_retry_count": int(
-                    session.metacognitive.repeated_branch_count),
             } if convergence is not None else {}),
             "context_strategy": ("external_behavior_projection"
                                  if session.behavior.is_external
@@ -172,20 +184,27 @@ class RuntimeTaskHandle:
             action_hint, behavior_context=behavior_context,
             active_statework_ids=active_statework_ids)
 
-    def digital_psychology_adapter(self):
-        """Return the explicit DP component port for this host-owned task."""
-        if self._digital_psychology_adapter is not None:
-            return self._digital_psychology_adapter
-        from digital_psychology_adapter import CFWBehaviorAdapter
-        self._digital_psychology_adapter = CFWBehaviorAdapter(
+    def create_component_adapter(
+            self, adapter_factory: Callable[[RuntimeSession, AgentSessionHandle], Any]
+    ) -> Any:
+        """Create or return a caller-selected adapter for this CFW task."""
+        if not callable(adapter_factory):
+            raise TypeError("component adapter factory must be callable")
+        cache_key = id(adapter_factory)
+        cached = self._component_adapters.get(cache_key)
+        if cached is not None and cached[0] is adapter_factory:
+            return cached[1]
+        adapter = adapter_factory(
             HOST_SESSION_REGISTRY.resolve(self._session_token), self.agent)
-        return self._digital_psychology_adapter
+        self._component_adapters[cache_key] = (adapter_factory, adapter)
+        return adapter
 
     @property
     def agent(self) -> AgentSessionHandle:
         return AgentSessionHandle(self._session_token)
 
     def close(self) -> None:
+        self._component_adapters.clear()
         HOST_SESSION_REGISTRY.close(self._session_token)
 
 
@@ -318,6 +337,10 @@ class HostSessionHandle:
 
     def validate_completion_boundary(self, **kwargs: Any) -> GateDecision:
         return self._host_api().validate_completion_boundary(self._session(), **kwargs)
+
+    def completion_statework_receipt(self) -> dict[str, Any] | None:
+        """Return the task's current CSW workflow completion receipt."""
+        return self._session().completion_statework_receipt()
 
     def operator_observation(self, **kwargs: Any) -> str:
         return self._host_api().operator_observation(self._session(), **kwargs)

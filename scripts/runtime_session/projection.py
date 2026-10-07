@@ -6,13 +6,14 @@ from typing import Any, List, Optional, Sequence
 from runtime_contract.component_control import COMPONENT_MODEL_VISIBILITY
 from runtime_contract.handlers import enforcement_for_guard
 from runtime_contract.task import task_goal_contract_mapping_hash
-from runtime_contract.behavioral_fusion import render_metacognitive_directive
+from runtime_session.standalone_behavior_policy import render_standalone_behavior_guidance
 
 def context_for(session: Any, *, behavior_context: str = "",
                 active_statework_ids: Optional[Sequence[str]] = None) -> str:
     """The model-visible instruction context: kernel order + injected
     capsules + guard rules. This is what measuring 'the final prompt
     actually injected' means — not the bundle JSON file."""
+    session.require_external_behavior_projection("model/planning context")
     parts: List[str] = []
     if active_statework_ids is not None:
         if (not isinstance(active_statework_ids, (tuple, list, set, frozenset))
@@ -42,7 +43,7 @@ def context_for(session: Any, *, behavior_context: str = "",
             required = visible
             criteria_label = "Required criteria in current attention window: "
         else:
-            attention = session._evaluate_metacognition()
+            attention = session._evaluate_standalone_behavior()
             focus = set(attention.active_criterion_ids)
             required = [item for item in required
                         if str(item.get("criterion_id") or "") in focus]
@@ -82,14 +83,17 @@ def context_for(session: Any, *, behavior_context: str = "",
             "A trusted host must restore the authoritative objective and required criteria.")
     elif (not session.behavior.is_external and goal_anchor_valid
             and goal.get("work_mode") == "delivery"
-            and session.behavior.metacognitive.take_progress_redirect_guidance() is not None):
+            and session._standalone_attention().take_progress_redirect_guidance() is not None):
+        session._journal_standalone_attention()
         convergence_state = (session.attempts.controller.state("primary-objective")
                              if session.attempts.controller is not None else None)
         total_actions = (convergence_state.total_actions_since_goal_progress
                          if convergence_state else 0)
         support_actions = (convergence_state.support_actions_since_goal_progress
                            if convergence_state else 0)
-        focus = session.behavior.metacognitive.active_attention_window()
+        attention = session._standalone_attention()
+        focus = attention.active_attention_window(
+            session.behavior.task_evidence.criteria)
         parts.append(
             "===== PROGRESS REDIRECT REQUIRED =====\n"
             f"No primary-deliverable progress in {total_actions} committed actions; "
@@ -99,7 +103,7 @@ def context_for(session: Any, *, behavior_context: str = "",
             "Continue with an unfinished criterion, establish a concrete blocker, or verify criterion-linked work already performed. "
             "Current focus: " + (", ".join(focus) if focus else "no runnable criterion"))
     directive = ("" if session.behavior.is_external else
-                 render_metacognitive_directive(session._evaluate_metacognition()))
+                 render_standalone_behavior_guidance(session._evaluate_standalone_behavior()))
     if directive:
         parts.append(directive +
                      "\nHost permissions, evidence requirements, retry limits, and completion checks remain authoritative.")

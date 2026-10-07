@@ -22,7 +22,7 @@ from runtime_contract.routing import (
     load_routing_profiles, validate_experiment_plan,
 )
 from runtime_contract.statework_provider import DEFAULT_STATEWORK_ROOT
-from runtime_contract.task import SystemOnePolicy, TaskRequest
+from runtime_contract.task import TaskRequest
 from runtime_contract.validators import validator_registry_hash
 from runtime_contract.paths import runtime_asset_root
 from runtime_contract.workflow_port import (
@@ -84,7 +84,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
             routing_profile_path: Optional[Path] = None,
             behavioral_advisor: Optional[BehavioralAdvisor] = None,
             sharing_verifier: Optional[Callable[[Mapping[str, Any], str, str], bool]] = None,
-            system_one_policy: Optional[Union[SystemOnePolicy, Mapping[str, Any]]] = None,
             workflow_port: Optional[WorkflowPlanner] = None) -> RuntimeBundle:
     """Pure library entry point: TaskRequest -> RuntimeBundle. No source-tree
     writes (the CLI snapshot writer is separate and out-of-tree)."""
@@ -135,7 +134,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         toolset = request.toolset
         observation_context = dict(request.observation_context)
         goal_contract = request.goal_contract
-        system_one_policy = request.system_one_policy
         if action_registry is None:
             action_registry = request.action_registry
     else:
@@ -169,7 +167,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         revocation_mode = "deferred"
         routing_experiment_plan = {}
         goal_contract = None
-        system_one_policy = system_one_policy or SystemOnePolicy()
         application_instance_id = application_instance_id or application_id
         model_id = model_id or model
     application_id = str(application_id or "")
@@ -192,11 +189,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
     requested_statework_ids = tuple(sorted(requested_statework_ids))
     goal_contract_dict = goal_contract.to_dict() if goal_contract is not None else {}
     goal_contract_hash = goal_contract.contract_hash if goal_contract is not None else ""
-    if not isinstance(system_one_policy, SystemOnePolicy):
-        if not isinstance(system_one_policy, Mapping):
-            raise ValueError("system_one_policy must be a SystemOnePolicy or mapping")
-        system_one_policy = SystemOnePolicy(**dict(system_one_policy))
-    system_one_policy_dict = system_one_policy.to_dict()
     effective_actions = effective_action_registry(action_registry)
     domains = list(domains or [])
     pipeline = load_pipeline()
@@ -538,9 +530,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         "model_capability_hash": model_capability_hash,
         "harness": harness, "harness_version": harness_version, "toolset": toolset,
     }).encode("utf-8")).hexdigest()
-    laya_identity_hash = (
-        hashlib.sha256(_stable_json(system_one_policy_dict).encode("utf-8")).hexdigest()
-        if system_one_policy.mode != "disabled" else "")
     composite_snapshot = CompositeCognitiveRuntimeSnapshot(
         cfw_policy_hash=cfw_policy_snapshot.policy_hash,
         csw_registry_hash=csw_registry_hash,
@@ -549,7 +538,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         dp_policy_contract_hash=(
             str(pack.get("semantic_hash") or "")
             if pack.get("guard_pack_status") == "valid" else ""),
-        laya_identity_hash=laya_identity_hash,
         host_goal_contract_hash=goal_contract_hash,
         model_harness_toolset_hash=model_harness_toolset_hash,
     )
@@ -565,7 +553,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         trigger=trigger, pipeline_hash=pipeline_hash,
         runtime_kernel_hash=kernel_hash,
         calibration_hash=sispis_calibration_hash,
-        system_one_policy=system_one_policy_dict,
         subject_ref=subject_ref,
         goal_contract_hash=goal_contract_hash,
         signal_schema_hash=sha256(signal_schema_path),
@@ -650,7 +637,6 @@ def resolve(task_id: Union[str, TaskRequest], shape: str = "implement", domains:
         subject_ref=subject_ref,
         goal_contract=goal_contract_dict,
         goal_contract_hash=goal_contract_hash,
-        system_one_policy=system_one_policy_dict,
         agent_id=agent_id,
         phase=phase,
         domain_tags=tuple(domains),

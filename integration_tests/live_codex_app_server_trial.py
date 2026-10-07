@@ -14,7 +14,7 @@ DP = Path(os.environ.get('DP_ROOT', CFW.parent / 'DigitalPsychology')).resolve()
 sys.path[:0] = [str(CFW / 'scripts'), str(CSW / 'scripts'), str(DP)]
 from codex_app_server_adapter import (CodexActionBinding, CodexAppServerAdapter,
                                       JsonlAppServerClient)
-from codex_app_server_dp_bridge import DigitalPsychologyBridgeHost
+from cognitive_runtime_core.integrations.cfw import DigitalPsychologyHarnessLifecycle
 from runtime_contract.actions import (ActionDescriptor, HostExecutionContext,
                                       ProtectedResourcePolicy)
 from runtime_contract.task import AcceptanceCriterion, TaskGoalContract, TaskRequest
@@ -203,7 +203,7 @@ async def main():
                 'DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE': 'disabled'}
         bridges, cfw_gate_receipts, executions = [], [], []
         def bridge_factory(*, request, task_handle, session_id, **kwargs):
-            behavior = task_handle.digital_psychology_adapter()
+            behavior = task_handle.create_component_adapter(CFWBehaviorAdapter)
             workflow_identities = behavior.workflow_authority_identities()
             if not workflow_identities:
                 raise RuntimeError('CFW task did not bind any CSW workflow identities')
@@ -246,7 +246,7 @@ async def main():
             bridges.append(bridge)
             return bridge
         def candidate_factory(*, action, binding, invocation_id, **kwargs):
-            target = str((action.get('arguments') or {}).get('path') or '')
+            target = str(action.get('parameter_digest') or '')
             return ActionCandidate(action_class=binding,
                 proposed_purpose='attempt the host task action',
                 affected_criterion_ids=(criterion,), action_id=invocation_id,
@@ -262,9 +262,11 @@ async def main():
             return RuntimeObservation(action_index=max(0, bridge._action_index),
                 action_completed=False, goal_set=bridge.goal_set,
                 criterion_status={criterion: 'unmet'})
-        cognitive_host = None
+        runtime_lifecycle = None
         if args.condition == 'triad':
-            cognitive_host = DigitalPsychologyBridgeHost(bridge_factory=bridge_factory,
+            runtime_lifecycle = DigitalPsychologyHarnessLifecycle(
+                bridge_factory=bridge_factory,
+                component_adapter_factory=CFWBehaviorAdapter,
                 candidate_factory=candidate_factory, observation_factory=observation_factory)
         def executor(args):
             target = (workspace / args['path']).resolve(); target.relative_to(workspace)
@@ -280,7 +282,8 @@ async def main():
         runtime_mode = 'combined_enforcing' if with_csw else 'standalone_enforcing'
         runtime = CognitiveRuntime(host_context=host_context, workflow_port=workflow_port)
         adapter = CodexAppServerAdapter(request=request, action_bindings=(binding,),
-            model=args.model, cwd=workspace, runtime=runtime, cognitive_host=cognitive_host,
+            model=args.model, cwd=workspace, runtime=runtime,
+            runtime_harness_lifecycle=runtime_lifecycle,
             runtime_mode=runtime_mode,
             task_start_options=({'state_authority': state_authority} if with_csw else {}))
         action_calls = []
@@ -300,10 +303,10 @@ async def main():
             client.set_handlers(request_handler=record_action_call,
                                 notification_handler=adapter.handle_notification)
             bound_task = adapter._task_handle
-            workflow_ids = (bound_task.digital_psychology_adapter()
+            workflow_ids = (bound_task.create_component_adapter(CFWBehaviorAdapter)
                             .workflow_authority_identities() if with_csw else {})
             result = await adapter.run_turn(PROMPT, timeout=180)
-            triad_status = adapter.status()['cognitive_host_status']
+            triad_status = adapter.status()['runtime_harness_lifecycle_status']
             action_invocations = len(action_calls)
             gate_blocked = (len(action_calls) == 1
                             and action_calls[0].get('success') is False)
@@ -348,7 +351,7 @@ async def main():
                 'integration_valid': integration_valid,
                 'trial_passed': integration_valid and gate_blocked and not executions
                     and fixture_after == 'original\n',
-                'cognitive_host_status': triad_status,
+                'runtime_harness_lifecycle_status': triad_status,
                 'model_visible_dp_tools': adapter.status()['model_visible_dp_tools']}, sort_keys=True))
         finally:
             await adapter.close()

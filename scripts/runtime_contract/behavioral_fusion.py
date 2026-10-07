@@ -1,13 +1,16 @@
-"""Narrow semantic fusion; metacognitive control remains provider-independent."""
+"""Deprecated semantic fusion helpers retained for legacy artifact readers.
+
+Live CFW runtime and task contracts do not import this module. Semantic policy
+and assessment are owned by DigitalPsychology.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence
 
 from .actions import ActionDescriptor
-from .metacognition import MetaDecision, SemanticSignals
-from .system_one import QuestionAnswer, SystemOneJudgment
-from .task import SystemOnePolicy
+from .legacy_system_one_signals import SemanticSignals
+from .system_one import QuestionAnswer, SystemOneJudgment, SystemOnePolicy
 
 SUPPORT_RELATIONS = frozenset({"required_verification", "diagnostic_support", "unrelated"})
 GOAL_RELATIONS = frozenset({"advances_primary_goal", "removes_concrete_blocker"})
@@ -140,25 +143,6 @@ class SemanticFusion:
             source_decisions=tuple(dict.fromkeys(sources))[:8])
 
 
-def render_metacognitive_directive(decision: MetaDecision) -> str:
-    """Render host-determined focus without giving provider labels executive force."""
-    lines = ["===== CFW METACOGNITIVE GUIDANCE =====",
-             f"Current focus: {decision.mode}",
-             f"Reason: {decision.reason[:160]}"]
-    if decision.active_criterion_ids:
-        lines.append("Unfinished criteria: " + ", ".join(decision.active_criterion_ids[:4]))
-    if decision.goal_reanchor_required:
-        lines.append("Re-anchor the next action to an unfinished user criterion or a concrete blocker.")
-    if decision.semantic_attention_note:
-        lines.append(decision.semantic_attention_note[:220])
-    if decision.mode == "BLOCKED":
-        lines.append("Stop recovery attempts and report the unresolved blocker to the host.")
-    elif decision.mode == "READY_TO_COMPLETE":
-        lines.append("Invoke the host's authoritative completion and boundary-evidence checks.")
-    return "\n".join(lines[:7])
-
-
 __all__ = ["AuthorityDecision", "FusedActionRelation", "SemanticProgressObservation",
            "SemanticFusion", "fuse_action_relation", "fuse_progress_relation",
-           "fuse_retry_relation", "render_metacognitive_directive", "SUPPORT_RELATIONS",
-           "GOAL_RELATIONS"]
+           "fuse_retry_relation", "SUPPORT_RELATIONS", "GOAL_RELATIONS"]

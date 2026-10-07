@@ -73,7 +73,7 @@ Multiple signals: stack by descending weight, refuse first. Cap at 5 lines.
 | proceed | Within authority, safe, reversible | Execute normally |
 | constrain | Permitted but must be modified | Re-plan with constraints, then execute |
 | confirm | Needs user consent | Halt. User must approve before execution |
-| refuse | Not permitted | Block. Escalate to ANCHOR Recovery |
+| refuse | This candidate is not permitted | Block it; FUSE selects another candidate under the same valid approach |
 | recover | State recovery needed first | Halt. Recover state, then re-evaluate |
 
 ## Authority Classification
@@ -125,7 +125,8 @@ FUSE calls WARD before execution when action: mutates state, accesses private da
 
 | WARD event | ANCHOR response |
 |------------|-----------------|
-| Refused | Recovery Discipline trigger |
+| `BLOCK_ACTION` / refused candidate | Record the blocked candidate; FUSE selects another action under the same valid approach |
+| `RECOVER_APPROACH` | Recovery Discipline trigger when the current approach is invalid or has no permitted action |
 | Risk accepted | Action Accountability records |
 | Authority exceeded | State Integrity flags boundary |
 | Constrained | Action Accountability records original + constraint |

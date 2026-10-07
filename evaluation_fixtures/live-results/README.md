@@ -24,8 +24,13 @@ dirty trees.
 
 | Artifact | Setup and result | Tree state | Claim |
 | --- | --- | --- | --- |
-| [`coding-eval-20261006T051814Z.json`](coding-eval-20261006T051814Z.json) | 50 trials; 10 each for baseline, CFW, CFW+CSW, triad, and triad-multipath; `deepseek-v4-flash`. Baseline 10/10 at 4/4; CFW 7/10 at 4/4 (mean 2.8); each combined condition 10/10 at 4/4. | Dirty CFW/CSW/DP trees at `89e76d0`, `a80471f`, `f85df96`. | Integration and non-regression for one fixture/model. CFW-only's 3/10 incomplete runs require trace review; this is not causal evidence. |
-| [`post-reuse-baseline-cfw-20261006.json`](post-reuse-baseline-cfw-20261006.json) | 20 trials across baseline and CFW; `deepseek-v4-flash`. Baseline 10/10 at 4/4; CFW 7/10 full score (mean 3.1). The three incomplete CFW runs used all three turns (scores 0/4, 3/4, 0/4), with six `convergence.total_action_limit` reason observations and no goal reanchors. Validator evidence reuse was observed 40/40 times. | Dirty trees; report records working-tree and untracked-manifest hashes. | Goal-reanchor fix and validator-reuse development check; noncanonical. The report lacks action-level traces for those failures, so their within-turn cause remains unresolved. |
+| [`codex-app-server-workspace-routing-preflight-20261007T065902Z.json`](codex-app-server-workspace-routing-preflight-20261007T065902Z.json) | User-approved ChatGPT-mode preflight with `gpt-6-luna`; App Server classified workspace routing unavailable. No host, triad, thread, or turn started. | Dirty development trees; preflight-only result records no repository mutation. | Infrastructure diagnostic only. It has no model or efficacy observation. |
+| [`behavior-headroom-equivalent-retry-20261007T061225Z.json`](behavior-headroom-equivalent-retry-20261007T061225Z.json) | One matched baseline/CFW pair scheduled after the adapter began forwarding explicit write-change observations. Both arms stopped at ChatGPT App Server workspace-routing preflight; zero host starts and zero model calls. | Dirty development trees; report records state fingerprints. | Infrastructure-only attempt. It does not evaluate the adapter change or model behavior. |
+| [`behavior-headroom-equivalent-retry-20261007T060625Z.json`](behavior-headroom-equivalent-retry-20261007T060625Z.json) | One matched baseline/CFW pair; both scored 4/4 externally. CFW made 50 model tool calls and 14 validator calls; its completion gate blocked 10 calls after the write result's `changed` observation was omitted at the adapter boundary. | Dirty development trees; report records state fingerprints. | Diagnostic trace that exposed missing artifact-change evidence. The CFW completion denial is not a task-score failure. |
+| [`behavior-headroom-equivalent-retry-20261007T055248Z.json`](behavior-headroom-equivalent-retry-20261007T055248Z.json) | Ten matched baseline/CFW pairs; both conditions scored 10/10 at 4/4. The prompt did not produce any same-approach or equivalent retries. | Dirty development trees; report records state fingerprints. | Stimulus check only; it did not exercise retry behavior and is not retry-efficacy evidence. |
+| [`coding-eval-20261007T053122Z.json`](coding-eval-20261007T053122Z.json) | 10 matched baseline/CFW pairs; ChatGPT auth with `gpt-6-luna`; three-turn budget. Both conditions 10/10 valid at 4/4. Each CFW trial records 14–35 action entries, 28–70 gate receipts, and one completion attempt. | Dirty CFW/CSW/DP trees; exact HEADs, working-tree hashes, untracked manifests, and source fingerprints are in the report. | Trace-instrumented CFW reliability rerun. It does not reproduce the historical 7/10 result because the model/auth cohort differs; all 10 CFW trials passed, so this sample has no failure cohort to diagnose. |
+| [`coding-eval-20261006T051814Z.json`](coding-eval-20261006T051814Z.json) | 50 trials; 10 each for baseline, CFW, CFW+CSW, triad, and triad-multipath; `deepseek-v4-flash`. Baseline 10/10 at 4/4; CFW 7/10 at 4/4 (mean 2.8); each combined condition 10/10 at 4/4. | Dirty CFW/CSW/DP trees at `89e76d0`, `a80471f`, `f85df96`. | The three CFW-only misses scored 0/4 and ended with `require_goal_reanchor`; item counters show respectively 16 reads/7 validator calls/6 writes, 55/32/1, and 18/5/4. The normalized artifact records zero gate receipts while a legacy invariant says `cfw_action_gate_observed=true`, so gate execution is not substantiated by receipts. Per-call arguments, results, and action traces were not retained; repeated reads/validation are only a hypothesis, not a causal finding. A same-cohort trace-instrumented rerun is still needed. |
+| [`post-reuse-baseline-cfw-20261006.json`](post-reuse-baseline-cfw-20261006.json) | 20 trials across baseline and CFW; `deepseek-v4-flash`. Baseline 10/10 at 4/4; CFW 7/10 full score (mean 3.1). The three incomplete CFW runs used all three turns (scores 0/4, 3/4, 0/4), with six `convergence.total_action_limit` reason observations and no goal reanchors. Validator evidence reuse was observed 40/40 times. | Dirty trees; report records working-tree and untracked-manifest hashes. | Noncanonical reliability check. Its action-level cause remains unresolved. Current source routes total-action exhaustion through a bounded changed-hypothesis redirect for direct actions while preserving verification and concrete blocker-removal actions. A later trace-instrumented run completed 10/10 with eight CFW gate blocks, but used a different model/auth cohort and cannot establish that this change caused the improvement. |
 | [`coding-eval-20261006T044239Z.json`](coding-eval-20261006T044239Z.json) | 50 trials across the same five conditions; `deepseek-v4-flash`. CFW reached 9/10 at 4/4; the other four conditions reached 10/10. | Dirty CFW/CSW/DP trees. | Earlier integration and non-regression sample. |
 | [`coding-eval-20261005T204440Z.json`](coding-eval-20261005T204440Z.json) | 40 trials across baseline, CFW, CFW+CSW, and triad; `gpt-6-luna`. Baseline 10/10, CFW 6/10, combined conditions 10/10 at 4/4. | Dirty development trees. | Historical score and completion-policy evidence; not a clean comparison. |
 | [`noncanonical-triad-20261006.json`](noncanonical-triad-20261006.json) | One triad run; `deepseek-v4-flash`; 4/4 criteria, 24 model tool calls, 5 validator calls, 48 CFW gate receipts, and 65 committed DP control ticks. | Dirty development tree. Codex CLI `0.160.0`; full catalog SHA-256 `3310a31f8ec0d7a985fb07cf6043bc060dc5c438c4b23058e14b9b1144b86714`. | One successful integration sample only. Not an efficacy estimate or canonical result. |
@@ -70,13 +75,14 @@ they do not count as model behavior or treatment outcomes.
 
 ## Behavioral headroom benchmark
 
-The seven scenario variants are implemented and indexed in
+Ten scenario variants are defined and indexed in
 [`behavior-headroom-v1`](../behavior-headroom-v1/README.md). They apply bounded
-pressure variants to the same four-criterion coding fixture; they are not seven
-independent domains. One matched baseline/CFW pilot pair now exists for each
-scenario. The aggregate is
+pressure variants to the same four-criterion coding fixture; they are not ten
+independent domains. One matched baseline/CFW pilot pair exists for seven
+scenarios. `goal-drift`, `ambiguous-progress`, and `stale-evidence` are newly
+defined and have no pilot results yet. The existing aggregate is
 [`noncanonical-behavior-headroom-suite-pilot-20261006.json`](noncanonical-behavior-headroom-suite-pilot-20261006.json).
-All seven baselines scored 4/4. CFW scored 4/4 in five scenarios and 0/4 in
+All seven evaluated baselines scored 4/4. CFW scored 4/4 in five scenarios and 0/4 in
 `premature-completion` and `workflow-switch`; those two runs made no workspace
 changes and recorded 24 and 19 CFW gate blocks. These are pre-fix diagnostic
 outcomes from one pair per scenario, not efficacy or causal evidence.
@@ -118,8 +124,15 @@ python integration_tests/run_codex_app_server_coding_evaluation.py \
 ```
 
 The evaluator records score distributions, turn/tool/write counts, completion
-applicability, gate receipts, normalized DP intervention accounting, and
-bounded behavioral traces. For a pressure case, add
+applicability and observed completion decisions, gate receipts, normalized DP
+intervention accounting, and bounded behavioral traces. Baseline completion is
+`not_applicable`; a treatment trial that never reaches completion remains
+applicable but unobserved. Reports also retain bounded action-call metadata
+(tool, call ID, success, and validator ID; no arguments or results), count
+model-initiated validator calls separately from host validator executions, and
+group host validator runs and timing by execution channel. Completion attempts
+include their validator-to-criterion mappings and pass/reuse status. For a
+pressure case, add
 `--behavioral-scenario <scenario-id>`; the runner permits one-pair pilots and
 requires ten pairs before treating a sample as a benchmark. Trace comparisons
 are descriptive associations, not causal estimates. Internal Codex inference

@@ -201,6 +201,21 @@ def request(task_id, *, system_one_policy=None, action_registry=None, support_li
     )
 
 
+def query_action_semantics(session, *, action_request_id=None,
+                           subject_ref="component:target", target_ref=None):
+    descriptor = ActionDescriptor("read", goal_relation="ambiguous")
+    candidate = session.behavior.metacognitive.make_candidate(
+        "action", source="host_observed", action_class="read",
+        host_declared_relation="ambiguous", target_kind="workspace",
+        target_ref=target_ref,
+        proposed_purpose="inspect the requested component",
+        proposed_purpose_source="host_observed", affected_criterion_ids=("C1",))
+    return session._system_one_query(
+        questions=("action_relation", "goal_drift"), candidate=candidate,
+        subject_ref=subject_ref, action_request_id=action_request_id,
+        descriptor=descriptor)
+
+
 def test_task_policy_pins_protocol_backend_model_and_calibration_identity():
     resolve, _runtime = runtime_modules()
     policy = make_test_policy()
@@ -210,14 +225,18 @@ def test_task_policy_pins_protocol_backend_model_and_calibration_identity():
     assert bundle.pinned["policy_hash"] == resolve.compute_policy_hash(bundle.policy)
 
 
-def test_shadow_judgment_is_bounded_telemetry_and_cannot_change_action_gate():
+def test_action_gate_does_not_delegate_to_semantic_provider():
     resolve, runtime = runtime_modules()
-    bundle = resolve.resolve(request("system-one-shadow"))
+    policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
+    bundle = resolve.resolve(request(
+        "system-one-action-boundary", system_one_policy=policy))
     judge = FixedJudge(action_relation="unrelated")
     events = []
-    session = runtime.start(bundle, behavioral_judge=judge,
-                            telemetry_sink=lambda event: events.append(dict(event)),
-                            session_nonce="system-one-shadow")
+    with pytest.warns(DeprecationWarning, match="provider integration is deprecated"):
+        session = runtime.start(
+            bundle, behavioral_judge=judge,
+            telemetry_sink=lambda event: events.append(dict(event)),
+            session_nonce="system-one-shadow")
     startup_event_count = len(events)
     action = {"tool_binding_id": "read", "arguments": {
         "path": "src/main.py", "credential": "raw-secret-marker"},
@@ -235,16 +254,10 @@ def test_shadow_judgment_is_bounded_telemetry_and_cannot_change_action_gate():
     assert len(events) == startup_event_count
     prepared = session.prepare_action(action)
     assert prepared.decision == runtime.GateDecision.ALLOW
-    assert len(judge.frames) == 1
-    projected = json.dumps(judge.frames[0].canonical_payload(), sort_keys=True)
-    assert "raw-secret-marker" not in projected
-    assert "src/main.py" not in projected
-    decision = next(event for event in events if event["event_type"] == "system_one_decision")
-    assert decision["payload"]["system_one_mode"] == "shadow"
-    assert decision["payload"]["system_one_action_relation"] == "unrelated"
-    assert decision["payload"]["system_one_influenced"] is False
-    assert decision["payload"]["system_one_fused_action_relation"] == "diagnostic_support"
-    assert decision["payload"]["action_request_id"] == prepared.action_request_id
+    assert judge.frames == []
+    assert not any(event["event_type"] == "system_one_decision" for event in events)
+    assert session.actions.pending_action_requests[
+        prepared.action_request_id]["accounting_lane"] == "UNCLASSIFIED"
     assert "raw-secret-marker" not in json.dumps(events)
 
 
@@ -304,16 +317,19 @@ def test_advisory_directive_requires_pinned_calibration_and_hysteresis():
     for _ in range(2):
         assert session.prepare_action({"tool_binding_id": "read", "arguments": {}}).decision \
             == runtime.GateDecision.ALLOW
+    query_action_semantics(session)
     context = runtime.context_for(session)
     assert "===== CFW METACOGNITIVE GUIDANCE =====" in context
     assert "Current focus: DELIVER" in context
-    assert "A semantic signal suggests possible drift" in context
+    assert "A semantic signal suggests possible drift" not in context
+    assert "Semantic action-relevance hint" not in context
     decision = next(event for event in events if event["event_type"] == "system_one_decision")
     assert decision["payload"]["system_one_influenced"] is True
+    assert decision["payload"]["system_one_semantic_influenced"] is False
     assert decision["payload"]["system_one_answers"]["goal_drift"]["selected"] == "yes"
 
 
-def test_visual_drift_frame_and_rendered_observation_fuse_to_criterion_progress(tmp_path):
+def test_host_evidence_updates_criterion_state_without_semantic_provider_queries(tmp_path):
     resolve, runtime = runtime_modules()
     policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
     goal = TaskGoalContract(
@@ -356,12 +372,11 @@ def test_visual_drift_frame_and_rendered_observation_fuse_to_criterion_progress(
             "inspect", "success", subject_ref="repo:visual",
             invocation_id=f"visual-inspect-{index}",
             action_request_id=inspection.action_request_id)
-    assert session.behavior.metacognitive_decision.mode == "REPLAN"
+    assert session.behavior.standalone_behavior_decision.mode == "REPLAN"
     directive = runtime.context_for(session)
     assert "C1" in directive
     assert "Current focus: REPLAN" in directive
-    assert judge.frames[0].state.task["deliverable_kind"] == "visual_ui"
-    assert judge.frames[0].state.criteria[0].status == "unmet"
+    assert judge.frames == []
 
     write_action = {
         "tool_binding_id": "visual_edit",
@@ -398,24 +413,15 @@ def test_visual_drift_frame_and_rendered_observation_fuse_to_criterion_progress(
     assert sum(event["event_type"] == "support_action_recorded" for event in events) \
         == support_event_count
     assert session.behavior.metacognitive.criteria[0].status == "partially_observed"
-    progress_frame = next(frame for frame in reversed(judge.frames)
-                          if frame.question_ids == ("progress_relation",))
-    assert progress_frame.state.task["deliverable_kind"] == "visual_ui"
-    assert progress_frame.state.criteria[0].criterion_id == "C1"
-    assert progress_frame.state.criteria[0].status == "active"
-    assert any(fact.artifact_changed is True and "C1" in fact.affected_criterion_ids
-               for fact in progress_frame.state.activity)
-    assert "rendered_observation" in progress_frame.state.candidate.evidence_kinds
-    fused = [event for event in events if event["event_type"] == "progress_relation_fused"]
-    assert fused[-1]["payload"]["progress_relation"] == "goal_progress"
-    assert fused[-1]["payload"]["model_influenced"] is True
+    assert judge.frames == []
+    assert not any(event["event_type"] == "progress_relation_fused" for event in events)
     credited = next(event for event in events
                     if event["event_type"] == "goal_progress_recorded")
     assert credited["evidence_refs"] == [rendered]
     assert credited["payload"]["result_class"] == "goal_progress"
 
 
-def _semantic_retry_case(task_id, retry_relation):
+def _retry_gate_case(task_id, retry_relation):
     resolve, runtime = runtime_modules()
     policy = make_test_policy("advisory", calibration_hash=TEST_CALIBRATION_HASH)
     goal = TaskGoalContract(
@@ -468,29 +474,22 @@ def _semantic_retry_case(task_id, retry_relation):
     return runtime, session, judge, prior_budget, decision
 
 
-def test_retry_paraphrase_is_semantically_collapsed_without_budget_reset():
-    runtime, session, judge, prior_budget, decision = _semantic_retry_case(
+def test_retry_gate_does_not_use_semantic_equivalence():
+    runtime, session, judge, prior_budget, decision = _retry_gate_case(
         "system-one-retry-paraphrase", "equivalent_retry")
-    assert decision == runtime.GateDecision.REQUIRE_CHANGED_HYPOTHESIS
-    frame = judge.frames[-1]
-    assert "integer pixels" in frame.state.failed_approaches[-1].hypothesis_summary
-    assert "frame updates" in frame.state.candidate.proposed_purpose
-    assert len(frame.state.failed_approaches[-1].premise_digest) == 64
-    assert len(frame.state.failed_approaches[-1].action_plan_digest) == 64
-    assert frame.question_ids == ("retry_relation",)
-    assert frame.questions[0].criteria
-    assert session.behavior.system_one_decisions[judge.frames[-1].request_id]["answers"][
-        "retry_relation"]["selected"] == "equivalent_retry"
+    assert decision == runtime.GateDecision.ALLOW
+    assert judge.frames == []
+    assert session.behavior.system_one_decisions == {}
     assert session.attempts.controller.state("visual-composition").same_approach_retries == prior_budget
     assert session.attempts.controller.state("visual-composition").recovery_epochs == 0
 
 
 def test_materially_new_retry_remains_eligible_but_does_not_reset_hard_limits():
-    runtime, session, judge, prior_budget, decision = _semantic_retry_case(
+    runtime, session, judge, prior_budget, decision = _retry_gate_case(
         "system-one-retry-new-hypothesis", "materially_new")
     assert decision == runtime.GateDecision.ALLOW
-    assert session.behavior.system_one_decisions[judge.frames[-1].request_id]["answers"][
-        "retry_relation"]["selected"] == "materially_new"
+    assert judge.frames == []
+    assert session.behavior.system_one_decisions == {}
     state = session.attempts.controller.state("visual-composition")
     assert state.same_approach_retries == prior_budget
     assert state.recovery_epochs == 0
@@ -515,11 +514,8 @@ def test_shadow_prediction_cannot_reset_host_convergence_budget():
         actual_result={"secret_result": "not projected", "artifact_changed": True})
     state = session.attempts.controller.state("primary-objective")
     assert state.support_actions_since_goal_progress == 1
-    progress_decisions = [decision for decision in session.behavior.system_one_decisions.values()
-                          if decision["judgment"].get("answers")]
-    assert progress_decisions
-    assert host.system_one_decision_for_action(
-        prepared.action_request_id) == progress_decisions[-1]["decision_id"]
+    assert judge.frames == []
+    assert host.system_one_decision_for_action(prepared.action_request_id) is None
     assert session.attempts.controller.state("primary-objective").support_actions_since_goal_progress == 1
 
 
@@ -551,12 +547,11 @@ def test_stale_system_one_response_is_discarded_when_host_state_advances():
     session = runtime.start(resolve.resolve(request("system-one-stale-response")),
                             behavioral_judge=judge, telemetry_disabled=True,
                             session_nonce="system-one-stale-response")
-    action = {"tool_binding_id": "read", "arguments": {}}
     results, errors = [], []
 
     def first_call():
         try:
-            results.append(session.prepare_action(action))
+            results.append(query_action_semantics(session))
         except Exception as exc:  # surface worker errors in the main test thread
             errors.append(exc)
 
@@ -595,6 +590,7 @@ def test_provider_crash_falls_back_once_without_changing_authority():
     session = runtime.start(resolve.resolve(request("system-one-provider-crash")),
                             behavioral_judge=judge, telemetry_disabled=True,
                             session_nonce="system-one-provider-crash")
+    query_action_semantics(session)
     action = session.prepare_action({"tool_binding_id": "read", "arguments": {}})
     assert action.decision == runtime.GateDecision.ALLOW
     fallback = next(iter(session.behavior.system_one_decisions.values()))
@@ -643,6 +639,9 @@ def test_multi_agent_system_one_frames_are_identity_and_session_isolated():
             "tool_binding_id": "read", "arguments": {"target": f"/tmp/{agent_id}.txt"},
             "subject_ref": "component:shared"})
         assert prepared.decision == runtime.GateDecision.ALLOW
+        query_action_semantics(
+            session, subject_ref="component:shared",
+            target_ref=f"/tmp/{agent_id}.txt")
         sessions.append(session)
         frames.append(judge.frames[-1])
     assert frames[0].identity.agent_id == "worker-a"
@@ -654,7 +653,7 @@ def test_multi_agent_system_one_frames_are_identity_and_session_isolated():
     assert all("worker-a" not in str(fact.to_dict()) for fact in frames[1].state.activity)
 
 
-def test_resume_restores_semantic_projector_and_invalidates_behavior_advice():
+def test_resume_restores_host_facts_without_semantic_provider_queries():
     resolve, runtime = runtime_modules()
     judge = FixedJudge(goal_drift="yes")
     bundle = resolve.resolve(request("system-one-resume-projector"))
@@ -670,14 +669,15 @@ def test_resume_restores_semantic_projector_and_invalidates_behavior_advice():
         bundle, "system-one-resume-projector", behavioral_judge=judge,
         telemetry_disabled=True)
     assert resumed.behavior.metacognitive.snapshot() == prior_projection
-    assert resumed.behavior.metacognitive_decision.mode == "DELIVER"
+    assert resumed.behavior.standalone_behavior_decision.mode == "DELIVER"
     assert "CURRENT EXECUTION FOCUS" not in runtime.context_for(resumed)
     assert judge.resets
     next_action = resumed.prepare_action({"tool_binding_id": "read", "arguments": {}})
     assert next_action.decision == runtime.GateDecision.ALLOW
-    frame = judge.frames[-1]
+    assert judge.frames == []
     assert any(fact.activity_type == "action"
-               and fact.result_class == "success" for fact in frame.state.activity)
+               and fact.result_class == "success"
+               for fact in resumed.behavior.metacognitive.recent_activity)
 
 
 def test_system_one_outcome_requires_later_independent_evidence():
@@ -691,6 +691,8 @@ def test_system_one_outcome_requires_later_independent_evidence():
     prepared = session.prepare_action({
         "tool_binding_id": "read", "arguments": {},
         "subject_ref": "component:target"})
+    query_action_semantics(
+        session, action_request_id=prepared.action_request_id)
     decision_id = host.system_one_decision_for_action(prepared.action_request_id)
     assert decision_id
     evidence = host.record_observation("independent_result", "component:target")
@@ -717,6 +719,7 @@ def test_stale_identity_falls_back_and_ward_block_precedes_semantic_query():
         session_nonce="system-one-correlation")
     assert session.prepare_action({"tool_binding_id": "read", "arguments": {}}).decision \
         == runtime.GateDecision.ALLOW
+    query_action_semantics(session)
     assert len(judge.frames) == 1
     decision = next(event for event in events if event["event_type"] == "system_one_decision")
     assert decision["payload"]["system_one_status"] == "unavailable"
@@ -892,7 +895,7 @@ def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child(tmp_
             "read", "success", subject_ref=parent.policy.subject_ref,
             invocation_id=f"route-epoch-read-{index}",
             action_request_id=prepared.action_request_id)
-    assert session.behavior.metacognitive_decision.mode == "REPLAN"
+    assert session.behavior.standalone_behavior_decision.mode == "REPLAN"
 
     target_pin = next(item for item in parent.stateworks if item["id"] == "infrae")
     state_revision = session.identity_authority.authorities.state_authority.inspect_workflow(
@@ -943,7 +946,7 @@ def test_policy_epoch_ranks_host_resolved_routes_and_starts_immutable_child(tmp_
                        match="child policy epoch record"):
         runtime.start(
             epoch.bundle, runtime_mode="combined_enforcing",
-            behavioral_judge=judge, state_authority=authority,
+            state_authority=authority,
             telemetry_disabled=True, policy_epoch_record=epoch.record,
             session_nonce="system-one-route-epoch-combined")
 
@@ -976,3 +979,29 @@ def test_policy_epoch_rejects_an_unresolved_or_forged_route_bundle(tmp_path):
     with pytest.raises(ValueError, match="workflow owner's pinned route contract"):
         host.rank_legal_routes(forged, state_revision=0, target_workflow_id="infrae")
     assert session.bundle is parent
+
+
+def test_legacy_semantic_advisory_cannot_create_a_cfw_policy_epoch():
+    from runtime_session.standalone_route_policy import PolicyEpochRecord
+
+    resolve, runtime = runtime_modules()
+    _request, parent, children = _route_epoch_bundles(
+        resolve, "system-one-semantic-route-rejected", SystemOnePolicy())
+    route = "flow:infrae:incident"
+    child = children[route]
+    record = PolicyEpochRecord(
+        epoch_index=1,
+        parent_policy_hash=parent.pinned["policy_hash"],
+        child_policy_hash=child.pinned["policy_hash"],
+        reason="dynamic_replan",
+        route_type="flow",
+        selected_route=route,
+        decision_source="semantic_advisory",
+        decision_ref="legacy-system-one-decision",
+        semantic_decision_ref="legacy-system-one-decision",
+        state_revision=0,
+    )
+
+    with pytest.raises(resolve.SnapshotIntegrityError,
+                       match="child policy epoch record"):
+        runtime.start(child, policy_epoch_record=record, telemetry_disabled=True)

@@ -40,7 +40,7 @@ class HostIngress:
                               ) -> ActionObjectiveBinding:
         """Bind one exact action to host-accepted task criteria."""
         if purpose_class == "REQUIRED_VERIFICATION" and artifact_revision is None:
-            artifact_revision = self._session.behavior.metacognitive.artifact_revision
+            artifact_revision = self._session.behavior.task_evidence.artifact_revision
         return self._session._bind_action_objective(
             self._capability, action, purpose_class=purpose_class,
             criterion_ids=criterion_ids, cause_id=cause_id,
@@ -128,20 +128,6 @@ class HostIngress:
         self._session._record_criterion_verified(
             self._capability, criterion_id=criterion_id,
             evidence_ref=evidence_ref)
-
-    def system_one_decision_for_action(self, action_request_id: str) -> Optional[str]:
-        """Host-only correlation lookup for a later independent outcome."""
-        return self._session._system_one_decision_for_action(
-            self._capability, action_request_id)
-
-    def record_system_one_outcome(self, *, decision_id: str, label: str,
-                                  value: str, evidence_ref: str,
-                                  authority: str,
-                                  criterion_id: Optional[str] = None) -> str:
-        return self._session._record_system_one_outcome(
-            self._capability, decision_id=decision_id, label=label, value=value,
-            evidence_ref=evidence_ref, authority=authority,
-            criterion_id=criterion_id)
 
     def rank_legal_routes(
             self, legal_children: Mapping[str, Any], *,

@@ -358,8 +358,8 @@ WARD runs alongside FUSE at each action decision point. FUSE selects the action;
 | Action selected (tool + strategy) | `proceed` | Execute normally |
 | Action selected | `constrain` | Re-run Selection + Sequencing with WARD's constraints applied |
 | Action selected | `confirm` | Halt. Wait for user confirmation before executing |
-| Action selected | `refuse` | Do not execute. Escalate to ANCHOR Recovery Discipline. FUSE does not retry. |
-| Action selected | `recover` | Halt. ANCHOR state recovery required before any further execution. |
+| Action selected | `BLOCK_ACTION` / `refuse` | Do not execute. Record the blocked candidate and return to FUSE selection under the same valid approach. |
+| Action selected | `RECOVER_APPROACH` / `recover` | Halt. Enter ANCHOR Recovery Discipline because the approach is invalid or has no permitted action. |
 
 For pure reads of project files with no boundary crossing, no secret exposure, and no policy implication, WARD does not fire — FUSE executes without WARD gating.
 

@@ -140,6 +140,27 @@ Each principle lists: the default behavior, the surface condition, and the press
 
 OWL detects reasoning/approach failure and emits an `approach_failed` signal. ANCHOR's Recovery Discipline owns the recovery state machine (Active → Degraded → Failed → Recovered). OWL does not independently run recovery — it triggers ANCHOR. The combined output format is specified in ANCHOR's OWL-ANCHOR failure handoff section.
 
+### Consequential Change Impact Frame
+
+For a consequential change, identify the impact before editing:
+
+```text
+intended_delta
+preserved_guarantees
+deliberately_changed_guarantees
+affected_boundaries
+compatibility_assumptions
+verification_obligations
+recovery_boundary
+```
+
+Activate this frame for changes to public interfaces, persistent
+representations, concurrency, authentication/security, shared abstractions,
+state machines, providers/protocols, cross-module contracts,
+performance-sensitive paths, or compatibility assumptions. Keep it latent for
+ordinary localized edits. It is a compact reasoning aid, not a required JSON
+artifact for every change and not a new authority layer.
+
 ---
 
 ## Surface Format

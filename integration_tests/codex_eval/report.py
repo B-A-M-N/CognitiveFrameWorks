@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from codex_app_server_adapter import _safe_error
+from cognitive_runtime_core import EvaluationCohortIdentity
 
 _APP_SERVER_METHOD = re.compile(r"[A-Za-z0-9_.:/-]{1,96}")
 
@@ -260,6 +261,18 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
                 if isinstance(item, str)
                 and re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}", item)]
 
+    def safe_component_modes(value: Any) -> dict[str, str]:
+        if not isinstance(value, Mapping):
+            return {}
+        return {
+            component: mode
+            for component, mode in list(value.items())[:16]
+            if isinstance(component, str)
+            and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", component)
+            and isinstance(mode, str)
+            and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", mode)
+        }
+
     def nullable_bool(value: Any) -> bool | None:
         return value if type(value) is bool else None
 
@@ -286,6 +299,9 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
                     "cfw_gate_decisions", "model_validator_order",
                     "completion_validator_order"):
             entry[key] = safe_strings(item.get(key), limit=32)
+        component_modes = safe_component_modes(item.get("component_modes"))
+        if component_modes:
+            entry["component_modes"] = component_modes
         for key in ("model_tool_call_count", "native_write_request_count",
                     "cfw_gate_receipt_count", "completion_attempt_count"):
             value = item.get(key)
@@ -348,37 +364,37 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
             summary["will_retry"] = will_retry
         errors.append(summary)
 
-    raw_cognitive = result.get("cognitive_host_status")
-    cognitive: dict[str, Any] = {}
-    if isinstance(raw_cognitive, Mapping):
+    raw_runtime_lifecycle = result.get("runtime_harness_lifecycle_status")
+    runtime_lifecycle: dict[str, Any] = {}
+    if isinstance(raw_runtime_lifecycle, Mapping):
         for key in ("status", "private_dp_bridge_open", "cfw_authority_verified",
                     "shared_csw_authority_verified", "dp_faulted"):
-            value = raw_cognitive.get(key)
+            value = raw_runtime_lifecycle.get(key)
             if key == "status" and isinstance(value, str):
-                cognitive[key] = value[:32]
+                runtime_lifecycle[key] = value[:32]
             elif type(value) is bool:
-                cognitive[key] = value
+                runtime_lifecycle[key] = value
         for key in ("runtime_mode",):
-            value = raw_cognitive.get(key)
+            value = raw_runtime_lifecycle.get(key)
             if isinstance(value, str):
-                cognitive[key] = value[:64]
+                runtime_lifecycle[key] = value[:64]
         for key in ("shared_csw_workflow_count", "cfw_behavior_revision",
                     "dp_behavior_revision", "dp_intervention_count"):
-            value = raw_cognitive.get(key)
+            value = raw_runtime_lifecycle.get(key)
             if type(value) is int and 0 <= value <= 1_000_000:
-                cognitive[key] = value
-        if "shared_csw_workflow_ids" in raw_cognitive:
-            cognitive["shared_csw_workflow_ids"] = safe_strings(
-                raw_cognitive.get("shared_csw_workflow_ids"))
-        origins = raw_cognitive.get("dp_intervention_creations_by_origin")
+                runtime_lifecycle[key] = value
+        if "shared_csw_workflow_ids" in raw_runtime_lifecycle:
+            runtime_lifecycle["shared_csw_workflow_ids"] = safe_strings(
+                raw_runtime_lifecycle.get("shared_csw_workflow_ids"))
+        origins = raw_runtime_lifecycle.get("dp_intervention_creations_by_origin")
         if not isinstance(origins, Mapping):
-            origins = raw_cognitive.get("dp_interventions_by_origin")
+            origins = raw_runtime_lifecycle.get("dp_interventions_by_origin")
         if isinstance(origins, Mapping):
-            cognitive["dp_intervention_creations_by_origin"] = {
+            runtime_lifecycle["dp_intervention_creations_by_origin"] = {
                 key: value for key, value in origins.items()
                 if key in {"startup", "runtime_behavior", "post_action", "completion"}
                 and type(value) is int and 0 <= value <= 1_000_000}
-        raw_intervention_metrics = raw_cognitive.get("dp_intervention_metrics")
+        raw_intervention_metrics = raw_runtime_lifecycle.get("dp_intervention_metrics")
         if isinstance(raw_intervention_metrics, Mapping):
             intervention_metrics = {
                 key: value for key, value in raw_intervention_metrics.items()
@@ -394,13 +410,13 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
             semantics = raw_intervention_metrics.get("semantics")
             if isinstance(semantics, str):
                 intervention_metrics["semantics"] = semantics[:256]
-            cognitive["dp_intervention_metrics"] = intervention_metrics
+            runtime_lifecycle["dp_intervention_metrics"] = intervention_metrics
         for key in ("dp_intervention_count_semantics",
                     "dp_intervention_creations_semantics"):
-            value = raw_cognitive.get(key)
+            value = raw_runtime_lifecycle.get(key)
             if isinstance(value, str):
-                cognitive[key] = value[:256]
-        raw_metrics = raw_cognitive.get("production_metrics")
+                runtime_lifecycle[key] = value[:256]
+        raw_metrics = raw_runtime_lifecycle.get("production_metrics")
         if isinstance(raw_metrics, Mapping):
             raw_counters = raw_metrics.get("production_counters")
             if isinstance(raw_metrics.get("counters"), Mapping):
@@ -408,7 +424,7 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
                     **(raw_counters if isinstance(raw_counters, Mapping) else {}),
                     **raw_metrics["counters"],
                 }
-            cognitive["production_metrics"] = {
+            runtime_lifecycle["production_metrics"] = {
                 "counters": count_map(raw_counters),
                 "timers": timer_map(raw_metrics.get("timers")),
             }
@@ -481,6 +497,41 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
             "validators": validators[:32],
         })
 
+    raw_action_calls = result.get("action_calls")
+    action_call_records = (raw_action_calls
+                           if isinstance(raw_action_calls, (tuple, list)) else ())
+    action_calls: list[dict[str, Any]] = []
+    for call in action_call_records[:512]:
+        if not isinstance(call, Mapping):
+            continue
+        tool = call.get("tool")
+        if not isinstance(tool, str) or not re.fullmatch(
+                r"[A-Za-z0-9_.:-]{1,96}", tool):
+            continue
+        entry = {"tool": tool}
+        call_id = call.get("call_id")
+        if isinstance(call_id, str) and re.fullmatch(
+                r"[A-Za-z0-9_.:/-]{1,128}", call_id):
+            entry["call_id"] = call_id
+        if type(call.get("success")) is bool:
+            entry["success"] = call["success"]
+        validator_id = call.get("validator")
+        if isinstance(validator_id, str) and re.fullmatch(
+                r"[A-Za-z0-9_.:-]{1,96}", validator_id):
+            entry["validator"] = validator_id
+        action_calls.append(entry)
+
+    model_tool_call_count = result.get("model_tool_call_count")
+    if type(model_tool_call_count) is not int or not 0 <= model_tool_call_count <= 1_000_000:
+        model_tool_call_count = min(len(action_call_records), 1_000_000)
+    model_validator_call_count = result.get("model_validator_call_count")
+    if (type(model_validator_call_count) is not int
+            or not 0 <= model_validator_call_count <= 1_000_000):
+        model_validator_call_count = min(sum(
+            isinstance(call, Mapping)
+            and call.get("tool") == "cfw_run_validator"
+            for call in action_call_records), 1_000_000)
+
     cfw_gate_receipts = []
     for receipt in result.get("cfw_gate_receipts", ()):
         if not isinstance(receipt, Mapping):
@@ -526,11 +577,31 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         if (type(elapsed_ms) in {int, float}
                 and 0 <= elapsed_ms <= 86_400_000):
             entry["elapsed_ms"] = round(float(elapsed_ms), 3)
+        tool_name = item.get("tool")
+        if isinstance(tool_name, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,96}", tool_name):
+            entry["tool"] = tool_name
         for key in ("action_class", "result_class", "behavioral_mode",
                     "target_source"):
             value = item.get(key)
             if isinstance(value, str):
                 entry[key] = value[:64]
+        for key in ("arguments_digest_sha256", "result_digest_sha256"):
+            digest = item.get(key)
+            if isinstance(digest, str) and re.fullmatch(r"[a-f0-9]{64}", digest):
+                entry[key] = digest
+        gate_stage = item.get("cfw_gate_stage")
+        if gate_stage in {"preflight", "final"}:
+            entry["cfw_gate_stage"] = gate_stage
+        gate_decision = item.get("cfw_gate_decision")
+        if isinstance(gate_decision, str) and re.fullmatch(
+                r"[A-Za-z0-9_.:-]{1,64}", gate_decision):
+            entry["cfw_gate_decision"] = gate_decision
+        entry["cfw_gate_reason_codes"] = safe_strings(
+            item.get("cfw_gate_reason_codes"), limit=8)
+        action_digest = item.get("action_digest_sha256")
+        if (isinstance(action_digest, str)
+                and re.fullmatch(r"[a-f0-9]{64}", action_digest)):
+            entry["action_digest_sha256"] = action_digest
         entry["criterion_ids"] = safe_strings(item.get("criterion_ids"), limit=8)
         entry["focus_criterion_ids"] = safe_strings(
             item.get("focus_criterion_ids"), limit=8)
@@ -582,9 +653,31 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         feature_catalog_summary["feature_names"] = feature_list(
             raw_feature_catalog.get("feature_names"), limit=256)
 
+    condition = result.get("condition")
+    if not isinstance(condition, str):
+        condition = None
+    completion_applicable = result.get("completion_applicable")
+    if type(completion_applicable) is not bool:
+        completion_applicable = (
+            False if condition == "baseline" else
+            True if condition in {"cfw", "cfw-csw", "triad", "triad-multipath"}
+            else None)
+    completion_status = result.get("completion_status")
+    if not isinstance(completion_status, str) or not completion_status:
+        completion_status = "not_applicable" if condition == "baseline" else None
+    completion_decision = result.get("completion_decision")
+    if not isinstance(completion_decision, str) or not completion_decision:
+        completion_decision = "not_applicable" if condition == "baseline" else None
+    integration_invariants = bool_map(result.get("integration_invariants"))
+    if condition in {"cfw", "cfw-csw", "triad", "triad-multipath"}:
+        # Do not preserve an upstream assertion that the CFW gate ran unless
+        # this report also retained an action trace and a gate receipt.
+        integration_invariants["cfw_action_gate_observed"] = bool(
+            behavior_action_trace and cfw_gate_receipts)
+
     summary: dict[str, Any] = {
         "schema": "generic-codex-app-server-trial-summary/v1",
-        "condition": str(result.get("condition") or "")[:64],
+        "condition": condition[:64] if condition else "",
         "trial_id": str(result.get("trial_id") or "")[:128],
         "behavioral_scenario": (
             result.get("behavioral_scenario")
@@ -607,8 +700,8 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         "execution_phase": str(result.get("execution_phase") or "")[:64],
         "inference_preflight_only": result.get("inference_preflight_only") is True,
         "host_initialized": result.get("host_initialized") is True,
-        "cognitive_host_initialized": nullable_bool(
-            result.get("cognitive_host_initialized")),
+        "runtime_harness_lifecycle_initialized": nullable_bool(
+            result.get("runtime_harness_lifecycle_initialized")),
         "host_integration_valid": nullable_bool(
             result.get("host_integration_valid")),
         "dynamic_probe_valid": nullable_bool(result.get("dynamic_probe_valid")),
@@ -619,10 +712,11 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         "behavior_trace": behavior_trace[:16],
         "behavior_action_trace": behavior_action_trace[:512],
         "assistant_message_present": bool(result.get("assistant_message")),
-        "completion_status": str(result.get("completion_status") or "")[:32],
-        "completion_decision": (str(result.get("completion_decision"))[:64]
-                                if isinstance(result.get("completion_decision"), str)
-                                else None),
+        "completion_applicable": completion_applicable,
+        "completion_status": (completion_status[:32]
+                              if isinstance(completion_status, str) else None),
+        "completion_decision": (completion_decision[:64]
+                                if isinstance(completion_decision, str) else None),
         "completion_error_class": str(result.get("completion_error_class") or "")[:64],
         "completion_error_message": str(result.get("completion_error_message") or "")[:256],
         "completion_permitted": (
@@ -635,10 +729,9 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
                             if type(result.get("criteria_total")) is int else None),
         "changed_path_count": (len(result.get("changed_paths"))
                                 if isinstance(result.get("changed_paths"), list) else None),
-        "model_tool_call_count": (result.get("model_tool_call_count")
-                                  if type(result.get("model_tool_call_count")) is int else 0),
-        "model_validator_call_count": (result.get("model_validator_call_count")
-                                       if type(result.get("model_validator_call_count")) is int else 0),
+        "model_tool_call_count": model_tool_call_count,
+        "model_validator_call_count": model_validator_call_count,
+        "action_calls": action_calls,
         "server_request_method_counts": protocol_count_map(
             result.get("server_request_method_counts")),
         "app_server_event_counts": protocol_count_map(
@@ -688,14 +781,25 @@ def _sanitized_trial_summary(result: Mapping[str, Any]) -> dict[str, Any]:
         "native_action_feature_categories": feature_category_map(
             result.get("native_action_feature_categories")),
         "native_action_feature_catalog": feature_catalog_summary,
-        "integration_invariants": bool_map(result.get("integration_invariants")),
+        "integration_invariants": integration_invariants,
         "integration_valid": nullable_bool(result.get("integration_valid")),
         "internal_inference_boundaries_intercepted": (
             result.get("internal_inference_boundaries_intercepted") is True),
     }
+    for key in ("task_contract_hash", "tool_binding_hash", "validator_binding_hash"):
+        value = result.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value):
+            summary[key] = value
+    raw_cohort_identity = result.get("evaluation_cohort_identity")
+    if isinstance(raw_cohort_identity, Mapping):
+        try:
+            summary["evaluation_cohort_identity"] = (
+                EvaluationCohortIdentity.from_mapping(raw_cohort_identity).to_dict())
+        except (TypeError, ValueError):
+            pass
     fixture_state = result.get("fixture_state_after_failed_start")
-    if cognitive:
-        summary["cognitive_host_status"] = cognitive
+    if runtime_lifecycle:
+        summary["runtime_harness_lifecycle_status"] = runtime_lifecycle
     if isinstance(fixture_state, Mapping):
         summary["fixture_state_after_failed_start"] = {
             "source_sha256": (fixture_state.get("source_sha256")

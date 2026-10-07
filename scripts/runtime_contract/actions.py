@@ -74,7 +74,6 @@ class ProtectedResourcePolicy:
         roots = {
             state_home / "digitalpsychology",
             runtime,
-            home / ".codex" / "skills" / "cognitiveframeworks_runtime",
             home / ".agents" / "skills" / "cognitiveframeworks_runtime",
         }
         configured_registry = os.environ.get("COGNITIVE_RUNTIME_REGISTRY")

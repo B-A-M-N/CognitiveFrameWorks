@@ -18,16 +18,16 @@ from runtime_contract.actions import (
 )
 from runtime_contract.component_control import PreparedComponentOverlay
 from runtime_contract.convergence import (
-    AttemptDescriptor, ConvergenceController, SharedBranchLedger,
+    AttemptDescriptor, AttemptEvidenceTracker, SharedBranchLedger,
 )
 from runtime_contract.evidence import CompletionPermit, EvidenceLedger, StateSegment
-from runtime_contract.metacognition import MetacognitiveState
+from runtime_contract.task_evidence import TaskEvidenceState
 from runtime_contract.stateworks import ExecutionSegment, SegmentStatus
-from runtime_contract.system_one import ActivityFact, AttemptSemanticDescriptor
+from runtime_contract.behavior_facts import ActivityFact, AttemptSemanticDescriptor
 from runtime_session.behavior_authority import (
-    ExternalBehaviorAuthority, StandaloneBehaviorAuthority,
+    ExternalBehaviorAuthority, ExternalBehaviorAuthorityPending,
+    StandaloneBehaviorAuthority,
 )
-from runtime_contract.metacognition import MetaDecision, SemanticSignals
 from runtime_session.host_authority import (
     PolicyRevocationAuthority, SharedWorkflowMembershipAuthority, StateAuthority,
     _HostCapability,
@@ -36,6 +36,8 @@ from runtime_session.lifecycle import (
     ExecutionIdentity, LifecycleController,
 )
 from runtime_session.standalone_route_policy import StandaloneRoutePolicy
+from runtime_session.standalone_behavior_policy import StandaloneBehaviorDecision
+from runtime_contract.standalone_attention import StandaloneAttentionState
 
 TelemetrySink = Callable[[Dict[str, Any]], None]
 
@@ -321,30 +323,25 @@ class EvidenceState:
 
 @dataclass
 class AttemptConvergenceState:
-    """Attempt evidence and convergence decisions for bounded recovery."""
+    """Attempt evidence and lifecycle references for bounded recovery."""
 
-    _controller: Optional[ConvergenceController] = field(default=None, repr=False)
+    _controller: Optional[AttemptEvidenceTracker] = field(default=None, repr=False)
     descriptors: Dict[str, AttemptDescriptor] = field(default_factory=dict, repr=False)
     semantics: Dict[str, AttemptSemanticDescriptor] = field(default_factory=dict,
                                                               repr=False)
     failures: set[str] = field(default_factory=set, repr=False)
-    _semantic_retry_same: set[str] = field(default_factory=set, repr=False)
     _shared_branch_ledger: Optional[SharedBranchLedger] = field(default=None,
                                                                 repr=False)
     _pending_retry_candidates: Dict[str, ActivityFact] = field(default_factory=dict,
                                                                  repr=False)
 
     @property
-    def controller(self) -> Optional[ConvergenceController]:
+    def controller(self) -> Optional[AttemptEvidenceTracker]:
         return self._controller
 
     @property
     def shared_branch_ledger(self) -> Optional[SharedBranchLedger]:
         return self._shared_branch_ledger
-
-    @property
-    def semantic_retry_same(self) -> frozenset[str]:
-        return frozenset(self._semantic_retry_same)
 
     @property
     def pending_retry_candidates(self) -> Mapping[str, ActivityFact]:
@@ -354,12 +351,6 @@ class AttemptConvergenceState:
         if self._shared_branch_ledger is not None:
             raise RuntimeError("shared branch ledger is already bound")
         object.__setattr__(self, "_shared_branch_ledger", ledger)
-
-    def clear_semantic_retry(self, attempt_ref: str) -> None:
-        self._semantic_retry_same.discard(attempt_ref)
-
-    def mark_semantic_retry(self, attempt_ref: str) -> None:
-        self._semantic_retry_same.add(attempt_ref)
 
     def record_pending_retry(self, attempt_ref: str, candidate: ActivityFact) -> None:
         self._pending_retry_candidates[attempt_ref] = candidate
@@ -381,7 +372,8 @@ class AttemptConvergenceState:
 class BehaviorState:
     """Behavior authority, decision history, signal journal, and projections."""
 
-    _authority: Optional[StandaloneBehaviorAuthority | ExternalBehaviorAuthority] = field(
+    _authority: Optional[StandaloneBehaviorAuthority | ExternalBehaviorAuthority |
+                         ExternalBehaviorAuthorityPending] = field(
         default=None, repr=False)
     signals: List[Dict[str, Any]] = field(default_factory=list)
     signal_seen: Dict[str, Dict[str, Any]] = field(default_factory=dict)
@@ -390,30 +382,33 @@ class BehaviorState:
     signal_cursor: int = 0
     signal_ack_cursor: int = 0
     signal_lock: Any = field(default_factory=threading.RLock, repr=False)
-    deferred_semantic_signal_records: tuple[Mapping[str, Any], ...] = field(
-        default=(), repr=False)
-    semantic_signals_revision: int = field(default=-1, repr=False)
-    system_one_sequence: int = 0
-    system_one_decisions: Dict[str, Dict[str, Any]] = field(default_factory=dict,
-                                                              repr=False)
-    system_one_outcomes: set[str] = field(default_factory=set, repr=False)
     external_projection: Dict[str, Any] = field(default_factory=dict, repr=False)
     external_startup_lifecycle: set[str] = field(default_factory=set, repr=False)
     external_startup_lifecycle_state: Optional[Mapping[str, Any]] = field(
         default=None, repr=False)
     last_component_overlay_transition: Optional[PreparedComponentOverlay] = field(
         default=None, repr=False)
-    metacognitive: MetacognitiveState = field(default_factory=MetacognitiveState,
-                                               repr=False)
-    system_one_lock: Any = field(default_factory=threading.RLock, repr=False)
-    system_one_provider_lock: Any = field(default_factory=threading.RLock, repr=False)
+    task_evidence: TaskEvidenceState = field(default_factory=TaskEvidenceState,
+                                              repr=False)
+
+    @property
+    def metacognitive(self) -> TaskEvidenceState:
+        """Compatibility view for pre-convergence callers and old journals."""
+        return self.task_evidence
 
     @property
     def is_external(self) -> bool:
+        return isinstance(self.authority, (ExternalBehaviorAuthority,
+                                           ExternalBehaviorAuthorityPending))
+
+    @property
+    def external_authority_bound(self) -> bool:
         return isinstance(self.authority, ExternalBehaviorAuthority)
 
     @property
-    def authority(self) -> Optional[StandaloneBehaviorAuthority | ExternalBehaviorAuthority]:
+    def authority(self) -> Optional[StandaloneBehaviorAuthority |
+                                 ExternalBehaviorAuthority |
+                                 ExternalBehaviorAuthorityPending]:
         return self._authority
 
     @property
@@ -428,52 +423,41 @@ class BehaviorState:
             raise RuntimeError("behavior authority is already bound")
         if not isinstance(authority, StandaloneBehaviorAuthority):
             raise TypeError("standalone behavior authority has an invalid type")
+        authority.attention_state.sync_criteria(self.task_evidence.criteria)
         object.__setattr__(self, "_authority", authority)
 
     @property
-    def system_one_judge(self) -> Any:
-        return (self.authority.system_one_judge
+    def standalone_behavior_policy(self) -> Any:
+        return (self.authority.standalone_behavior_policy
                 if isinstance(self.authority, StandaloneBehaviorAuthority) else None)
 
     @property
-    def system_one_projector(self) -> Any:
-        return (self.authority.system_one_projector
+    def standalone_attention_state(self) -> Optional[StandaloneAttentionState]:
+        return (self.authority.attention_state
                 if isinstance(self.authority, StandaloneBehaviorAuthority) else None)
 
     @property
-    def metacognitive_controller(self) -> Any:
-        return (self.authority.metacognitive_controller
+    def standalone_behavior_decision(self) -> Optional[StandaloneBehaviorDecision]:
+        return (self.authority.standalone_behavior_decision
                 if isinstance(self.authority, StandaloneBehaviorAuthority) else None)
 
-    @property
-    def semantic_signals(self) -> Optional[SemanticSignals]:
-        return (self.authority.semantic_signals
-                if isinstance(self.authority, StandaloneBehaviorAuthority) else None)
-
-    def set_semantic_signals(self, signals: SemanticSignals) -> None:
+    def set_standalone_behavior_decision(
+            self, decision: StandaloneBehaviorDecision) -> None:
         if not isinstance(self.authority, StandaloneBehaviorAuthority):
-            raise RuntimeError("CFW does not own semantic signals under external authority")
-        self.authority.semantic_signals = signals
-
-    @property
-    def semantic_signal_store(self) -> Any:
-        return (self.authority.semantic_signal_store
-                if isinstance(self.authority, StandaloneBehaviorAuthority) else None)
-
-    @property
-    def metacognitive_decision(self) -> Optional[MetaDecision]:
-        return (self.authority.metacognitive_decision
-                if isinstance(self.authority, StandaloneBehaviorAuthority) else None)
-
-    def set_metacognitive_decision(self, decision: MetaDecision) -> None:
-        if not isinstance(self.authority, StandaloneBehaviorAuthority):
-            raise RuntimeError("CFW does not own metacognition under external authority")
-        self.authority.metacognitive_decision = decision
+            raise RuntimeError("CFW does not own behavior under external authority")
+        self.authority.standalone_behavior_decision = decision
 
     def bind_external_authority(self) -> None:
         """Bind the host-selected external behavior owner before first use."""
-        if self.authority is not None and not self.is_external:
-            raise RuntimeError("standalone behavior was already initialized")
+        if isinstance(self.authority, ExternalBehaviorAuthority):
+            return
+        if isinstance(self.authority, StandaloneBehaviorAuthority):
+            if (self.authority.activated
+                    or self.authority.route_policy.policy_epoch_record is not None):
+                raise RuntimeError("standalone behavior was already initialized")
+        elif self.authority is not None and not isinstance(
+                self.authority, ExternalBehaviorAuthorityPending):
+            raise RuntimeError("unsupported behavior authority binding")
         object.__setattr__(self, "_authority", ExternalBehaviorAuthority())
 
     def __setattr__(self, name: str, value: Any) -> None:

@@ -41,6 +41,20 @@ def test_reinspection_can_satisfy_the_retry_gate():
                                     hypothesis_fingerprint="h1") == "require_changed_hypothesis"
 
 
+def test_attempt_facts_are_separate_from_the_retry_boundary_gate():
+    from runtime_contract.convergence import (
+        AttemptEvidenceTracker, RetryBoundaryEnforcer,
+    )
+    tracker = AttemptEvidenceTracker(identity=IDENTITY)
+    tracker.record_failure(cause_id="c1", action_fingerprint="a1",
+                           hypothesis_fingerprint="h1", evidence_ref="e1")
+
+    assert not hasattr(tracker, "evaluate_retry")
+    assert RetryBoundaryEnforcer().evaluate(
+        tracker, cause_id="c1", action_fingerprint="a1",
+        hypothesis_fingerprint="h1") == "require_reinspection"
+
+
 def test_changed_hypothesis_with_fresh_evidence_is_allowed():
     controller = _controller()
     controller.record_failure(cause_id="c1", action_fingerprint="a1",

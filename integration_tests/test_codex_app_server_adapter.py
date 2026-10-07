@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import re
 import sys
@@ -9,21 +10,29 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cognitive_runtime_core.actions import HostActionBinding
+from cognitive_runtime_core.harness import (
+    CallbackCognitiveHarnessLifecycle,
+    HarnessBoundary,
+)
+from cognitive_runtime_core.validators import HostValidatorBinding
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import codex_app_server_adapter as codex_adapter_api
 from codex_app_server_adapter import (
     CodexActionBinding,
     CodexAppServerAdapter,
-    CodexCognitiveHost,
     CodexValidatorBinding,
     JsonlAppServerClient,
     _host_only_feature_args,
 )
 from codex_app_server_dp_bridge import DigitalPsychologyBridgeHost
+from cognitive_runtime_core.integrations.cfw import DigitalPsychologyHarnessLifecycle
 from codex_host.launch import CodexLaunchProfile
 from codex_host.readiness import CodexInfrastructureUnavailable
+from digital_psychology_adapter import CFWBehaviorAdapter
 from runtime_contract.actions import (
     ActionDescriptor,
     default_action_registry,
@@ -40,6 +49,19 @@ from runtime_contract.workflow_port import (
 )
 from runtime_host.host_api import CognitiveRuntime as CFWRuntime
 from runtime_session.lifecycle import GateDecision
+
+
+def test_codex_adapter_protects_its_skill_registry(tmp_path):
+    codex_home = tmp_path / "codex-home"
+    context = CodexAppServerAdapter._codex_host_context(
+        None,
+        CodexLaunchProfile(
+            binary="/packaged/codex", auth_mode="chatgpt",
+            codex_home=codex_home),
+    )
+    target = codex_home / "skills" / "cognitiveframeworks_runtime" / "runtime.py"
+
+    assert context.protected_resources.classify_write({"target": str(target)}) == "protected"
 
 
 class _Host:
@@ -154,6 +176,10 @@ class _Client:
 
     def __init__(self, *, thread_id="thread-1", session_id="session-1",
                  early_turn=None, events=None):
+        self.codex_feature_catalog = {
+            "codex_cli_version": "codex-cli 0.160.0",
+            "feature_names": ["dynamic_tools"],
+        }
         self.thread_id = thread_id
         self.session_id = session_id
         self.early_turn = early_turn
@@ -205,11 +231,13 @@ def test_workspace_routing_preflight_fails_before_cfw_or_dp_startup(tmp_path):
     async def run():
         events = []
         runtime = _Runtime(events=events)
-        cognitive = _CognitiveHost(events)
+        lifecycle_events = []
+        lifecycle = CallbackCognitiveHarnessLifecycle(
+            lambda event: lifecycle_events.append(event) or {"status": "ready"})
         adapter = CodexAppServerAdapter(
             request=_request(), action_bindings=(_read_binding(lambda _: {"ok": True}),),
             model="test-model", cwd=tmp_path, runtime=runtime,
-            cognitive_host=cognitive,
+            runtime_harness_lifecycle=lifecycle,
             launch_profile=CodexLaunchProfile(
                 binary="/packaged/codex", auth_mode="chatgpt",
                 codex_home=tmp_path / "temporary-codex-home"))
@@ -218,12 +246,18 @@ def test_workspace_routing_preflight_fails_before_cfw_or_dp_startup(tmp_path):
             await adapter.open(client)
         assert captured.value.kind == "workspace_routing_unavailable"
         assert runtime.starts == []
-        assert "cognitive_open" not in events
-        assert "task_started" not in events
+        assert lifecycle_events == []
         assert "thread/start" not in events
         assert client.closed is True
 
     asyncio.run(run())
+
+
+def test_codex_exposes_only_the_neutral_runtime_lifecycle():
+    parameters = inspect.signature(CodexAppServerAdapter).parameters
+    assert "runtime_harness_lifecycle" in parameters
+    assert "cognitive_host" not in parameters
+    assert not hasattr(codex_adapter_api, "CodexCognitiveHost")
 
 
 def _request():
@@ -284,7 +318,7 @@ def test_app_server_thread_identity_is_bound_to_host_task_and_recovery_record(tm
         assert bound_request.agent_instance_id.endswith(hashlib.sha256(
             recovery["session_nonce"].encode()).hexdigest()[:24])
         assert start_options["session_id"] == recovery["cfw_session_id"]
-        assert recovery["cfw_session_id"].startswith("codex-cfw-")
+        assert recovery["cfw_session_id"].startswith("host-cfw-")
         assert start_options["session_nonce"] == recovery["session_nonce"]
         assert start_options["resume"] is False
         assert start_options["state_authority"] is shared_authority
@@ -431,7 +465,12 @@ def test_turn_completion_before_start_response_records_failed_attempt(tmp_path):
         assert client.turn_start_params["sandboxPolicy"] == {"type": "readOnly"}
         assert len(host.attempts) == 1
         assert len(host.failures) == 1
-        assert host.failures[0]["attempt_ref"] == "codex-turn:turn-1"
+        assert re.fullmatch(r"host-attempt-[a-f0-9]{32}",
+                            host.failures[0]["attempt_ref"])
+        assert host.attempts[0]["action_plan"] == {
+            "action_binding_ids": ["read"]}
+        assert re.fullmatch(r"host-cause-[a-f0-9]{32}",
+                            host.attempts[0]["cause_id"])
         await adapter.close()
 
     asyncio.run(run())
@@ -465,6 +504,112 @@ def test_dynamic_tool_result_is_sanitized_and_correlated_to_cfw_action(tmp_path)
             "action_request_id": "action-1", "action_digest": "",
             "decision": "allow", "reason_codes": ["test_gate"],
             "cfw_revision": None}]
+        await adapter.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(("mutability", "executor_result", "expected_changed"), [
+    ("write", {"changed": True}, True),
+    ("write", {"artifact_changed": False, "changed": True}, False),
+    ("read", {"changed": True}, None),
+])
+def test_dynamic_write_forwards_explicit_artifact_change_to_host(
+        tmp_path, mutability, executor_result, expected_changed):
+    async def run():
+        host = _Host()
+        binding = CodexActionBinding(
+            name="cfw_write" if mutability == "write" else "cfw_read",
+            description="Host-owned action",
+            input_schema={"type": "object", "properties": {
+                "path": {"type": "string"}}, "required": ["path"]},
+            action_binding_id="write" if mutability == "write" else "read",
+            descriptor=ActionDescriptor(
+                "write" if mutability == "write" else "read",
+                mutability=mutability),
+            executor=lambda _: executor_result)
+        adapter = CodexAppServerAdapter(
+            request=_request(), action_bindings=(binding,),
+            model="test-model", cwd=tmp_path, runtime=_Runtime(host))
+        await adapter.open(_Client())
+        adapter._active_turn_id = "turn-1"
+        adapter._active_ready.set()
+
+        result = await adapter.handle_server_request("item/tool/call", {
+            "callId": "artifact-observation", "threadId": "thread-1",
+            "turnId": "turn-1", "tool": binding.name,
+            "arguments": {"path": "src/module.py"}})
+
+        assert result["success"] is True
+        actual_result = host.results[0]["actual_result"]
+        if expected_changed is None:
+            assert "artifact_changed" not in actual_result
+        else:
+            assert actual_result["artifact_changed"] is expected_changed
+        await adapter.close()
+
+    asyncio.run(run())
+
+
+def test_changed_write_resets_real_cfw_verification_limit(tmp_path):
+    async def run():
+        verify_descriptor = ActionDescriptor(
+            "verify", goal_relation="required_verification",
+            affected_criterion_ids=("criterion-1",))
+        runtime = CFWRuntime(
+            telemetry_disabled=True,
+            action_registry={"verify": verify_descriptor},
+            workflow_port=_EmptyWorkflowPort())
+        write_target = tmp_path / "src" / "module.py"
+
+        def write(_):
+            write_target.parent.mkdir(parents=True, exist_ok=True)
+            prior = write_target.read_text(encoding="utf-8") if write_target.exists() else None
+            write_target.write_text("updated = True\n", encoding="utf-8")
+            return {"changed": prior != "updated = True\n"}
+
+        bindings = (
+            CodexActionBinding(
+                name="cfw_verify", description="Run the host retry check",
+                input_schema={"type": "object", "properties": {
+                    "suite": {"const": "retry"}}, "required": ["suite"],
+                    "additionalProperties": False},
+                action_binding_id="verify", descriptor=verify_descriptor,
+                executor=lambda _: {"status": "failed"}),
+            CodexActionBinding(
+                name="cfw_write", description="Write a host-authorized file",
+                input_schema={"type": "object", "properties": {
+                    "path": {"type": "string"}}, "required": ["path"],
+                    "additionalProperties": False},
+                action_binding_id="write",
+                descriptor=ActionDescriptor("write", mutability="write"),
+                executor=write),
+        )
+        adapter = CodexAppServerAdapter(
+            request=_request(), action_bindings=bindings,
+            model="test-model", cwd=tmp_path, runtime=runtime)
+        await adapter.open(_Client())
+        adapter._active_turn_id = "turn-1"
+        adapter._active_ready.set()
+
+        async def call(call_id, tool, arguments):
+            return await adapter.handle_server_request("item/tool/call", {
+                "callId": call_id, "threadId": "thread-1", "turnId": "turn-1",
+                "tool": tool, "arguments": arguments})
+
+        for call_id in ("verify-1", "verify-2"):
+            assert (await call(call_id, "cfw_verify", {"suite": "retry"}))["success"]
+        blocked = await call("verify-3", "cfw_verify", {"suite": "retry"})
+        assert blocked["success"] is False
+
+        write_result = await call("write-1", "cfw_write", {"path": "src/module.py"})
+        assert write_result["success"] is True
+        assert (await call("verify-4", "cfw_verify", {"suite": "retry"}))["success"]
+
+        final_decisions = [item["decision"] for item in
+                           adapter.status()["cfw_gate_receipts"]
+                           if item["stage"] == "final"]
+        assert final_decisions == ["allow", "allow", "block", "allow", "allow"]
         await adapter.close()
 
     asyncio.run(run())
@@ -518,7 +663,7 @@ def test_dynamic_tool_action_is_recorded_through_real_cfw_host_api(tmp_path):
         assert result["success"] is True
         assert result["contentItems"][0]["text"] == (
             '{"content":"fixture","read_path":"README.md"}')
-        assert adapter._task_handle.session_id.startswith("codex-cfw-")
+        assert adapter._task_handle.session_id.startswith("host-cfw-")
         assert isinstance(adapter._task_handle.base_model_context(), str)
         assert adapter.status()["app_server_session_id"] == "session-1"
         gate_receipts = adapter.status()["cfw_gate_receipts"]
@@ -658,6 +803,216 @@ def test_model_run_validator_evidence_is_reused_at_completion(tmp_path):
     assert len(calls) == 3
 
 
+def test_codex_host_emits_neutral_runtime_boundaries(tmp_path):
+    async def run():
+        observed = []
+
+        async def observe(event):
+            observed.append(event)
+            if event.boundary is HarnessBoundary.MODEL_BOUNDARY:
+                return {"status": "ready",
+                        "context_projection": event.control_data.context + "\nDP guidance"}
+            return {"status": "ready"}
+
+        lifecycle = CallbackCognitiveHarnessLifecycle(observe)
+        host = _Host()
+        action = CodexActionBinding(
+            name="run_tests", description="Run one host suite",
+            input_schema={"type": "object", "properties": {
+                "suite": {"const": "integration"}}, "required": ["suite"],
+                "additionalProperties": False},
+            action_binding_id="run_integration_tests",
+            descriptor=ActionDescriptor("run_integration_tests",
+                                        goal_relation="required_verification"),
+            executor=lambda _: {"status": "passed"})
+        validator = CodexValidatorBinding(
+            validator_id="integration-v1", action_binding_id="run_integration_tests",
+            arguments={"suite": "integration"}, criterion_ids=("criterion-1",),
+            result_schema={"type": "object", "properties": {
+                "status": {"const": "passed"}}, "required": ["status"],
+                "additionalProperties": False})
+        runtime = CFWRuntime(
+            telemetry_disabled=True,
+            action_registry={"run_integration_tests": action.descriptor},
+            workflow_port=_EmptyWorkflowPort())
+        adapter = CodexAppServerAdapter(
+            request=_request(), action_bindings=(action,),
+            validator_bindings=(validator,), model="test-model", cwd=tmp_path,
+            runtime=runtime, runtime_harness_lifecycle=lifecycle,
+            harness_host_version="codex-fixture-1.0")
+        client = _Client(early_turn={"id": "turn-1", "status": "completed"})
+        client.codex_feature_catalog = {"dynamic_tools": "fixture-v1"}
+        await adapter.open(client)
+        await adapter.run_turn("Run the required test suite")
+        assert "DP guidance" in client.turn_start_params["input"][0]["text"]
+        adapter._active_turn_id = "turn-neutral-action"
+        adapter._active_ready.set()
+        action_result = await adapter.handle_server_request("item/tool/call", {
+            "callId": "neutral-call-1", "threadId": "thread-1",
+            "turnId": "turn-neutral-action", "tool": "run_tests",
+            "arguments": {"suite": "integration"}})
+        assert action_result["success"] is True
+        assert any(item.get("stage") == "final"
+                   and item.get("decision") == "allow"
+                   for item in adapter._cfw_gate_receipts)
+        adapter._active_turn_id = None
+        completion = await adapter.validate_completion()
+        assert completion["status"] == "completed", json.dumps(completion, sort_keys=True)
+        await adapter.close()
+        return [event.boundary for event in observed]
+
+    assert asyncio.run(run()) == [
+        HarnessBoundary.TASK_START,
+        HarnessBoundary.MODEL_BOUNDARY,
+        HarnessBoundary.ACTION_PROPOSED,
+        HarnessBoundary.ACTION_AUTHORIZED,
+        HarnessBoundary.VALIDATION_COMPLETED,
+        HarnessBoundary.ACTION_COMPLETED,
+        HarnessBoundary.COMPLETION_PROPOSED,
+        HarnessBoundary.TASK_END,
+    ]
+
+
+def test_codex_adapter_reports_neutral_action_rejection(tmp_path):
+    async def run():
+        observed = []
+        executed = []
+
+        async def observe(event):
+            observed.append(event)
+            if event.boundary is HarnessBoundary.ACTION_PROPOSED:
+                return {"status": "blocked", "decision": "deny"}
+            return {"status": "ready"}
+
+        action = _read_binding(lambda args: executed.append(args) or {"ok": True})
+        adapter = CodexAppServerAdapter(
+            request=_request(), action_bindings=(action,), model="test-model",
+            cwd=tmp_path, runtime=_Runtime(),
+            runtime_harness_lifecycle=CallbackCognitiveHarnessLifecycle(observe),
+            harness_host_version="codex-fixture-1.0")
+        await adapter.open(_Client())
+        adapter._active_turn_id = "turn-rejected-action"
+        adapter._active_ready.set()
+        result = await adapter.handle_server_request("item/tool/call", {
+            "callId": "rejected-call", "threadId": "thread-1",
+            "turnId": "turn-rejected-action", "tool": action.name,
+            "arguments": {"path": "doc.md"}})
+        boundaries = [event.boundary for event in observed]
+        assert result["success"] is False
+        assert executed == []
+        assert boundaries == [
+            HarnessBoundary.TASK_START,
+            HarnessBoundary.ACTION_PROPOSED,
+            HarnessBoundary.ACTION_REJECTED,
+        ]
+        await adapter.close()
+
+    asyncio.run(run())
+
+
+def test_completion_aggregates_cfw_csw_and_runtime_authority_receipts(tmp_path):
+    async def run(*, dp_allowed):
+        goal = TaskGoalContract(
+            objective="Run the required test suite",
+            deliverable_kind="test_suite", work_mode="delivery",
+            acceptance_criteria=(AcceptanceCriterion(
+                "criterion-1", "The integration suite passes", "test_suite"),))
+        request = TaskRequest(task_id="completion-authorities", application_id="test-app",
+                              goal_contract=goal)
+        action = CodexActionBinding(
+            name="run_tests", description="Run the integration suite",
+            input_schema={"type": "object", "properties": {
+                "suite": {"const": "integration"}}, "required": ["suite"],
+                "additionalProperties": False},
+            action_binding_id="read", descriptor=default_action_registry()["read"],
+            executor=lambda _: {"status": "passed"})
+        validator = CodexValidatorBinding(
+            validator_id="integration-v1", action_binding_id="read",
+            arguments={"suite": "integration"}, criterion_ids=("criterion-1",),
+            result_schema={"type": "object", "properties": {
+                "status": {"const": "passed"}}, "required": ["status"],
+                "additionalProperties": False})
+
+        async def observe(event):
+            if event.boundary is HarnessBoundary.COMPLETION_PROPOSED:
+                return {"status": "ready", "authority_receipts": [{
+                    "authority_id": "digital-psychology", "allowed": dp_allowed,
+                    "revision": "dp-revision-3",
+                    "reason_codes": ([] if dp_allowed else ["dp_completion_denied"]),
+                }]}
+            return {"status": "ready"}
+
+        lifecycle = CallbackCognitiveHarnessLifecycle(observe)
+        lifecycle.completion_authority_ids = ("digital-psychology",)
+        host = _Host()
+        host.completion_statework_receipt = lambda: {
+            "authority_id": "csw-workflows", "allowed": True,
+            "revision": "csw-revision-8"}
+        runtime = _Runtime(host=host)
+        adapter = CodexAppServerAdapter(
+            request=request, action_bindings=(action,), validator_bindings=(validator,),
+            model="test-model", cwd=tmp_path, runtime=runtime,
+            runtime_harness_lifecycle=lifecycle,
+            runtime_mode="combined_enforcing",
+            harness_host_version="codex-fixture-1.0")
+        client = _Client(early_turn={"id": "turn-1", "status": "completed"})
+        await adapter.open(client)
+        await adapter.run_turn("Run the required test suite")
+        completion = await adapter.validate_completion()
+        await adapter.close()
+        return completion
+
+    allowed = asyncio.run(run(dp_allowed=True))
+    assert allowed["status"] == "completed", allowed
+    assert allowed["completion_decision"]["allowed"] is True
+    assert [item["authority_id"] for item in
+            allowed["completion_decision"]["authority_receipts"]] == [
+                "cfw-runtime", "csw-workflows", "digital-psychology"]
+
+    denied = asyncio.run(run(dp_allowed=False))
+    assert denied["status"] == "incomplete"
+    assert denied["completion_decision"]["allowed"] is False
+    assert "dp_completion_denied" in denied["completion_decision"]["reason_codes"]
+
+
+def test_cfw_combined_workflow_receipt_uses_fresh_csw_state():
+    from runtime_session.completion import CompletionMethods
+
+    class _StateAuthority:
+        completed = True
+
+        def inspect_workflow(self, **_kwargs):
+            return SimpleNamespace(completed=self.completed, revision=9)
+
+    class _Revisions:
+        observed = []
+
+        def observe_authority(self, revision):
+            self.observed.append(revision)
+
+    authority = _StateAuthority()
+    revisions = _Revisions()
+    session = SimpleNamespace(
+        identity_authority=SimpleNamespace(
+            authorities=SimpleNamespace(
+                runtime_mode="combined_enforcing", state_authority=authority),
+            revisions=revisions),
+        bundle=SimpleNamespace(
+            stateworks=({"id": "workflow-a", "subject_ref": "repo:test",
+                         "workflow_contract_hash": "contract-hash"},),
+            policy=SimpleNamespace(subject_ref="repo:test")))
+
+    ready = CompletionMethods.completion_statework_receipt(session)
+    assert ready["authority_id"] == "csw-workflows"
+    assert ready["allowed"] is True
+    assert ready["revision"] and revisions.observed == [9]
+
+    authority.completed = False
+    blocked = CompletionMethods.completion_statework_receipt(session)
+    assert blocked["allowed"] is False
+    assert blocked["reason_codes"] == ["csw_workflow_incomplete"]
+
+
 def test_validator_bindings_must_cover_each_required_criterion(tmp_path):
     goal = TaskGoalContract(
         objective="Verify both outputs", deliverable_kind="test_suite",
@@ -683,251 +1038,11 @@ def test_validator_bindings_must_cover_each_required_criterion(tmp_path):
         raise AssertionError("validator setup omitted a required criterion")
 
 
-class _CognitiveHost:
-    def __init__(self, events):
-        self.events = events
-        self.actions = []
-        self.validators = []
-        self.after_result = {"status": "ready"}
-
-    async def open_task(self, **kwargs):
-        self.events.append("cognitive_open")
-        self.open_options = kwargs
-        return {"status": "ready"}
-
-    async def task_started(self):
-        self.events.append("task_started")
-        return {"status": "ready"}
-
-    async def bind_transport_identity(self, **kwargs):
-        self.events.append("transport_bound")
-        self.transport_identity = kwargs
-        return {"status": "ready"}
-
-    async def before_model_call(self, *, context, tool_capable):
-        self.events.append("before_model_call")
-        self.model_context = context
-        return f"{context}\nDP+CSW projection"
-
-    async def before_action(self, **kwargs):
-        self.events.append("before_action")
-        self.actions.append(kwargs)
-        return {"action_authorized": True, "action_request_id": "triad-action-1"}
-
-    async def after_action(self, **kwargs):
-        self.events.append("after_action")
-        self.after_options = kwargs
-        return self.after_result
-
-    async def observe_validator(self, **kwargs):
-        self.events.append("observe_validator")
-        self.validators.append(kwargs)
-        return {"status": "ready"}
-
-    async def before_completion(self, **kwargs):
-        self.events.append("before_completion")
-        return {"status": "ready", "decision": "allow"}
-
-    async def reconcile(self):
-        self.events.append("reconcile")
-        return {"status": "ready"}
-
-    async def close(self):
-        self.events.append("cognitive_close")
-
-
-def test_cognitive_host_lifecycle_is_bracketed_around_generic_app_server(tmp_path):
-    async def run():
-        events = []
-        runtime = _Runtime(events=events)
-        cognitive: CodexCognitiveHost = _CognitiveHost(events)
-        adapter = CodexAppServerAdapter(
-            request=_request(),
-            action_bindings=(_read_binding(lambda _: {"ok": True}),),
-            model="test-model", cwd=tmp_path, runtime=runtime,
-            cognitive_host=cognitive)
-
-        await adapter.open(_Client(events=events))
-        assert events.index("cfw_task_start") < events.index("cognitive_open")
-        assert events.index("cognitive_open") < events.index("task_started")
-        assert events.index("task_started") < events.index("thread/start")
-        assert events.index("thread/start") < events.index("transport_bound")
-        assert callable(getattr(cognitive, "before_action", None))
-        params = adapter.thread_start_params()
-        assert "mcpServers" not in params and "mcp_servers" not in params
-        assert all(item["name"].startswith("cfw_")
-                   for item in params["dynamicTools"])
-        assert cognitive.transport_identity == {
-            "thread_id": "thread-1", "app_server_session_id": "session-1"}
-        assert adapter.status()["internal_inference_boundaries_intercepted"] is False
-        assert adapter.status()["model_visible_dp_tools"] == 0
-        assert adapter.status()["model_visibility_verified"] is True
-        assert adapter.status()["native_mutation_surfaces_closed"] is True
-        await adapter.close()
-
-    asyncio.run(run())
-
-
-def test_cognitive_host_brackets_model_action_and_completion_once(tmp_path):
-    async def run():
-        events = []
-        host = _Host()
-        cognitive = _CognitiveHost(events)
-        validator_action = CodexActionBinding(
-            name="cfw_run_tests", description="Run the host test suite",
-            input_schema={"type": "object", "properties": {
-                "suite": {"type": "string"}}, "required": ["suite"],
-                "additionalProperties": False},
-            action_binding_id="test", descriptor=ActionDescriptor("test"),
-            executor=lambda args: {"status": "passed", "suite": args["suite"]})
-        validator = CodexValidatorBinding(
-            validator_id="integration-tests-v1", action_binding_id="test",
-            arguments={"suite": "integration"}, criterion_ids=("criterion-1",),
-            result_schema={"type": "object", "properties": {
-                "status": {"const": "passed"},
-                "suite": {"const": "integration"}},
-                "required": ["status", "suite"], "additionalProperties": False})
-        adapter = CodexAppServerAdapter(
-            request=_request(), action_bindings=(
-                _read_binding(lambda _: {"ok": True}), validator_action),
-            validator_bindings=(validator,),
-            model="test-model", cwd=tmp_path, runtime=_Runtime(host, events),
-            cognitive_host=cognitive)
-        client = _Client(events=events)
-        await adapter.open(client)
-
-        # The fake transport completes a turn immediately so the test verifies
-        # the host boundary call and the context sent to the App Server.
-        client.early_turn = {"id": "turn-1", "status": "completed"}
-        result = await adapter.run_turn("Read the requested document")
-        assert result["status"] == "completed"
-        assert cognitive.model_context == "base runtime guidance"
-        assert "DP+CSW projection" in client.turn_start_params["input"][0]["text"]
-        assert events.count("before_model_call") == 1
-        assert adapter._task_handle.model_calls == 0
-
-        adapter._active_turn_id = "turn-action"
-        adapter._active_ready.set()
-        tool_result = await adapter.handle_server_request("item/tool/call", {
-            "callId": "triad-call", "threadId": "thread-1", "turnId": "turn-action",
-            "tool": "cfw_read", "arguments": {"path": "doc.md"}})
-        assert tool_result["success"] is True
-        assert len(host.prepared) == 0
-        assert cognitive.actions[0]["invocation_id"] == "triad-call"
-        assert cognitive.after_options["action_request_id"] == "triad-action-1"
-        assert events.index("before_action") < events.index("after_action")
-
-        active_completion = await adapter.validate_completion()
-        assert active_completion["decision"] == "turn_in_progress"
-        assert not cognitive.validators
-        adapter._active_turn_id = None
-        # The host runs a fixed validator action; the model cannot supply a
-        # pass boolean or arbitrary evidence references.
-        completion = await adapter.validate_completion()
-        assert completion["status"] == "completed"
-        assert events.index("before_action") < events.index("after_action")
-        assert events.index("observe_validator") < events.index("before_completion")
-        await adapter.close()
-
-    asyncio.run(run())
-
-
-def test_model_invoked_registered_validator_records_cfw_and_dp_evidence(tmp_path):
-    async def run():
-        events = []
-        host = _Host()
-        cognitive = _CognitiveHost(events)
-        criterion = "integration"
-        goal = TaskGoalContract(
-            objective="Validate the integration behavior",
-            deliverable_kind="code_behavior", work_mode="delivery",
-            acceptance_criteria=(AcceptanceCriterion(
-                criterion, "The integration validator passes", "code_behavior",
-                required_boundaries=("validator:integration",)),))
-        request = TaskRequest(task_id="dynamic-validator-task",
-                              application_id="test-app", goal_contract=goal)
-        action = CodexActionBinding(
-            name="cfw_run_integration", description="Run the integration validator",
-            input_schema={"type": "object", "properties": {
-                "suite": {"const": "integration"}}, "required": ["suite"],
-                "additionalProperties": False},
-            action_binding_id="test", descriptor=ActionDescriptor("test"),
-            executor=lambda _: {"status": "passed", "suite": "integration"})
-        validator = CodexValidatorBinding(
-            validator_id="integration-tests-v1", action_binding_id="test",
-            arguments={"suite": "integration"}, criterion_ids=(criterion,),
-            covered_boundary_ids=("validator:integration",),
-            result_schema={"type": "object", "properties": {
-                "status": {"const": "passed"},
-                "suite": {"const": "integration"}},
-                "required": ["status", "suite"], "additionalProperties": False})
-        adapter = CodexAppServerAdapter(
-            request=request, action_bindings=(action,), validator_bindings=(validator,),
-            model="test-model", cwd=tmp_path, runtime=_Runtime(host, events),
-            cognitive_host=cognitive)
-        await adapter.open(_Client(events=events))
-        adapter._active_turn_id = "turn-validator"
-        adapter._active_ready.set()
-        result = await adapter.handle_server_request("item/tool/call", {
-            "callId": "validator-call", "threadId": "thread-1",
-            "turnId": "turn-validator", "tool": "cfw_run_integration",
-            "arguments": {"suite": "integration"}})
-        assert result["success"] is True
-        assert host.validator_evidence == [{
-            "validator_id": "completion-boundary-v1",
-            "invocation_id": "validator-call",
-            "result": {"status": "passed", "suite": "integration"},
-            "subject_ref": request.task_id,
-            "claim_digest": host.validator_evidence[0]["claim_digest"],
-            "covered_boundary_ids": ("validator:integration",),
-        }]
-        assert host.validator_evidence[0]["claim_digest"]
-        assert cognitive.validators == [{
-            "validator_id": "integration-tests-v1",
-            "result": {"status": "passed", "suite": "integration"},
-            "criterion_evidence_refs": {
-                criterion: ("validator-evidence-1",)},
-        }]
-        assert events.index("before_action") < events.index("after_action")
-        assert events.index("after_action") < events.index("observe_validator")
-        await adapter.close()
-
-    asyncio.run(run())
-
-
-def test_cognitive_post_action_failure_pauses_following_turns(tmp_path):
-    async def run():
-        events = []
-        cognitive = _CognitiveHost(events)
-        cognitive.after_result = {"status": "blocked"}
-        adapter = CodexAppServerAdapter(
-            request=_request(), action_bindings=(_read_binding(lambda _: {"ok": True}),),
-            model="test-model", cwd=tmp_path, runtime=_Runtime(events=events),
-            cognitive_host=cognitive)
-        await adapter.open(_Client(events=events))
-        adapter._active_turn_id = "turn-1"
-        adapter._active_ready.set()
-        result = await adapter.handle_server_request("item/tool/call", {
-            "callId": "triad-call", "threadId": "thread-1", "turnId": "turn-1",
-            "tool": "cfw_read", "arguments": {"path": "doc.md"}})
-        assert result["success"] is False
-        assert adapter.status()["cognitive_fault"] == "post_action_boundary_failed"
-        try:
-            await adapter.run_turn("continue")
-        except RuntimeError as error:
-            assert "reconciliation" in str(error)
-        else:
-            raise AssertionError("model turn continued after failed post-action boundary")
-        await adapter.close()
-
-    asyncio.run(run())
-
-
 def test_dp_bridge_connector_requires_same_cfw_identity_and_forwards_boundaries():
     class _DPBridge:
         def __init__(self, authority, identity=None):
             self.identity = identity or SimpleNamespace(
-                session_id="codex-cfw-stable", task_id="task-1",
+                session_id="host-cfw-stable", task_id="task-1",
                 agent_instance_id="agent-stable")
             self.objective = "Read the requested document"
             self.objective_criteria = ("criterion-1",)
@@ -970,7 +1085,7 @@ def test_dp_bridge_connector_requires_same_cfw_identity_and_forwards_boundaries(
     bridges = []
     task_handle = SimpleNamespace(
         agent_instance_id="agent-stable",
-        digital_psychology_adapter=lambda: SimpleNamespace(
+        create_component_adapter=lambda _factory: SimpleNamespace(
             authority_identity=lambda: authority))
     host = DigitalPsychologyBridgeHost(
         bridge_factory=lambda **kwargs: bridges.append(_DPBridge(
@@ -978,6 +1093,7 @@ def test_dp_bridge_connector_requires_same_cfw_identity_and_forwards_boundaries(
                 session_id=kwargs["session_id"],
                 task_id=kwargs["request"].task_id,
                 agent_instance_id=kwargs["task_handle"].agent_instance_id))) or bridges[-1],
+        component_adapter_factory=CFWBehaviorAdapter,
         require_shared_csw=False,
         candidate_factory=lambda **kwargs: {"candidate": kwargs["invocation_id"]},
         observation_factory=lambda **kwargs: {"boundary": kwargs["boundary"]})
@@ -985,7 +1101,7 @@ def test_dp_bridge_connector_requires_same_cfw_identity_and_forwards_boundaries(
     async def run():
         await host.open_task(
             request=_request(), runtime=None, task_handle=task_handle,
-            host_handle=None, session_id="codex-cfw-stable", session_nonce="nonce",
+            host_handle=None, session_id="host-cfw-stable", session_nonce="nonce",
             resume=False, runtime_mode="standalone_enforcing", thread_id=None,
             app_server_session_id=None)
         bridge = bridges[0]
@@ -1019,13 +1135,14 @@ def test_dp_bridge_connector_requires_same_cfw_identity_and_forwards_boundaries(
         mismatched = _DPBridge({"authority_id": "different-session"})
         rejected = DigitalPsychologyBridgeHost(
             mismatched,
+            component_adapter_factory=CFWBehaviorAdapter,
             require_shared_csw=False,
             candidate_factory=lambda **kwargs: kwargs,
             observation_factory=lambda **kwargs: kwargs)
         try:
             await rejected.open_task(
                 request=_request(), runtime=None, task_handle=task_handle,
-                host_handle=None, session_id="codex-cfw-stable", session_nonce="nonce",
+                host_handle=None, session_id="host-cfw-stable", session_nonce="nonce",
                 resume=False, runtime_mode="standalone_enforcing", thread_id=None,
                 app_server_session_id=None)
         except RuntimeError as error:
@@ -1041,7 +1158,7 @@ def test_dp_triad_connector_rejects_standalone_cfw_before_open():
     authority = {"authority_id": "cfw-same-session"}
     bridge = SimpleNamespace(
         identity=SimpleNamespace(
-            session_id="codex-cfw-stable", task_id="task-1",
+            session_id="host-cfw-stable", task_id="task-1",
             agent_instance_id="agent-stable"),
         objective="Read the requested document",
         objective_criteria=("criterion-1",),
@@ -1055,18 +1172,19 @@ def test_dp_triad_connector_rejects_standalone_cfw_before_open():
     bridge.open = open_bridge
     task_handle = SimpleNamespace(
         agent_instance_id="agent-stable",
-        digital_psychology_adapter=lambda: SimpleNamespace(
+        create_component_adapter=lambda _factory: SimpleNamespace(
             authority_identity=lambda: authority,
             workflow_authority_identities=lambda: {"statework-a": {"identity": "pinned"}}))
     connector = DigitalPsychologyBridgeHost(
-        bridge, candidate_factory=lambda **kwargs: kwargs,
+        bridge, component_adapter_factory=CFWBehaviorAdapter,
+        candidate_factory=lambda **kwargs: kwargs,
         observation_factory=lambda **kwargs: kwargs)
 
     async def run():
         try:
             await connector.open_task(
                 request=_request(), runtime=None, task_handle=task_handle,
-                host_handle=None, session_id="codex-cfw-stable", session_nonce="nonce",
+                host_handle=None, session_id="host-cfw-stable", session_nonce="nonce",
                 resume=False, runtime_mode="standalone_enforcing", thread_id=None,
                 app_server_session_id=None)
         except RuntimeError as error:
@@ -1088,16 +1206,17 @@ def test_dp_triad_connector_rejects_standalone_cfw_before_open():
         missing_workflows.open = open_without_bindings
         empty_task_handle = SimpleNamespace(
             agent_instance_id="agent-stable",
-            digital_psychology_adapter=lambda: SimpleNamespace(
+            create_component_adapter=lambda _factory: SimpleNamespace(
                 authority_identity=lambda: authority,
                 workflow_authority_identities=dict))
         empty_connector = DigitalPsychologyBridgeHost(
-            missing_workflows, candidate_factory=lambda **kwargs: kwargs,
+            missing_workflows, component_adapter_factory=CFWBehaviorAdapter,
+            candidate_factory=lambda **kwargs: kwargs,
             observation_factory=lambda **kwargs: kwargs)
         try:
             await empty_connector.open_task(
                 request=_request(), runtime=None, task_handle=empty_task_handle,
-                host_handle=None, session_id="codex-cfw-stable", session_nonce="nonce",
+                host_handle=None, session_id="host-cfw-stable", session_nonce="nonce",
                 resume=False, runtime_mode="combined_enforcing", thread_id=None,
                 app_server_session_id=None)
         except RuntimeError as error:
@@ -1114,7 +1233,7 @@ def test_dp_triad_status_exposes_verified_shared_authorities():
     workflow_identity = {"workflow_id": "statework-a", "registry_hash": "sha256:abc"}
     bridge = SimpleNamespace(
         identity=SimpleNamespace(
-            session_id="codex-cfw-stable", task_id="task-1",
+            session_id="host-cfw-stable", task_id="task-1",
             agent_instance_id="agent-stable"),
         objective="Read the requested document",
         objective_criteria=("criterion-1",),
@@ -1148,15 +1267,16 @@ def test_dp_triad_status_exposes_verified_shared_authorities():
         lifecycle_revision=4)
     task_handle = SimpleNamespace(
         agent_instance_id="agent-stable",
-        digital_psychology_adapter=lambda: behavior_adapter)
+        create_component_adapter=lambda _factory: behavior_adapter)
     connector = DigitalPsychologyBridgeHost(
-        bridge, candidate_factory=lambda **kwargs: kwargs,
+        bridge, component_adapter_factory=CFWBehaviorAdapter,
+        candidate_factory=lambda **kwargs: kwargs,
         observation_factory=lambda **kwargs: kwargs)
 
     async def run():
         await connector.open_task(
             request=_request(), runtime=None, task_handle=task_handle,
-            host_handle=None, session_id="codex-cfw-stable", session_nonce="nonce",
+            host_handle=None, session_id="host-cfw-stable", session_nonce="nonce",
             resume=False, runtime_mode="combined_enforcing", thread_id=None,
             app_server_session_id=None)
         status = connector.status_snapshot()
@@ -1203,7 +1323,7 @@ def test_generic_codex_dp_connector_uses_the_live_cfw_task_gate(tmp_path):
             self.objective = request.goal_contract.objective
             self.objective_criteria = tuple(
                 item.criterion_id for item in request.goal_contract.acceptance_criteria)
-            self.cfw = task_handle.digital_psychology_adapter()
+            self.cfw = task_handle.create_component_adapter(CFWBehaviorAdapter)
             self.behavior_state = SimpleNamespace(
                 revision=3, active_interventions=(), intervention_history=())
             self.fault = None
@@ -1222,7 +1342,9 @@ def test_generic_codex_dp_connector_uses_the_live_cfw_task_gate(tmp_path):
 
         async def before_model_call(self, context, *, tool_capable=False):
             self.events.append("pre_model")
-            return self.cfw.before_model_call(context, tool_capable=tool_capable)
+            projected = self.cfw.before_model_call(
+                context, tool_capable=tool_capable)
+            return f"{projected} + DP"
 
         async def before_action_candidate(self, candidate, *, cfw_action_request=None):
             self.events.append(("pre_action", candidate))
@@ -1260,8 +1382,9 @@ def test_generic_codex_dp_connector_uses_the_live_cfw_task_gate(tmp_path):
             coordinators.append(bridge)
             return bridge
 
-        cognitive = DigitalPsychologyBridgeHost(
+        cognitive = DigitalPsychologyHarnessLifecycle(
             bridge_factory=build_private_dp,
+            component_adapter_factory=CFWBehaviorAdapter,
             require_shared_csw=False,
             candidate_factory=lambda **kwargs: {
                 "invocation_id": kwargs["invocation_id"],
@@ -1274,7 +1397,7 @@ def test_generic_codex_dp_connector_uses_the_live_cfw_task_gate(tmp_path):
             action_bindings=(_read_binding(
                 lambda args: {"read_path": args["path"], "content": "fixture"}),),
             model="test-model", cwd=tmp_path, runtime=runtime,
-            cognitive_host=cognitive)
+            runtime_harness_lifecycle=cognitive)
         client = _Client()
         await adapter.open(client)
         client.early_turn = {"id": "turn-1", "status": "completed"}
@@ -1296,11 +1419,13 @@ def test_generic_codex_dp_connector_uses_the_live_cfw_task_gate(tmp_path):
                    for event in coordinators[0].events)
         assert adapter.status()["model_visible_dp_tools"] == 0
         assert adapter.status()["native_mutation_surfaces_closed"] is True
-        cognitive_status = adapter.status()["cognitive_host_status"]
-        assert cognitive_status["private_dp_bridge_open"] is True
-        assert cognitive_status["cfw_authority_verified"] is True
-        assert cognitive_status["dp_behavior_revision"] == 3
-        assert cognitive_status["production_metrics"]["counters"][
+        assert adapter.status()["runtime_harness_lifecycle_connected"] is True
+        assert " + DP" in client.turn_start_params["input"][0]["text"]
+        runtime_status = adapter.status()["runtime_harness_lifecycle_status"]
+        assert runtime_status["private_dp_bridge_open"] is True
+        assert runtime_status["cfw_authority_verified"] is True
+        assert runtime_status["dp_behavior_revision"] == 3
+        assert runtime_status["production_metrics"]["counters"][
             "attention_rotations"] == 1
         await adapter.close()
 
@@ -1381,10 +1506,34 @@ def test_matched_baseline_treatment_fixture_contract_trials(tmp_path):
     asyncio.run(run())
 
 
-def _read_binding(executor):
+def _read_binding(executor, *, name="cfw_read"):
     return CodexActionBinding(
-        name="cfw_read", description="Read a host-authorized resource",
+        name=name, description="Read a host-authorized resource",
         input_schema={"type": "object", "properties": {"path": {"type": "string"}},
                       "required": ["path"]},
         action_binding_id="read", descriptor=ActionDescriptor("read"),
         executor=executor)
+
+
+def test_codex_dynamic_tool_names_are_host_selected_without_product_prefix():
+    binding = _read_binding(lambda _: {"ok": True}, name="read")
+
+    assert binding.app_server_spec()["name"] == "read"
+    with pytest.raises(ValueError, match="bounded safe identifier"):
+        _read_binding(lambda _: {"ok": True}, name="../outside")
+
+
+def test_codex_bindings_register_through_neutral_runtime_contracts(tmp_path):
+    action = _read_binding(lambda _: {"ok": True})
+    validator = CodexValidatorBinding(
+        validator_id="read-check-v1", action_binding_id="read",
+        arguments={"path": "doc.md"}, criterion_ids=("criterion-1",),
+        result_schema={"type": "object"})
+    adapter = CodexAppServerAdapter(
+        request=_request(), action_bindings=(action,),
+        validator_bindings=(validator,), model="test-model", cwd=tmp_path)
+
+    assert isinstance(action.host_binding, HostActionBinding)
+    assert isinstance(validator.host_binding, HostValidatorBinding)
+    assert adapter.host_runtime_bindings.action_bindings_by_id["read"] == action.host_binding
+    assert isinstance(adapter.validator_bindings[0], HostValidatorBinding)

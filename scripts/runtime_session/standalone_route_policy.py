@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import math
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 from runtime_contract.workflow_port import WorkflowRouteRanking
 from runtime_session.resolver_bridge import resolve_runtime
@@ -107,26 +107,12 @@ class ChildPolicyEpoch:
 
 
 @dataclass(frozen=True)
-class SemanticRouteResolution:
-    """Result supplied by CFW's semantic tie resolver, with calibration facts."""
-
-    route: Optional[str]
-    decision_ref: Optional[str]
-    confidence: Optional[float]
-    calibrated: bool
-    unavailable_reason: Optional[str] = None
-
-
-@dataclass(frozen=True)
 class RoutePolicyContext:
     """Policy inputs; legal candidates always come from the workflow owner."""
 
     route_preference: Optional[str] = None
     preference_source: str = "metacognition"
     scores: Mapping[str, float] | None = None
-    learned_preferred_routes: frozenset[str] = frozenset()
-    confidence_threshold: float = 0.0
-    resolve_tie: Optional[Callable[[tuple[str, ...]], SemanticRouteResolution]] = None
 
 
 @dataclass(frozen=True)
@@ -137,7 +123,6 @@ class RouteRecommendation:
     source: str
     reason: str
     confidence: float
-    semantic_decision_ref: Optional[str] = None
 
 
 class RouteSelectionUnavailable(RuntimeError):
@@ -152,12 +137,10 @@ class RouteSelectionUnavailable(RuntimeError):
 class StandaloneRoutePolicy:
     """Select a route for standalone CFW and retain its route epochs."""
 
-    _SOURCES = frozenset({"metacognition", "operator", "learned_profile"})
+    _SOURCES = frozenset({"metacognition", "operator"})
     _REASONS = {
         "metacognition": "deterministic_route_specificity",
         "operator": "operator_route_preference",
-        "learned_profile": "learned_profile_route_preference",
-        "semantic_advisory": "semantic_route_recommendation",
     }
 
     def __init__(self, policy_epoch_record: Optional[PolicyEpochRecord] = None) -> None:
@@ -195,9 +178,6 @@ class StandaloneRoutePolicy:
             if selected not in routes:
                 raise ValueError(
                     "preferred route must be one of the workflow owner's legal candidates")
-            if (source == "learned_profile"
-                    and selected not in context.learned_preferred_routes):
-                raise PermissionError("learned route preference is not pinned in this policy")
             return RouteRecommendation(
                 selected, source, self._REASONS[source], 1.0)
 
@@ -221,34 +201,14 @@ class StandaloneRoutePolicy:
                 top_routes[0], "metacognition",
                 self._REASONS["metacognition"], 1.0)
 
-        if context.resolve_tie is None:
-            raise RouteSelectionUnavailable(
-                "legal routes are tied and no calibrated semantic resolver is available",
-                top_routes)
-        resolution = context.resolve_tie(top_routes)
-        if not isinstance(resolution, SemanticRouteResolution):
-            raise TypeError("semantic route resolver returned an invalid result")
-        if resolution.unavailable_reason:
-            raise RouteSelectionUnavailable(resolution.unavailable_reason, top_routes)
-        confidence = resolution.confidence
-        if (not resolution.calibrated or resolution.route not in top_routes
-                or not resolution.decision_ref or confidence is None
-                or isinstance(confidence, bool)
-                or not isinstance(confidence, (int, float))
-                or not math.isfinite(float(confidence))
-                or float(confidence) < context.confidence_threshold):
-            raise RouteSelectionUnavailable(
-                "semantic route answer is not calibrated for the tied legal candidates",
-                top_routes)
-        return RouteRecommendation(
-            resolution.route, "semantic_advisory",
-            self._REASONS["semantic_advisory"], float(confidence),
-            semantic_decision_ref=resolution.decision_ref)
+        raise RouteSelectionUnavailable(
+            "legal routes are tied and no deterministic preference is available",
+            top_routes)
 
 
 __all__ = [
     "ChildPolicyEpoch", "PolicyEpochRecord", "RoutePolicyContext",
     "RouteRecommendation", "RouteReplanRecommendation",
-    "RouteSelectionUnavailable", "SemanticRouteResolution",
+    "RouteSelectionUnavailable",
     "StandaloneRoutePolicy",
 ]

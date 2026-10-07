@@ -9,7 +9,9 @@ from runtime_contract.component_control import (
     ComponentOverlay, ExternalBehaviorProjection,
     build_task_behavior_contract,
 )
-from runtime_session.behavior_authority import ExternalBehaviorAuthority
+from runtime_session.behavior_authority import (
+    ExternalBehaviorAuthorityPending, StandaloneBehaviorAuthority,
+)
 
 
 class ExternalBehaviorMethods:
@@ -51,13 +53,20 @@ class ExternalBehaviorMethods:
 
     def enable_external_behavior_authority(self) -> tuple[str, ...]:
         """Bind DP as the behavior authority before this session sees agent work."""
-        if self.behavior.is_external:
+        if self.behavior.external_authority_bound:
             return self.available_component_ids()
-        if self.behavior.authority is not None:
+        authority = self.behavior.authority
+        if (isinstance(authority, StandaloneBehaviorAuthority)
+                and (authority.activated
+                     or authority.route_policy.policy_epoch_record is not None)):
+            raise RuntimeError(
+                "DigitalPsychology must bind before CFW standalone behavior services are used")
+        if (authority is not None
+                and not isinstance(authority, (ExternalBehaviorAuthorityPending,
+                                               StandaloneBehaviorAuthority))):
             raise RuntimeError(
                 "DigitalPsychology must bind before CFW standalone behavior services are created")
-        if (self.behavior.system_one_sequence or self.actions.pending_action_requests
-                or self.attempts.descriptors):
+        if self.actions.pending_action_requests or self.attempts.descriptors:
             raise RuntimeError(
                 "DigitalPsychology must bind before CFW behavioral activity begins")
         self.behavior.external_startup_lifecycle = set(
@@ -66,8 +75,24 @@ class ExternalBehaviorMethods:
             self.behavior.external_startup_lifecycle_state = (
                 self.lifecycle_workflow.lifecycle.capture_state())
         self.behavior.bind_external_authority()
-        self.behavior.deferred_semantic_signal_records = ()
         return self.available_component_ids()
+
+    def require_external_behavior_authority(self, boundary: str) -> None:
+        """Fail closed when combined mode reaches work before adapter binding."""
+        if (self.identity_authority.authorities.runtime_mode == "combined_enforcing"
+                and not self.behavior.external_authority_bound):
+            raise RuntimeError(
+                "combined_enforcing requires a bound external behavior authority "
+                f"before {boundary}")
+
+    def require_external_behavior_projection(self, boundary: str) -> None:
+        """Fail closed when combined mode has no DP state to project."""
+        self.require_external_behavior_authority(boundary)
+        if (self.identity_authority.authorities.runtime_mode == "combined_enforcing"
+                and not self.behavior.external_projection):
+            raise RuntimeError(
+                "combined_enforcing requires an external behavior projection "
+                f"before {boundary}")
     @property
     def external_behavior_revision(self) -> int:
         return int(self.behavior.external_projection.get("behavior_revision", -1))
@@ -139,7 +164,7 @@ class ExternalBehaviorMethods:
     def _materialize_external_behavior_projection(
             self, value: Mapping[str, Any], *, allow_rollback: bool,
             synchronize: bool = False) -> None:
-        if not self.behavior.is_external:
+        if not self.behavior.external_authority_bound:
             raise RuntimeError("external behavior authority has not been bound")
         projection = ExternalBehaviorProjection.from_mapping(value)
         self._validate_task_behavior_floor(projection)
@@ -195,7 +220,7 @@ class ExternalBehaviorMethods:
 
     def restore_external_behavior_startup(self) -> None:
         """Restore the immutable CFW startup preset after a failed DP apply."""
-        if not self.behavior.is_external:
+        if not self.behavior.external_authority_bound:
             raise RuntimeError("external behavior authority has not been bound")
         self.behavior.external_projection = {}
         self.behavior.last_component_overlay_transition = None

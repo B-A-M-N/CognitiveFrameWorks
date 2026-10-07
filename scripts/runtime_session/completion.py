@@ -420,6 +420,64 @@ class CompletionMethods:
                                    **kwargs)
     def final_output(self, *_: Any, **__: Any) -> Dict[str, Any]:
         raise PermissionError("finalization requires a validated completion permit")
+
+    def completion_statework_receipt(self) -> Optional[Dict[str, Any]]:
+        """Return a fresh, bounded CSW completion receipt for the active task."""
+        if self.identity_authority.authorities.runtime_mode != "combined_enforcing":
+            return None
+        stateworks = tuple(self.bundle.stateworks)
+        authority = self.identity_authority.authorities.state_authority
+        reasons: list[str] = []
+        revisions: list[tuple[str, str, int, bool]] = []
+        if not stateworks or authority is None:
+            reasons.append("csw_authority_unavailable")
+        else:
+            for statework in stateworks:
+                statework_id = str(statework.get("id") or "")
+                subject_ref = str(statework.get("subject_ref")
+                                  or self.bundle.policy.subject_ref or "")
+                contract_hash = str(statework.get("workflow_contract_hash") or "")
+                try:
+                    if not statework_id or not subject_ref or not contract_hash:
+                        raise ValueError("workflow identity is incomplete")
+                    inspect_workflow = getattr(authority, "inspect_workflow", None)
+                    if callable(inspect_workflow):
+                        snapshot = inspect_workflow(
+                            statework_id=statework_id, subject_ref=subject_ref,
+                            contract_hash=contract_hash)
+                        complete = snapshot.completed is True
+                        revision = snapshot.revision
+                    else:
+                        snapshot = authority.inspect(
+                            statework_id=statework_id, subject_ref=subject_ref,
+                            contract_hash=contract_hash)
+                        complete = snapshot.get("completed") is True
+                        if "completed" not in snapshot:
+                            contract = authority.workflow_contract_identity(
+                                statework_id, contract_hash)
+                            terminal_states = contract.get("completion_states", ())
+                            complete = snapshot.get("state") in terminal_states
+                        revision = snapshot.get("revision", 0)
+                    if type(revision) is not int or revision < 0:
+                        raise ValueError("workflow revision is invalid")
+                    revisions.append((statework_id, subject_ref, revision, complete))
+                    self.identity_authority.revisions.observe_authority(revision)
+                    if not complete:
+                        reasons.append("csw_workflow_incomplete")
+                except Exception:
+                    reasons.append("csw_authority_unavailable")
+        reasons = list(dict.fromkeys(reasons))
+        revision_digest = hashlib.sha256(json.dumps(
+            revisions, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True).encode("ascii")).hexdigest()
+        return {
+            "authority_id": "csw-workflows",
+            "allowed": not reasons,
+            "revision": revision_digest,
+            "evidence_refs": [],
+            "reason_codes": reasons,
+        }
+
     def finish_task(self, output: Optional[Dict[str, Any]] = None,
                     *, permit: Optional[CompletionPermit] = None,
                     **kwargs: Any) -> Dict[str, Any]:
@@ -487,7 +545,7 @@ class CompletionMethods:
                     contract_hash=contract_hash)
                 complete = bool(snapshot.completed)
             else:
-                workflow_fact = next((item for item in self.behavior.metacognitive.workflows
+                workflow_fact = next((item for item in self.behavior.task_evidence.workflows
                                       if item.statework_id == statework_id
                                       and item.subject_ref == subject_ref), None)
                 complete = bool(workflow_fact and workflow_fact.completed)

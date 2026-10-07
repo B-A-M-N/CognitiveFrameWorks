@@ -1,0 +1,148 @@
+{
+  "canonical": false,
+  "conditions": {
+    "baseline": {
+      "anti_hyperfocus_metrics": {
+        "action_count": 15,
+        "action_target_source_counts": {
+          "last_failed_validator": 2,
+          "test_path": 4,
+          "unattributed": 1,
+          "validator_call": 8
+        },
+        "actions_per_criterion": {
+          "event_integration": 4,
+          "parser_correctness": 4,
+          "retry_schedule": 3,
+          "state_removal": 3
+        },
+        "attention_rotations": 10,
+        "criteria_never_touched": [],
+        "criterion_attribution_ratio": 0.933,
+        "elapsed_to_last_action_ms": 15476.061,
+        "equivalent_retries": 0,
+        "equivalent_retry_proxy_count": 1,
+        "first_action_index_by_criterion": {
+          "event_integration": 7,
+          "parser_correctness": 2,
+          "retry_schedule": 5,
+          "state_removal": 6
+        },
+        "global_blocked_events": null,
+        "local_yield_events": null,
+        "maximum_consecutive_actions_criterion": "parser_correctness",
+        "maximum_consecutive_actions_on_one_criterion": 3,
+        "maximum_criterion_starvation_age_actions": 7,
+        "required_criterion_count": 4,
+        "same_approach_retries": 0,
+        "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+        "time_to_first_action_ms_by_criterion": {
+          "event_integration": 6692.389,
+          "parser_correctness": 2469.388,
+          "retry_schedule": 5228.68,
+          "state_removal": 5893.679
+        },
+        "unattributed_action_count": 1
+      },
+      "completion_permitted": null,
+      "criteria_passed": 4,
+      "criteria_total": 4,
+      "integration_valid": true,
+      "model_execution_observed": true,
+      "model_tool_call_count": 15,
+      "model_validator_call_count": 8,
+      "source_artifact": "noncanonical-behavior-headroom-multitask-baseline-20261006.json",
+      "trial_id": "operator-approved-multitask-starvation-baseline-20261006",
+      "turn_status": "completed"
+    },
+    "cfw": {
+      "anti_hyperfocus_metrics": {
+        "action_count": 15,
+        "action_target_source_counts": {
+          "last_failed_validator": 2,
+          "test_path": 4,
+          "unattributed": 4,
+          "validator_call": 5
+        },
+        "actions_per_criterion": {
+          "event_integration": 2,
+          "parser_correctness": 5,
+          "retry_schedule": 2,
+          "state_removal": 2
+        },
+        "attention_rotations": 7,
+        "criteria_never_touched": [],
+        "criterion_attribution_ratio": 0.733,
+        "elapsed_to_last_action_ms": 17479.399,
+        "equivalent_retries": 0,
+        "equivalent_retry_proxy_count": 1,
+        "first_action_index_by_criterion": {
+          "event_integration": 10,
+          "parser_correctness": 5,
+          "retry_schedule": 8,
+          "state_removal": 9
+        },
+        "global_blocked_events": null,
+        "local_yield_events": null,
+        "maximum_consecutive_actions_criterion": "parser_correctness",
+        "maximum_consecutive_actions_on_one_criterion": 3,
+        "maximum_criterion_starvation_age_actions": 9,
+        "required_criterion_count": 4,
+        "same_approach_retries": 0,
+        "starvation_age_interpretation": "upper_bound_when_actions_are_unattributed; unattributed actions count as elapsed",
+        "time_to_first_action_ms_by_criterion": {
+          "event_integration": 10441.111,
+          "parser_correctness": 6458.476,
+          "retry_schedule": 9001.857,
+          "state_removal": 9737.773
+        },
+        "unattributed_action_count": 4
+      },
+      "completion_permitted": true,
+      "criteria_passed": 4,
+      "criteria_total": 4,
+      "integration_valid": true,
+      "model_execution_observed": true,
+      "model_tool_call_count": 15,
+      "model_validator_call_count": 5,
+      "source_artifact": "noncanonical-behavior-headroom-multitask-cfw-attribution-20261006.json",
+      "trial_id": "operator-approved-multitask-starvation-cfw-attribution-20261006",
+      "turn_status": "completed"
+    }
+  },
+  "event_instrumentation_note": "Local-yield and global-BLOCKED events were unavailable in these trial traces; they are null, not zero.",
+  "fixture_id": "codex-app-server-coding-v1",
+  "interpretation": "One matched diagnostic pair on a shared fixture. Both conditions scored 4/4; this pair does not establish efficacy or causation.",
+  "model": "deepseek-v4-flash",
+  "pair_count": 1,
+  "provider": "freeinference",
+  "repository_state": {
+    "cfw": {
+      "head": "89e76d0c1290ceb07ee156ca202ac3d8fb7c2af4",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 260,
+      "untracked_manifest_sha256": "ef5e0793f7dd3ea69ea85d60f73e3178b2c8f02f451f4c1b4b02728f789d5327",
+      "working_tree_diff_sha256": "99e1a2d5cc79bbc1445d83e59f5e16c1542416a43fd2ee91bd4f59deb81b8cda",
+      "working_tree_dirty": true
+    },
+    "csw": {
+      "head": "a80471fb93b09e773f2a8cc41c24b096f8071b7c",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 27,
+      "untracked_manifest_sha256": "381041d539eee21d34ff9d5d02ade2c657de2498d57445dba562cb1796eef41b",
+      "working_tree_diff_sha256": "e6f803586e045b3e61c14c9731d7c2130f7a1f8ea1d95fe16779d8aa09ae5822",
+      "working_tree_dirty": true
+    },
+    "dp": {
+      "head": "f85df96ce8ec5cbda3facf765e59e9fd004c4aa6",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 81,
+      "untracked_manifest_sha256": "3b32085e54b741a8b603650e3aa0fcd1793f2f6086a4acff463abce0db3d04d2",
+      "working_tree_diff_sha256": "be405e89b5a64543a572007d1b742589f77fa30dc4026f31a145e7950b977f5e",
+      "working_tree_dirty": true
+    }
+  },
+  "scenario_id": "multitask-starvation",
+  "schema": "noncanonical-behavior-headroom-pair/v1",
+  "suite_id": "behavior-headroom-v1"
+}

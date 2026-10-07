@@ -54,17 +54,16 @@ class RuntimeSession(ExternalBehaviorMethods, StandaloneBehaviorMethods,
 
     def ensure_standalone_behavior_authority(self):
         """Lazily create CFW behavior services only when CFW owns behavior."""
+        from runtime_session.behavior_authority import StandaloneBehaviorAuthority
+
         authority = self.behavior.authority
         if self.behavior.is_external:
             return None
         if authority is None:
-            from runtime_session.behavior_authority import StandaloneBehaviorAuthority
             authority = StandaloneBehaviorAuthority()
             self.behavior.bind_standalone_authority(authority)
-            if self.behavior.deferred_semantic_signal_records:
-                authority.semantic_signal_store.restore(
-                    self.behavior.deferred_semantic_signal_records)
-                self.behavior.deferred_semantic_signal_records = ()
+        if isinstance(authority, StandaloneBehaviorAuthority):
+            authority.activated = True
         return authority
 
     def seal(self) -> None:

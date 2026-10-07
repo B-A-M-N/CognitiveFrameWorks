@@ -1,0 +1,420 @@
+{
+  "app_server_error_event_count": 13,
+  "app_server_error_events": [
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    },
+    {
+      "error": {
+        "code": null,
+        "message": "Reconnecting... waiting for network"
+      },
+      "method": "error",
+      "will_retry": true
+    }
+  ],
+  "app_server_event_counts": {
+    "error": 13,
+    "item/agentMessage/delta": 0,
+    "item/completed": 1,
+    "item/started": 1,
+    "turn/completed": 1,
+    "turn/started": 1
+  },
+  "app_server_item_tool_counts": {
+    "completed": {},
+    "started": {}
+  },
+  "app_server_item_type_counts": {
+    "completed": {
+      "userMessage": 1
+    },
+    "started": {
+      "userMessage": 1
+    }
+  },
+  "assistant_message_present": false,
+  "behavior_trace": [
+    {
+      "active_optional_components": [
+        "anchor_open",
+        "owl"
+      ],
+      "attempt_id": "attempt-1",
+      "behavioral_mode": "DELIVER",
+      "context_strategy": "standalone_contract_guidance",
+      "focus_criterion_ids": [
+        "event_integration",
+        "parser_correctness",
+        "retry_schedule"
+      ],
+      "goal_anchor_state": "pinned_host_contract",
+      "goal_contract_hash": "5b8f30c2e172c6dd73cd6cd17db8811b50f17018c34850c47d2e1a0abbe4a645",
+      "goal_reanchor_required": false,
+      "guidance_byte_count": 2977,
+      "guidance_sha256": "8a2e2e5b35011206f5d0405df2e95304a13645827999ecf577651f772e009cc4",
+      "reason_codes": [
+        "goal.required_criterion_pending"
+      ],
+      "response_strategy": "deliver",
+      "retry_recovery_counters": {
+        "recovery_epochs_since_goal_progress": 0,
+        "same_approach_retries": 0,
+        "support_actions_since_goal_progress": 0,
+        "total_actions_since_goal_progress": 0
+      },
+      "retry_recovery_mode": "RUNNING",
+      "turn_index": 1,
+      "work_mode": "delivery"
+    }
+  ],
+  "boundary_probe_invariants": {},
+  "boundary_probe_valid": null,
+  "cfw_block_count": 0,
+  "cfw_gate_receipt_count": 0,
+  "cfw_gate_receipts": [],
+  "cognitive_fault": "",
+  "cognitive_host_initialized": null,
+  "completion_attempts": [],
+  "completion_decision": null,
+  "completion_error_class": "",
+  "completion_error_message": "",
+  "completion_permitted": null,
+  "completion_status": "not_checked",
+  "completion_validator_reuse_count": 0,
+  "completion_validators": [],
+  "condition": "cfw",
+  "criteria_passed": null,
+  "criteria_total": null,
+  "criterion_results": {},
+  "dp_observation_record_count": 0,
+  "dynamic_probe_valid": null,
+  "efficacy_scored": false,
+  "execution_phase": "turn_accepted",
+  "failure_class": "model_backend_timeout",
+  "failure_domain": "codex_app_server_inference",
+  "fixture_state_after_failed_start": {
+    "changed_path_count": 0,
+    "source_sha256": "4c255986227763f780c4570dae7dc61645782debbde4786f72af201c62333cfd",
+    "validator_results": []
+  },
+  "host_initialized": true,
+  "host_integration_valid": false,
+  "inference_preflight_only": false,
+  "inference_readiness": {
+    "account_type": null,
+    "auth_mode": "external_provider",
+    "failure_class": null,
+    "provider_id": "freeinference",
+    "ready": true,
+    "requirements_loaded": true,
+    "workspace_routing_ready": true,
+    "workspace_routing_required": false
+  },
+  "inference_ready": true,
+  "infrastructure_valid": false,
+  "integration_invariants": {
+    "app_server_connected": true,
+    "cfw_action_gate_observed": false,
+    "completion_checked": false,
+    "inference_ready": true,
+    "model_execution_observed": false,
+    "model_visibility_verified": true,
+    "native_mutation_surfaces_closed": true,
+    "no_cognitive_fault": true,
+    "runtime_mode_matches": true,
+    "validator_boundary_observed": false
+  },
+  "integration_valid": false,
+  "internal_inference_boundaries_intercepted": false,
+  "model": "deepseek-v4-flash",
+  "model_execution_observed": false,
+  "model_infrastructure_valid": false,
+  "model_tool_call_count": 0,
+  "model_validator_call_count": 0,
+  "model_visible_dp_tools": 0,
+  "native_action_feature_catalog": {
+    "disabled_host_feature_count": 47,
+    "host_policy_closed": true,
+    "policy_sha256": "82b363a94a1372a9ef42cafe5b160c67f38bf2502583d34858faa97d8b4bada2",
+    "supported_feature_count": 47,
+    "version": "codex-native-host-policy-v1"
+  },
+  "native_action_feature_categories": {
+    "execution_disabled": [
+      "shell_tool",
+      "unified_exec"
+    ],
+    "host_infrastructure_enabled": [],
+    "model_callable_disabled": [
+      "agent_message_board",
+      "apps",
+      "auth_elicitation",
+      "browser_use",
+      "browser_use_external",
+      "browser_use_full_cdp_access",
+      "code_mode",
+      "codex_apps_mcp_2026_07_28",
+      "computer_use",
+      "enable_mcp_apps",
+      "exec_permission_approvals",
+      "image_generation",
+      "in_app_browser",
+      "in_app_chat",
+      "in_app_dictation",
+      "in_app_local_automation",
+      "in_app_updates",
+      "multi_agent",
+      "multi_agent_v2",
+      "plugin_sharing",
+      "plugins",
+      "remote_plugin",
+      "request_permissions_tool",
+      "shell_zsh_fork",
+      "skill_mcp_dependency_install",
+      "skill_search",
+      "sqlite",
+      "tool_call_mcp_elicitation",
+      "tool_suggest",
+      "unified_exec_tty",
+      "unified_exec_zsh_fork",
+      "view_image",
+      "web_search_request",
+      "worktrees",
+      "write_stdin_approval"
+    ],
+    "persistent_side_effects_disabled": [
+      "daemon_auto_start",
+      "goals",
+      "hooks",
+      "memories",
+      "prevent_idle_sleep",
+      "realtime_conversation",
+      "shell_snapshot",
+      "shell_snapshot_v2",
+      "sleep_tool"
+    ],
+    "workspace_dependency_features_disabled": [
+      "workspace_dependencies"
+    ]
+  },
+  "native_action_features_disabled": [
+    "agent_message_board",
+    "apps",
+    "auth_elicitation",
+    "browser_use",
+    "browser_use_external",
+    "browser_use_full_cdp_access",
+    "code_mode",
+    "codex_apps_mcp_2026_07_28",
+    "computer_use",
+    "daemon_auto_start",
+    "enable_mcp_apps",
+    "exec_permission_approvals",
+    "goals",
+    "hooks",
+    "image_generation",
+    "in_app_browser",
+    "in_app_chat",
+    "in_app_dictation",
+    "in_app_local_automation",
+    "in_app_updates",
+    "memories",
+    "multi_agent",
+    "multi_agent_v2",
+    "plugin_sharing",
+    "plugins",
+    "prevent_idle_sleep",
+    "realtime_conversation",
+    "remote_plugin",
+    "request_permissions_tool",
+    "shell_snapshot",
+    "shell_snapshot_v2",
+    "shell_tool",
+    "shell_zsh_fork",
+    "skill_mcp_dependency_install",
+    "skill_search",
+    "sleep_tool",
+    "sqlite",
+    "tool_call_mcp_elicitation",
+    "tool_suggest",
+    "unified_exec",
+    "unified_exec_tty",
+    "unified_exec_zsh_fork",
+    "view_image",
+    "web_search_request",
+    "workspace_dependencies",
+    "worktrees",
+    "write_stdin_approval"
+  ],
+  "native_action_features_supported": [
+    "agent_message_board",
+    "apps",
+    "auth_elicitation",
+    "browser_use",
+    "browser_use_external",
+    "browser_use_full_cdp_access",
+    "code_mode",
+    "codex_apps_mcp_2026_07_28",
+    "computer_use",
+    "daemon_auto_start",
+    "enable_mcp_apps",
+    "exec_permission_approvals",
+    "goals",
+    "hooks",
+    "image_generation",
+    "in_app_browser",
+    "in_app_chat",
+    "in_app_dictation",
+    "in_app_local_automation",
+    "in_app_updates",
+    "memories",
+    "multi_agent",
+    "multi_agent_v2",
+    "plugin_sharing",
+    "plugins",
+    "prevent_idle_sleep",
+    "realtime_conversation",
+    "remote_plugin",
+    "request_permissions_tool",
+    "shell_snapshot",
+    "shell_snapshot_v2",
+    "shell_tool",
+    "shell_zsh_fork",
+    "skill_mcp_dependency_install",
+    "skill_search",
+    "sleep_tool",
+    "sqlite",
+    "tool_call_mcp_elicitation",
+    "tool_suggest",
+    "unified_exec",
+    "unified_exec_tty",
+    "unified_exec_zsh_fork",
+    "view_image",
+    "web_search_request",
+    "workspace_dependencies",
+    "worktrees",
+    "write_stdin_approval"
+  ],
+  "overall_wall_time_ms": 602401.926,
+  "registered_dynamic_tool_names": [
+    "cfw_read",
+    "cfw_run_validator",
+    "cfw_write"
+  ],
+  "requested_statework_ids": [],
+  "runtime_mode": "standalone_enforcing",
+  "schema": "generic-codex-app-server-trial-summary/v1",
+  "server_request_method_counts": {},
+  "stack": "cfw-only",
+  "thread_started": true,
+  "trial_id": "post-reuse-cfw-smoke-20261006",
+  "turn_started": true,
+  "turn_status": "timeout",
+  "turns": [
+    {
+      "error": {
+        "code": null,
+        "message": "model turn timeout"
+      },
+      "status": "timeout",
+      "wall_time_ms": 600237.409
+    }
+  ],
+  "validator_channel_metrics": {},
+  "workflow_ids": [],
+  "workspace_routing_required": false
+}

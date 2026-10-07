@@ -1,0 +1,1284 @@
+{
+  "auth_mode": "chatgpt",
+  "behavioral_scenario": "equivalent-retry",
+  "canonical_clean_commits": false,
+  "conditions": [
+    "baseline",
+    "cfw"
+  ],
+  "evaluation_id": "codex-app-server-coding-20261007T061225Z",
+  "fixture_id": "codex-app-server-coding-v1",
+  "internal_inference_boundaries_intercepted": false,
+  "max_turns": 3,
+  "model": "gpt-6-luna",
+  "ordering_seed": 20261005,
+  "provider_base_url": null,
+  "provider_env_key": null,
+  "provider_id": null,
+  "repository_state": {
+    "cfw": {
+      "head": "9a159e07ad01690f001f50cb4e67a92c96b08d60",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 127,
+      "untracked_file_hashes": {
+        "evaluation_fixtures/live-results/behavior-headroom-context-pressure-pilot-20261006.json": "99889884ecdd828d20dcdb0a89556188cfc59279611f5a8484dc05c71350cf0c",
+        "evaluation_fixtures/live-results/behavior-headroom-equivalent-retry-20261007T055248Z.json": "ea38adf79b6e8223fa3e28ca0b0b99e1da71d71307ec4de6de6f42587acaadbe",
+        "evaluation_fixtures/live-results/behavior-headroom-equivalent-retry-20261007T060625Z.json": "3c75c77cf8d6c1d7f3c184063a202b73d3dda9f1e3fe5314e78cac6e3fbfde78",
+        "evaluation_fixtures/live-results/behavior-headroom-equivalent-retry-pilot-20261006.json": "6e28f212e984ef019cb6c1f3c08ecc1c4ec1f74b82124badfdac1b77c4e0990e",
+        "evaluation_fixtures/live-results/behavior-headroom-premature-completion-pilot-20261006.json": "274befeae8acd1b3dc9a34a0431b1528c480c24631fcc2e46453f56cccb8117c",
+        "evaluation_fixtures/live-results/behavior-headroom-scope-drift-pilot-20261006.json": "a72c146622e16bb512925f13e70ac805ae70dca61db9f58565abc49d25a37bc3",
+        "evaluation_fixtures/live-results/behavior-headroom-stale-authority-pilot-20261006.json": "8ab1d03efc7f06fe25f8e188e953d3e395be5ee526c4d575dc02e1afec7855e9",
+        "evaluation_fixtures/live-results/behavior-headroom-workflow-switch-pilot-20261006.json": "6b495644d075b04d284a05676c683ae6b1a7312decfce17ed44758c3992b8d13",
+        "evaluation_fixtures/live-results/coding-eval-20261005T200951Z.json": "d44eae21467de291ee7d123a8b75381160f95474da3f88e4b26ee9048db601e4",
+        "evaluation_fixtures/live-results/coding-eval-20261005T204440Z.json": "bfe633e998c508f643d3bbcddf5729a9f770d932d8f8cf83490c52f6543f5e47",
+        "evaluation_fixtures/live-results/coding-eval-20261006T044239Z.json": "cf8c556b54f603fecdb8f92cde1f450d620cf877cf422bef404c7c56d06e00e1",
+        "evaluation_fixtures/live-results/coding-eval-20261006T051814Z.json": "71cca6fbc4d9dbfc6ffa5ffc15529d19a3d7834ee3cfcafda34b9a3e63009266",
+        "evaluation_fixtures/live-results/coding-eval-20261007T053122Z.json": "27185dbb3226992a2bd0e4916a2c7eac9bfa2a6cfd34d3b06b4ef32fa888c098",
+        "evaluation_fixtures/live-results/gate-eval-20261005T184915Z.json": "4370e58f49f511537789e34746ff416217744137aba7bc6ceae9912375be252d",
+        "evaluation_fixtures/live-results/gate-eval-20261005T190706Z.json": "2346f54a47c0c0bd4c754465206250c324c052d05c3e415c917d633d7093b759",
+        "evaluation_fixtures/live-results/generic-codex-multipath-approved-20261005.json": "f2b61d5dcb104f5f4bbcf99a63e407ca953d5b56d42993e08c2bc6ca9fc829e6",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-20261005.json": "5dd18b1141e460655f26a1f433e59ea986bf960ea1850272338b12a3f9b970a7",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-direct-cli-20261006.json": "b07fa65d828b7d6b9413b3e355d65ae408d715ed9af3026ca1d119a8933d3305",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-direct-sanitized-20261006.json": "4f1734672fc5ba4ccb809ca0198bfe09f974f344472d9094aac97835aee85db2",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-host-policy-20261005.json": "57ea712022acadcc9803c7ec40ef9aeaac560fce1681679e21e2f0b7f10d2f09",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-initialized-20261006.json": "c481d7b23aca5c039029c1d80586968f3e576fb53f7112da3ffb4d8b6b1097f2",
+        "evaluation_fixtures/live-results/generic-codex-multipath-boundary-native-features-20261006.json": "00c8c7c911b8e6e794aa72f0237b25242936f043bafda852307b09d783d6643a",
+        "evaluation_fixtures/live-results/generic-codex-multipath-corrected-20261006.json": "df7e7a023deca1ffafbf1db901efca5560ce52a1f5727e57116ea3cb9ebfef98",
+        "evaluation_fixtures/live-results/generic-codex-multipath-diagnostic-direct-cli-20261006.json": "2ded81a3d61be329ab94ca8be3cc6fb110ece078a1d7b02dbae810a2ddf570d9",
+        "evaluation_fixtures/live-results/generic-codex-multipath-fullconfig-retry-20261006.json": "10caf672da98e8e6acc4226f846d71f3841b7bd17b483587d8dd6ff1a6a51abe",
+        "evaluation_fixtures/live-results/generic-codex-multipath-postfeatures-20261006.json": "c5a21b0ec3609c6673e17ec4ba09a653ddcf4b70f0ba29a21fa86166ff49e3c3",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-baseline-20261006.json": "e580111a1bb2edd035cad2c614ef5812fe5583be9b123246d180cb3c74ae3ede",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-cfw-20261006.json": "b408b1435e21dba94c470a75eb2c7bbc564dae33a1f61e20f2b67b5a96547a7d",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-cfw-attribution-20261006.json": "96f76aa546ff643b97a6d08656ba78bea7dd633be8795378c03e4bd1d1c7d4ab",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-cfw-metrics-20261006.json": "c7c995845fe0560a3ee3769e2d8b3073968254c676a0793aa74344b8eb56a269",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-pair-20261006.json": "633af5ab72fe8cfb8f4ef251b6ba4ff0ebb6accd421f716378a98247f26994c5",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-triad-20261006-r3.json": "f6885d80630fb785f0c983db28066187f1e703cf65ccbe922b4a508c422fedd4",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-triad-20261006-r4.json": "3b6c354727c41db80892a0c483434dc9b6c7c532c0267215b68e9ccd35734a94",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-triad-20261006.json": "95c5e3b007ec4d20c34791b6c60ece7b5c73ab746c915c259fa087f28c516214",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-multitask-triad-rerun-20261006.json": "0c136e8d876b759d0138a75c1f62ffc24df1c71a22dd56c257e2b41ea203cc0e",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-premature-bounded-redirect-cfw-20261006.json": "8a5f098da8afeff192d32c672c739a19c3dde9ef9c1836669255b8c5cd01d9f3",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-premature-bounded-redirect-cfw-confirmation-20261006.json": "b9c1271d92e92b60887df718edd6a164b066fed9a1e2244084ce3c2b4c546ba9",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-premature-bounded-redirect-cfw-retry-20261006.json": "ed4d9e3e52ca74be5f2b91c901be225920e3cb9dc9ebaaa402227884b2812bae",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-premature-bounded-redirect-pilot-20261006.json": "75b840361c4ef2364b9ad085d331099ee126d41d080f17f82b72b0f6b2bb8d04",
+        "evaluation_fixtures/live-results/noncanonical-behavior-headroom-suite-pilot-20261006.json": "77b34cf881e7ad843974edf24160857ff6c94c1bb5f300390ef27097a02e7484",
+        "evaluation_fixtures/live-results/noncanonical-triad-20261006.json": "ebfba39dc5c82db6d16e30f83b79977ab81861195fea400b91193df7b2be55c4",
+        "evaluation_fixtures/live-results/post-reuse-baseline-cfw-20261006.json": "60071300d5704a14c5acbfcbd0f43e4f6c41478b6762b17c9f9afd5cfb2bc9ee",
+        "evaluation_fixtures/live-results/post-reuse-cfw-smoke-20261006-policy-fixed.json": "d147697c896ba8085d0782457bb3fe3a7fd09ad40806ee4589aaf4ec13997fbf",
+        "evaluation_fixtures/live-results/post-reuse-cfw-smoke-pre-budget-fix-20261006.json": "69aa72c56075e386a5551037235289f2cbcb2d123d4ce011f45a6bbe1bfee08f",
+        "evaluation_fixtures/live-results/post-reuse-cfw-smoke-pre-schema-fix-20261006.json": "6f039666c97b955b97b2b33d2cf178610346ca0d72f28b7b5d02525934ac46c6",
+        "evaluation_fixtures/live-results/post-reuse-cfw-smoke-sandbox-network-blocked-20261006.json": "d59b53b2f7c7ea04f2c516a8a2bd851bbb7d2c18a8f8bd28803983efaeab0d50",
+        "evaluation_fixtures/live-results/postfix-baseline-cfw-pre-reuse-partial-20261006.json": "494f9f10925f24aedf1f9946c5831317c73b52d4fc30df0406807085074edcc9",
+        "fixed.py": "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772",
+        "integration_tests/legacy_system_one.py": "e55b0c96eed71c0c01bbbac7a03f805802c992c62c3a8e9a3212bea039bc5ed8",
+        "integration_tests/test_system_one_ownership.py": "eadf1a53679e0206e0f698beda87d5b2feb57e60ae7cfbdb8f5d87e29e58876b",
+        "scripts/runtime_contract/behavior_facts.py": "8c009900b041f2424f8850157b02fb1b54f3d41a290b0eb4e3af3e9011ccf030",
+        "scripts/runtime_session/standalone_behavior_policy.py": "46a97b8ce168af4cfa987a9e4fc21125e80fa8a5b30c791467113e12eddf76ab",
+        "tests/test_behavior_fact_boundary.py": "04ff6fabf910a3f2c98532c143ae44daca2fe0bb55544817f7e4abe826ec388f",
+        "tests/test_host_agnostic_core.py": "2c6bfbb05de72fe2fc3d835bac65461a6ced004d0e4c30bf4f9617861f3a79bb"
+      },
+      "untracked_manifest_sha256": "3608369f77ac3d3056a8c5335dcc14a8b591babe292d86fb5394def5adcc5f94",
+      "working_tree_diff_sha256": "a656f680701add431c55a9d87f22dad6b2af12f145b4ea0793b53302dbae3439",
+      "working_tree_dirty": true
+    },
+    "csw": {
+      "head": "9a32906f063bc375a308f579a18e6b2c65aa5018",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 6,
+      "untracked_file_hashes": {
+        "tests/test_core_dependency_boundaries.py": "78787ac1066366868194f175bcb4e554bc77a9b23d446da0003e94c3b6f70733"
+      },
+      "untracked_manifest_sha256": "fb13c44029a71ac5a5d39cdc3f92670a5b6a17eb52be5ad5466949fd3ea78d3f",
+      "working_tree_diff_sha256": "9cbdacdcb2eaf3cf7ebd3174f5ca4f3df1fef37d0241d8acd1374f3b0d1ccef3",
+      "working_tree_dirty": true
+    },
+    "dp": {
+      "head": "8d66c702cf9bb41945b5ed0a8eae98e051b9a8bd",
+      "sensitive_untracked_files_omitted": 0,
+      "status_entry_count": 102,
+      "untracked_file_hashes": {
+        "cognitive_runtime_core/README.md": "5ee219ce07db82b9566fb47500316b421ab5302564575a7d5e1adb11cd4b86e0",
+        "cognitive_runtime_core/__init__.py": "cefc4b07e3bd4c649bfa82f279c09030b9077b7dfaeebb1fae542732c8204374",
+        "cognitive_runtime_core/actions.py": "fabf1df718ac50dc2ba798affe7057cc867bcdb1c5cf0dc9b3bc09359bd56b0d",
+        "cognitive_runtime_core/bindings.py": "56af49d3d8493c0efa04d756b516e4b423e0efb09b9fe7b67d22fd18fa0c00e6",
+        "cognitive_runtime_core/completion.py": "86a7b3e1de0693f00a0fe0f2307dc411b395da2bc9f9578943fa118e0abf70b5",
+        "cognitive_runtime_core/errors.py": "e6e4b2685b8035659e5e8a9b8f6bc08e85e9d4a7b8264862361d75fb682727b7",
+        "cognitive_runtime_core/harness.py": "71694a368fd3294e693008041759cf468290166bbddb4922ac01ebad1ec009bb",
+        "cognitive_runtime_core/integrations/README.md": "c98359a11c9a76fb5fc24d8018016ee2629ef2d6a04a5aa9188ca2662495f6d2",
+        "cognitive_runtime_core/integrations/__init__.py": "bdadd7a80872192de629423435fff5c6a9b081d45051689548513d887ab962f1",
+        "cognitive_runtime_core/integrations/athena/__init__.py": "7e13c4e98d5547c4aa975f3239ca44ec95a2e0d309efe435de7fd90d50a43e4c",
+        "cognitive_runtime_core/integrations/athena/adapter.py": "a5f9e7d3169a430c10f51016a46119b3358b2e05a8c7af754cc2a80b8b4954a0",
+        "cognitive_runtime_core/integrations/cfw/__init__.py": "72f07ec5ae453ff80c57905c69fa93d5f1f4e0b0352e7bb6611389bff3e84e82",
+        "cognitive_runtime_core/integrations/cfw/lifecycle.py": "1d0d1d2e530e3bac4fcd41a9694a2cda126dc9a3ec8b324b0aa0ab5dd5fa91bb",
+        "cognitive_runtime_core/integrations/codex/README.md": "f5fc0860dec70d4c07770fc8d7d8f505e1f88a535b7b6fd00bc06a3d2a8eb3cf",
+        "cognitive_runtime_core/integrations/codex/__init__.py": "0060120d8cbe8da7217fb36f5e6e788bff7122036f4f58efa8b40ce9e8e2af92",
+        "cognitive_runtime_core/integrations/codex/adapter.py": "9044d3fb7968cdadbd9fff35a2348ee1bd76f134a5a4c44b808f6089af830473",
+        "cognitive_runtime_core/integrations/codex/client.py": "e58d586b634e3b452a488a14a6ebbbb15efcfc56bcb1f06d4cc946e90820f58b",
+        "cognitive_runtime_core/integrations/codex/diagnostics.py": "bbd7a05b2b65c7967c85ffdcc7d6af1e75ab27f5623a66a73bc77f0cde2107ec",
+        "cognitive_runtime_core/integrations/codex/feature_policy.py": "bc127f5f40987ee2dff945ad6f1f907b89c4f7cb0d23394be1bfd89905644638",
+        "cognitive_runtime_core/integrations/codex/launch.py": "1c83cda3f410247c3de8b727787e6d6e8df6da04ffb401f2b34ca987a756f312",
+        "cognitive_runtime_core/integrations/codex/protocol.py": "2cc2085043c68ca055d65e175670ee5612fb2567fa63252388a6fe4141f45f40",
+        "cognitive_runtime_core/integrations/codex/pyproject.toml": "665394d07bbe5e1e5c967998472dbc1a7594c2d9e71cad1d219dfe2149219c81",
+        "cognitive_runtime_core/integrations/codex/readiness.py": "67043befa078286713baae70ed813769374c7b332dae682c132b39a9f28f9325",
+        "cognitive_runtime_core/integrations/reference/__init__.py": "b6cef7153a844db8e57b983d0d0d011dc4b352396a8099977982b75cb3ee9bb1",
+        "cognitive_runtime_core/integrations/reference/adapter.py": "0c04710a50030d6762d776543b6b40d49ef5a64c334cb7c524a11a907fcdde26",
+        "cognitive_runtime_core/integrations/triad/__init__.py": "d2aed1e3b02a8ecc9049f95abaa9945b65cbbb559e38c85b24dc5e02b1d1591f",
+        "cognitive_runtime_core/integrations/triad/actuator.py": "fb724f7ea8c3e55449e3f62074a8e5081007014b361218713729e63c6a273b72",
+        "cognitive_runtime_core/pyproject.toml": "12f7b91a56cdba70c650e3c2c467ca79ed2bc9bd3d5b32edafc84292da0dd287",
+        "cognitive_runtime_core/transactions.py": "3671a1420ed291cba11edd0e8b63208fcdfe5dd013df48995bd5114808bf49ec",
+        "cognitive_runtime_core/validator_reuse.py": "b2709aae31cf30c49ddf70681bda87437ee96a7cac90c55c9bb9be3f5b61896a",
+        "cognitive_runtime_core/validators.py": "3901cf4b27f791bbcf5b297ff97670f59cdf55fa3a8c142611895550ab0fa77b",
+        "lib/control/semantic_influence.py": "4034ee9bfe5fbb2f951a17ea949e3111259f3ddbbc82b23b996959c5ae3cdc18",
+        "lib/host/dependency_closure.py": "433efabdf58a1d7fe617ce887f3e796a5b836c736f02fc3c049bfa9af1830e66",
+        "lib/host/reconciler.py": "674c6166074f169a1435ff4da553b8326b0ee455b08005431f75508189231104",
+        "lib/host/transaction_coordinator.py": "04ca6641ba0269f2213f95b502c3863a4a9d3da895f8ef44f41cce347337d957",
+        "lib/runtime/actions.py": "25f0bd43ddf82526b9cd7e529348d102e59644454b9ced44a7bdc49591ff0dd0",
+        "lib/runtime/actuator.py": "04c2fd8ffb83cbd45c0107d5cada2810d6c5d1026ca70450f641b08f5d67d149",
+        "lib/runtime/adapters/athena.py": "f1b6f798893078476c2e0728e22264b7bc6f7a0293b5c621f8483ffb1084ab44",
+        "lib/runtime/adapters/reference.py": "d167b6c756e914e6023f8bc29ebe73e2080036a3ef0c96f495006c98ed1584e3",
+        "lib/runtime/bindings.py": "288c6e9c9f58e446765cfdddb236cb8351c5d102fd009fed52e505689f340792",
+        "lib/runtime/completion.py": "94cffbf9342661c2eb8b98cc5f39f8d7c474b46fee3c0f6752d46272b2426853",
+        "lib/runtime/errors.py": "dd635200a289fee6283b6148c4d7595477a5715722a4f439c2dee23f960a805d",
+        "lib/runtime/harness.py": "65c67e91dd3faffffa7536d997aa495b185fd691ce3174bd8a01751d16a6f309",
+        "lib/runtime/validator_reuse.py": "145fbe076d6aba23aeda9c04b35cf947977a47fee3a7242c8f196fbedd3bb72b",
+        "lib/runtime/validators.py": "274715fbb4eb109a70565384e04a0ee2174e9118b10c6f07dd5cab9421215fca",
+        "lib/schemas/behavior-state-v2.schema.json": "8769583e64a61e6ebe25f64c11dc88ef4bb9a900fb0181ca70fff39a51cc2b29",
+        "lib/schemas/behavioral-decision-v2.schema.json": "9a58b5538da2356d0ec03776dce33263fc95bb209ecbb2ee7f7a4c735e58da11",
+        "lib/schemas/goal-set-snapshot-v2.schema.json": "54ee4a75ec91f8e648281aa2929e03083ad4bd4a83a97c0a35aabadfb55125f7",
+        "tests/test_athena_harness_adapter.py": "65aa6f0614bd282ec65c3e3f493e9b0b0e11128bcf0f08a273a7a4a5cc1777b8",
+        "tests/test_codex_harness_adapter.py": "256812c1739c1663db2a91a45ff323dd73738806e12e1fe81969e247b0b99548",
+        "tests/test_control_dependency_boundaries.py": "997f966cc6862bbf0fce5dea9663b605cf63d27137b05ad88b4cf8b8fcc725a4",
+        "tests/test_harness_agnostic_acceptance.py": "ab3ec9e61a7ee089849919fd42aa90ccbe2ca4596ac3ea29f1b282be3b715aa4",
+        "tests/test_harness_contracts.py": "33236320c7f6e4007ca35525c948c2e4fa3b8fd6d3efd4c57d3f24afd1a13965",
+        "tests/test_laya_influence.py": "8a40e5a698beb5e0cf3efb2e26928bb73d03eb58036f4026d4e80f0fab78f494",
+        "tests/test_laya_production_metrics.py": "fc0a103d4906fe8c6acc1387d9b5a12abf285428d1ff939f0d906e66a63631a7",
+        "tests/test_neutral_runtime_boundaries.py": "9b20bf955e6614facbd60ed32b5b18ceee7cc1691af702dee85aba344967b770",
+        "tests/test_neutral_runtime_completion.py": "6fae7380f9a0199baadea1dab55155d1285df6fd57a5e47265a3606ed28f4fb5",
+        "tests/test_neutral_runtime_transactions.py": "cc6be63dcae4865eb0ed16b8796f9b628beb6c45aa61d1a4a89e0db24ad8f153"
+      },
+      "untracked_manifest_sha256": "96e0a8ed67b6e1cdc5ec2bc841f2dda9e65b57ed05b21c5cafa90a0df94329a0",
+      "working_tree_diff_sha256": "830f91f774165e9f25a08d05d87b18a3353ede5c8b4a67b1462b47f31cba7d52",
+      "working_tree_dirty": true
+    }
+  },
+  "result_file": "/home/bamn/CognitiveFrameWorks/evaluation_fixtures/live-results/behavior-headroom-equivalent-retry-20261007T061225Z.json",
+  "scope": "Matched multi-defect coding task with host-owned criterion validators; scenario runs add bounded behavioral pressure, but reuse one fixture and do not establish broad coding-agent efficacy.",
+  "source_sha256": {
+    "app_server_adapter": "7b173b08ceb883fe2ddd7776a4e5afb761e3b255bb9a607b52762c3101e1c5d4",
+    "dp_bridge_adapter": "0036937fe77b50b00d42bac74fdd9543834a94cca43239f198aa8767f9a4833c",
+    "dp_host_bridge": "ad617fc8fb92f4ee5a7da94273a9bfbac59bb2656caf86eaf6e0c6aeed54a55c",
+    "dp_projection_manager": "580621efee3fab28deffd1ddcfd0f622be4dc0922f17aebf5eec92251b68ea62",
+    "dp_transaction_coordinator": "04ca6641ba0269f2213f95b502c3863a4a9d3da895f8ef44f41cce347337d957",
+    "fixture_files": {
+      ".cognitive-demo.json": "c957910641fb50707579d5410281805d1352ce7f5a4006e27175fc9efdb7940d",
+      "README.md": "2d4c23b545df2513347cc0a037126d63d010395452321e7f758df8cb49ebe28b",
+      "src/repair.py": "1950272ec25f471a26892258a6805a74762e496f41117d3b89b06f1a50e37a95",
+      "tests/test_integration.py": "5a17fb8e3264f184a9c9d720231d94cd045cf97e624ab5fe5c284a684224ace0",
+      "tests/test_parser.py": "c9d0ce1c6c70281fbbcb10ef71d76f17f55fdd5be63d026641d9237c36f5dff6",
+      "tests/test_retry.py": "32579f21e4e3fe749418f47502b483cb84ee743506721a22eda236449d7bb42e",
+      "tests/test_state.py": "c74464790b2cb80752ac82689b80b5d9d15ce59ec6c7e8de9df323f67c0ea182"
+    },
+    "live_trial_runner": "13776019bc51bc35ef5bae2d133dfec0447837a746c306043f9170bb193d7f39",
+    "modular_codex_host_manifest": {
+      "files": {
+        "integration_tests/codex_eval/__init__.py": "dc231c3881a026b2e69f39b734126f7282c42c4e49e5cd8e502472d5f47872c3",
+        "integration_tests/codex_eval/actions.py": "1e876c8fd4808aea0547efd76c803f773c5e3b40177ef6f3c91b44fa125b9fe0",
+        "integration_tests/codex_eval/baseline.py": "97dd5a3522c219aecc7b7e35ad19c876184afe63ad5287843ef975371d829013",
+        "integration_tests/codex_eval/behavior_scenarios.py": "cc8563182e9c6a6e21a089caf0a3a32789441ffa0a76d98e518c692f85bfbb90",
+        "integration_tests/codex_eval/common.py": "81211eded6b2b762e48af175dfb761bbc4037834d75fee78558f3081f63bca85",
+        "integration_tests/codex_eval/csw_setup.py": "ecd43a7de6dfd2d26ee650e679ea39e474d5d9dc60f02fc1a5626883c6b4a963",
+        "integration_tests/codex_eval/fixture.py": "f817bb68627119a7b246e1d65d039941a9e92a8957f35a40de8821648a9b8c3e",
+        "integration_tests/codex_eval/launch.py": "7882c298083a834783061571b9e9e1504d4ea662aee1b0231ba5f714019c1716",
+        "integration_tests/codex_eval/report.py": "55105e3a70961e01730bb5d0a6d673011fcb4f074611056f9c0b8534f2c3dc04",
+        "integration_tests/codex_eval/scoring.py": "ac0f571245e2f71f6860bfd1df4d2d7bab85e72a1231c1211603d68c65be2862",
+        "integration_tests/codex_eval/trace_analysis.py": "0e5c0b3b87a9792ba76b00dc596c14e40681be776c623214fa23e7b6b5d3710d",
+        "integration_tests/codex_eval/treatment.py": "5c787b9bd3b37470c3b93e2c44bc4e5b48c4761b14ff85f038289119924c1b2c",
+        "integration_tests/codex_eval/triad_setup.py": "6848fbb85401960fd23a6dd26647e55d5a9c51408e13cf0193ac621c33067c04",
+        "integration_tests/codex_eval/validators.py": "70abc549cd3d3cac534eee1d0a6e4a52dbef16a0d42bed7804c0d956971572ff",
+        "integration_tests/live_codex_app_server_coding_trial.py": "13776019bc51bc35ef5bae2d133dfec0447837a746c306043f9170bb193d7f39",
+        "integration_tests/run_codex_app_server_coding_evaluation.py": "2a7b3900c51f997ad49c9868431464ab9c343bb73d14826da9ee27657b117671",
+        "scripts/codex_app_server_adapter.py": "7b173b08ceb883fe2ddd7776a4e5afb761e3b255bb9a607b52762c3101e1c5d4",
+        "scripts/codex_app_server_dp_bridge.py": "0036937fe77b50b00d42bac74fdd9543834a94cca43239f198aa8767f9a4833c",
+        "scripts/codex_host/__init__.py": "b9daa03c01226eafc11f19e87f2e4b67a0d24b03ce61ccf54f772f7c2a052da5",
+        "scripts/codex_host/actions.py": "edb230e58adf5ea5cd34b42ca4a1872600f01508765cc6315b32abb5b6cdf036",
+        "scripts/codex_host/adapter.py": "9a739ac8ed5070b6ef3351a007f2ee0ea1beae2effce9c3c44b3a1120a974c86",
+        "scripts/codex_host/client.py": "ff57e1c6306e814858c50a039022a39200cc7db6d7805cc864ca70fbf103a262",
+        "scripts/codex_host/completion.py": "bb66f329546b70fd8cf90da72b4c48d0e3e3d62ff18c68593c89262c0bb474cd",
+        "scripts/codex_host/diagnostics.py": "a59a2862be543797a3970c85ead2e09c555efbc9dc424fddc93fc46dfa76be56",
+        "scripts/codex_host/launch.py": "e975711838ffe8649e0d17c3e407f6ddd2f6c175ce0c526a3ebfe8a4fcba5897",
+        "scripts/codex_host/protocol.py": "d0803b06b9e4399ba4eff328225d29daa46260c592599b679dc4c3bfc1c6fd17",
+        "scripts/codex_host/readiness.py": "79266af1b63a1fd27207c58a66630d26ad8bc21e9b750fd825bbbf5d3d8f034d",
+        "scripts/codex_host/validators.py": "0a1b79365d3d9d2420f5c2629bdb44c900de9c9fc9230f4cd5d728edc35d5554"
+      },
+      "sha256": "c0a6ba82f5928e68bcf15081a3bc8a4feb1cd60aef531820631d820e16a6edd2"
+    }
+  },
+  "summary": {
+    "conditions": {
+      "baseline": {
+        "behavior_trace_outcomes": {
+          "below_4_of_4": {
+            "behavioral_mode_counts": {},
+            "goal_anchor_state_counts": {},
+            "goal_reanchor_turns": 0,
+            "guidance_byte_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            },
+            "reason_code_counts": {},
+            "trace_turns": 0,
+            "trials": 0,
+            "turn_count_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            }
+          },
+          "complete_4_of_4": {
+            "behavioral_mode_counts": {},
+            "goal_anchor_state_counts": {},
+            "goal_reanchor_turns": 0,
+            "guidance_byte_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            },
+            "reason_code_counts": {},
+            "trace_turns": 0,
+            "trials": 0,
+            "turn_count_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            }
+          },
+          "descriptive_comparison": {
+            "cohorts": {
+              "below_4_of_4": {
+                "anti_hyperfocus": {
+                  "action_target_source_counts": {},
+                  "actions_per_criterion": {},
+                  "attention_rotation_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "criteria_never_touched_trials": 0,
+                  "criterion_attribution_ratio_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_proxy_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "global_blocked_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "interpretation": "descriptive action-level signals; missing traces remain unavailable",
+                  "local_yield_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_consecutive_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_starvation_age_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "same_approach_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "time_to_first_action_ms_by_criterion": {},
+                  "trial_metrics": [],
+                  "trials_with_action_trace": 0,
+                  "unattributed_action_count_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  }
+                },
+                "attention_rotation_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "behavioral_mode_counts": {},
+                "completion_attempt_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "completion_validator_order_counts": {},
+                "focus_criterion_turn_counts": {},
+                "guidance_byte_count_mean_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "identical_guidance_pair_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "mode_transition_counts": {},
+                "model_tool_call_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "native_write_request_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "redirect_turn_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "same_approach_retry_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "trials": 0,
+                "turn_count_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                }
+              },
+              "complete_4_of_4": {
+                "anti_hyperfocus": {
+                  "action_target_source_counts": {},
+                  "actions_per_criterion": {},
+                  "attention_rotation_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "criteria_never_touched_trials": 0,
+                  "criterion_attribution_ratio_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_proxy_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "global_blocked_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "interpretation": "descriptive action-level signals; missing traces remain unavailable",
+                  "local_yield_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_consecutive_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_starvation_age_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "same_approach_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "time_to_first_action_ms_by_criterion": {},
+                  "trial_metrics": [],
+                  "trials_with_action_trace": 0,
+                  "unattributed_action_count_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  }
+                },
+                "attention_rotation_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "behavioral_mode_counts": {},
+                "completion_attempt_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "completion_validator_order_counts": {},
+                "focus_criterion_turn_counts": {},
+                "guidance_byte_count_mean_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "identical_guidance_pair_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "mode_transition_counts": {},
+                "model_tool_call_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "native_write_request_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "redirect_turn_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "same_approach_retry_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "trials": 0,
+                "turn_count_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                }
+              }
+            },
+            "complete_minus_below_mean_differences": {
+              "attention_rotation_count": null,
+              "completion_attempt_count": null,
+              "identical_guidance_adjacent_pairs": null,
+              "max_same_approach_retries": null,
+              "model_tool_call_count": null,
+              "native_write_request_count": null,
+              "redirect_turn_count": null
+            },
+            "interpretation": "descriptive outcome association; this comparison does not identify causation"
+          }
+        },
+        "cfw_gate_blocks": 0,
+        "changed_path_count_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "cognitive_fault_trials": 0,
+        "complete_fixture_trials": 0,
+        "completion_applicable_trials": 0,
+        "completion_denials_or_incomplete": null,
+        "completion_permits": null,
+        "criteria_passed_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "efficacy_valid_trials": 0,
+        "full_fixture_score_rate": null,
+        "host_valid_trials": 0,
+        "inference_ready_trials": 0,
+        "mean_criteria_passed": null,
+        "mean_model_tool_calls": null,
+        "mean_validator_tool_calls": null,
+        "mean_wall_time_ms": null,
+        "median_wall_time_ms": null,
+        "model_started_trials": 0,
+        "model_tool_call_failures": 0,
+        "model_tool_calls_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "native_write_request_count_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "scheduled_trials": 1,
+        "scope_violation_trials": 0,
+        "token_usage_observed_trials": 0,
+        "trials": 1,
+        "turn_count_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "upstream_blocked_trials": 1,
+        "valid_trials": 0,
+        "validator_channel_metrics": {},
+        "validator_passes_by_criterion": {
+          "event_integration": 0,
+          "parser_correctness": 0,
+          "retry_schedule": 0,
+          "state_removal": 0
+        },
+        "validator_tool_calls_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "wall_time_ms_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        }
+      },
+      "cfw": {
+        "behavior_trace_outcomes": {
+          "below_4_of_4": {
+            "behavioral_mode_counts": {},
+            "goal_anchor_state_counts": {},
+            "goal_reanchor_turns": 0,
+            "guidance_byte_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            },
+            "reason_code_counts": {},
+            "trace_turns": 0,
+            "trials": 0,
+            "turn_count_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            }
+          },
+          "complete_4_of_4": {
+            "behavioral_mode_counts": {},
+            "goal_anchor_state_counts": {},
+            "goal_reanchor_turns": 0,
+            "guidance_byte_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            },
+            "reason_code_counts": {},
+            "trace_turns": 0,
+            "trials": 0,
+            "turn_count_distribution": {
+              "count": 0,
+              "max": null,
+              "mean": null,
+              "median": null,
+              "min": null
+            }
+          },
+          "descriptive_comparison": {
+            "cohorts": {
+              "below_4_of_4": {
+                "anti_hyperfocus": {
+                  "action_target_source_counts": {},
+                  "actions_per_criterion": {},
+                  "attention_rotation_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "criteria_never_touched_trials": 0,
+                  "criterion_attribution_ratio_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_proxy_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "global_blocked_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "interpretation": "descriptive action-level signals; missing traces remain unavailable",
+                  "local_yield_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_consecutive_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_starvation_age_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "same_approach_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "time_to_first_action_ms_by_criterion": {},
+                  "trial_metrics": [],
+                  "trials_with_action_trace": 0,
+                  "unattributed_action_count_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  }
+                },
+                "attention_rotation_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "behavioral_mode_counts": {},
+                "completion_attempt_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "completion_validator_order_counts": {},
+                "focus_criterion_turn_counts": {},
+                "guidance_byte_count_mean_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "identical_guidance_pair_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "mode_transition_counts": {},
+                "model_tool_call_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "native_write_request_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "redirect_turn_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "same_approach_retry_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "trials": 0,
+                "turn_count_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                }
+              },
+              "complete_4_of_4": {
+                "anti_hyperfocus": {
+                  "action_target_source_counts": {},
+                  "actions_per_criterion": {},
+                  "attention_rotation_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "criteria_never_touched_trials": 0,
+                  "criterion_attribution_ratio_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "equivalent_retry_proxy_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "global_blocked_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "interpretation": "descriptive action-level signals; missing traces remain unavailable",
+                  "local_yield_event_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_consecutive_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "maximum_starvation_age_actions_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "same_approach_retry_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  },
+                  "time_to_first_action_ms_by_criterion": {},
+                  "trial_metrics": [],
+                  "trials_with_action_trace": 0,
+                  "unattributed_action_count_distribution": {
+                    "count": 0,
+                    "max": null,
+                    "mean": null,
+                    "median": null,
+                    "min": null
+                  }
+                },
+                "attention_rotation_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "behavioral_mode_counts": {},
+                "completion_attempt_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "completion_validator_order_counts": {},
+                "focus_criterion_turn_counts": {},
+                "guidance_byte_count_mean_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "identical_guidance_pair_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "mode_transition_counts": {},
+                "model_tool_call_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "native_write_request_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "redirect_turn_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "same_approach_retry_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                },
+                "trials": 0,
+                "turn_count_distribution": {
+                  "count": 0,
+                  "max": null,
+                  "mean": null,
+                  "median": null,
+                  "min": null
+                }
+              }
+            },
+            "complete_minus_below_mean_differences": {
+              "attention_rotation_count": null,
+              "completion_attempt_count": null,
+              "identical_guidance_adjacent_pairs": null,
+              "max_same_approach_retries": null,
+              "model_tool_call_count": null,
+              "native_write_request_count": null,
+              "redirect_turn_count": null
+            },
+            "interpretation": "descriptive outcome association; this comparison does not identify causation"
+          }
+        },
+        "cfw_gate_blocks": 0,
+        "changed_path_count_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "cognitive_fault_trials": 0,
+        "complete_fixture_trials": 0,
+        "completion_applicable_trials": 0,
+        "completion_denials_or_incomplete": null,
+        "completion_permits": null,
+        "criteria_passed_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "efficacy_valid_trials": 0,
+        "full_fixture_score_rate": null,
+        "host_valid_trials": 0,
+        "inference_ready_trials": 0,
+        "integration_valid_trials": 0,
+        "mean_criteria_passed": null,
+        "mean_model_tool_calls": null,
+        "mean_validator_tool_calls": null,
+        "mean_wall_time_ms": null,
+        "median_wall_time_ms": null,
+        "model_started_trials": 0,
+        "model_tool_call_failures": 0,
+        "model_tool_calls_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "native_write_request_count_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "scheduled_trials": 1,
+        "scope_violation_trials": 0,
+        "token_usage_observed_trials": 0,
+        "trials": 1,
+        "turn_count_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "upstream_blocked_trials": 1,
+        "valid_trials": 0,
+        "validator_channel_metrics": {},
+        "validator_passes_by_criterion": {
+          "event_integration": 0,
+          "parser_correctness": 0,
+          "retry_schedule": 0,
+          "state_removal": 0
+        },
+        "validator_tool_calls_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        },
+        "wall_time_ms_distribution": {
+          "count": 0,
+          "max": null,
+          "mean": null,
+          "median": null,
+          "min": null
+        }
+      }
+    },
+    "matched_pairs": {
+      "cfw": {
+        "completion_comparisons": [],
+        "mean_criteria_delta_vs_baseline": null,
+        "pairs_with_both_efficacy_valid": 0,
+        "ties": 0,
+        "treatment_losses": 0,
+        "treatment_wins": 0
+      }
+    }
+  },
+  "token_usage_note": "Token usage is recorded only when the App Server reports it; the pilot did not expose tokenUsage or usage fields.",
+  "trials": [
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {},
+      "app_server_item_tool_counts": {},
+      "app_server_item_type_counts": {},
+      "assistant_message_present": false,
+      "behavior_action_trace": [],
+      "behavior_trace": [],
+      "behavioral_scenario": null,
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 0,
+      "cfw_gate_receipt_count": 0,
+      "cfw_gate_receipts": [],
+      "changed_path_count": null,
+      "cognitive_fault": "",
+      "cognitive_host_initialized": false,
+      "completion_attempts": [],
+      "completion_decision": null,
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": null,
+      "completion_status": "",
+      "completion_validator_reuse_count": 0,
+      "completion_validators": [],
+      "condition": "baseline",
+      "criteria_passed": null,
+      "criteria_total": null,
+      "criterion_results": {},
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": false,
+      "efficacy_valid": false,
+      "execution_phase": "",
+      "failure_class": "workspace_routing_unavailable",
+      "failure_domain": "codex_app_server_workspace_routing",
+      "host_initialized": false,
+      "host_integration_valid": null,
+      "inference_preflight_only": true,
+      "inference_readiness": {
+        "account_type": null,
+        "auth_mode": "chatgpt",
+        "failure_class": "workspace_routing_unavailable",
+        "provider_id": null,
+        "ready": false,
+        "requirements_loaded": false,
+        "workspace_routing_ready": false,
+        "workspace_routing_required": true
+      },
+      "inference_ready": false,
+      "infrastructure_valid": false,
+      "integration_invariants": {},
+      "integration_valid": null,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "gpt-6-luna",
+      "model_execution_observed": false,
+      "model_infrastructure_valid": false,
+      "model_tool_call_count": 0,
+      "model_validator_call_count": 0,
+      "model_visible_dp_tools": null,
+      "native_action_feature_catalog": {},
+      "native_action_feature_categories": {},
+      "native_action_features_disabled": [],
+      "native_action_features_supported": [],
+      "overall_wall_time_ms": null,
+      "pair_id": "pair-01",
+      "registered_dynamic_tool_names": [],
+      "requested_statework_ids": [],
+      "required_criterion_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {},
+      "stack": "",
+      "thread_started": false,
+      "trial_id": "coding-20261007T061225Z-pair-01-baseline",
+      "trial_valid": false,
+      "turn_started": false,
+      "turn_status": "",
+      "turns": [],
+      "upstream_blocked": true,
+      "validator_channel_metrics": {},
+      "workflow_ids": [],
+      "workspace_routing_required": true
+    },
+    {
+      "app_server_error_event_count": 0,
+      "app_server_error_events": [],
+      "app_server_event_counts": {},
+      "app_server_item_tool_counts": {},
+      "app_server_item_type_counts": {},
+      "assistant_message_present": false,
+      "behavior_action_trace": [],
+      "behavior_trace": [],
+      "behavioral_scenario": null,
+      "boundary_probe_invariants": {},
+      "boundary_probe_valid": null,
+      "cfw_block_count": 0,
+      "cfw_gate_receipt_count": 0,
+      "cfw_gate_receipts": [],
+      "changed_path_count": null,
+      "cognitive_fault": "",
+      "cognitive_host_initialized": false,
+      "completion_attempts": [],
+      "completion_decision": null,
+      "completion_error_class": "",
+      "completion_error_message": "",
+      "completion_permitted": null,
+      "completion_status": "",
+      "completion_validator_reuse_count": 0,
+      "completion_validators": [],
+      "condition": "cfw",
+      "criteria_passed": null,
+      "criteria_total": null,
+      "criterion_results": {},
+      "dp_observation_record_count": 0,
+      "dynamic_probe_valid": null,
+      "efficacy_scored": false,
+      "efficacy_valid": false,
+      "execution_phase": "",
+      "failure_class": "workspace_routing_unavailable",
+      "failure_domain": "codex_app_server_workspace_routing",
+      "host_initialized": false,
+      "host_integration_valid": null,
+      "inference_preflight_only": true,
+      "inference_readiness": {
+        "account_type": null,
+        "auth_mode": "chatgpt",
+        "failure_class": "workspace_routing_unavailable",
+        "provider_id": null,
+        "ready": false,
+        "requirements_loaded": false,
+        "workspace_routing_ready": false,
+        "workspace_routing_required": true
+      },
+      "inference_ready": false,
+      "infrastructure_valid": false,
+      "integration_invariants": {},
+      "integration_valid": null,
+      "internal_inference_boundaries_intercepted": false,
+      "model": "gpt-6-luna",
+      "model_execution_observed": false,
+      "model_infrastructure_valid": false,
+      "model_tool_call_count": 0,
+      "model_validator_call_count": 0,
+      "model_visible_dp_tools": null,
+      "native_action_feature_catalog": {},
+      "native_action_feature_categories": {},
+      "native_action_features_disabled": [],
+      "native_action_features_supported": [],
+      "overall_wall_time_ms": null,
+      "pair_id": "pair-01",
+      "registered_dynamic_tool_names": [],
+      "requested_statework_ids": [],
+      "required_criterion_ids": [],
+      "runner_exit_code": 0,
+      "runtime_mode": "",
+      "schema": "generic-codex-app-server-trial-summary/v1",
+      "server_request_method_counts": {},
+      "stack": "",
+      "thread_started": false,
+      "trial_id": "coding-20261007T061225Z-pair-01-cfw",
+      "trial_valid": false,
+      "turn_started": false,
+      "turn_status": "",
+      "turns": [],
+      "upstream_blocked": true,
+      "validator_channel_metrics": {},
+      "workflow_ids": [],
+      "workspace_routing_required": true
+    }
+  ],
+  "trials_per_condition": 1
+}

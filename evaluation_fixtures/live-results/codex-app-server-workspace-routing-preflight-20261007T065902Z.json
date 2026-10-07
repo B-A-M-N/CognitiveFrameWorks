@@ -1,0 +1,31 @@
+{
+  "evaluation_id": "codex-app-server-workspace-routing-preflight-20261007T065902Z",
+  "fixture_id": "codex-app-server-inference-preflight-v1",
+  "model": "gpt-6-luna",
+  "auth_mode": "chatgpt",
+  "condition": "preflight",
+  "trial_id": "workspace-routing-check",
+  "inference_preflight_only": true,
+  "inference_ready": false,
+  "inference_readiness": {
+    "ready": false,
+    "auth_mode": "chatgpt",
+    "workspace_routing_required": true,
+    "workspace_routing_ready": false,
+    "provider_id": null,
+    "account_type": null,
+    "requirements_loaded": false,
+    "failure_class": "workspace_routing_unavailable"
+  },
+  "failure_domain": "codex_app_server_workspace_routing",
+  "failure_class": "workspace_routing_unavailable",
+  "host_initialized": false,
+  "cognitive_host_initialized": false,
+  "thread_started": false,
+  "turn_started": false,
+  "model_execution_observed": false,
+  "efficacy_scored": false,
+  "infrastructure_valid": false,
+  "model_infrastructure_valid": false,
+  "interpretation": "The workspace-routing preflight failed before any host, triad, thread, or model turn started. This is an infrastructure-only observation; it contains no efficacy result."
+}

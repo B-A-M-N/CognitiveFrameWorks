@@ -2,10 +2,29 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
+import re
 import statistics
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+
+MAX_TRACE_PAYLOAD_BYTES = 65_536
+
+
+def bounded_payload_sha256(value: Any) -> str | None:
+    """Fingerprint a bounded JSON payload without retaining its contents."""
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("ascii")
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if len(encoded) > MAX_TRACE_PAYLOAD_BYTES:
+        return None
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _distribution(values: Sequence[int | float]) -> dict[str, int | float | None]:
@@ -44,7 +63,8 @@ def anti_hyperfocus_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
     first_action_ms: dict[str, float] = {}
     target_sequence: list[str | None] = []
     action_times: list[int | float] = []
-    same_approach_retries = equivalent_retries = 0
+    same_approach_retries: int | None = None
+    equivalent_retries: int | None = None
     equivalent_retry_proxy_count = 0
     local_yield_events: int | None = None
     global_blocked_events: int | None = None
@@ -75,9 +95,9 @@ def anti_hyperfocus_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
         same_count = item.get("same_approach_retry_count")
         equivalent_count = item.get("equivalent_retry_count")
         if type(same_count) is int and same_count >= 0:
-            same_approach_retries = max(same_approach_retries, same_count)
+            same_approach_retries = max(same_approach_retries or 0, same_count)
         if type(equivalent_count) is int and equivalent_count >= 0:
-            equivalent_retries = max(equivalent_retries, equivalent_count)
+            equivalent_retries = max(equivalent_retries or 0, equivalent_count)
         action_class = item.get("action_class")
         signature = ((action_class if isinstance(action_class, str) else ""), target)
         progress = item.get("criterion_progress_delta")
@@ -175,8 +195,10 @@ def _trace_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
     mode_counts: Counter[str] = Counter()
     transition_counts: Counter[str] = Counter()
     focus_counts: Counter[str] = Counter()
+    component_mode_counts: Counter[str] = Counter()
     validator_orders: Counter[str] = Counter()
-    action_calls = writes = completion_attempts = redirects = retries = 0
+    action_calls = writes = completion_attempts = redirects = 0
+    retries: int | None = None
     guidance_sizes: list[int] = []
     identical_guidance = attention_rotations = 0
     previous_digest: str | None = None
@@ -193,6 +215,14 @@ def _trace_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(focus_value, list) else ()
         for criterion_id in focus:
             focus_counts[criterion_id] += 1
+        raw_component_modes = item.get("component_modes")
+        if isinstance(raw_component_modes, Mapping):
+            for component, component_mode in list(raw_component_modes.items())[:16]:
+                if (isinstance(component, str)
+                        and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", component)
+                        and isinstance(component_mode, str)
+                        and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", component_mode)):
+                    component_mode_counts[f"{component}:{component_mode}"] += 1
         if previous_focus is not None and focus != previous_focus:
             attention_rotations += 1
         previous_focus = focus
@@ -220,7 +250,7 @@ def _trace_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(counters, Mapping):
             value = counters.get("same_approach_retries")
             if type(value) is int and value >= 0:
-                retries = max(retries, value)
+                retries = max(retries or 0, value)
         order = item.get("completion_validator_order")
         if isinstance(order, list):
             safe_order = [value for value in order if isinstance(value, str)]
@@ -240,6 +270,7 @@ def _trace_metrics(row: Mapping[str, Any]) -> dict[str, Any]:
         "guidance_byte_count_mean": (
             round(statistics.fmean(guidance_sizes), 3) if guidance_sizes else None),
         "focus_criterion_turn_counts": dict(sorted(focus_counts.items())),
+        "component_mode_turn_counts": dict(sorted(component_mode_counts.items())),
         "behavioral_mode_counts": dict(sorted(mode_counts.items())),
         "mode_transition_counts": dict(sorted(transition_counts.items())),
         "completion_validator_order_counts": dict(sorted(validator_orders.items())),
@@ -286,6 +317,8 @@ def compare_behavior_trace_outcomes(trials: Sequence[Mapping[str, Any]]) -> dict
                  if row["guidance_byte_count_mean"] is not None]),
             "focus_criterion_turn_counts": dict(sorted(sum_counters(
                 row["focus_criterion_turn_counts"] for row in rows).items())),
+            "component_mode_turn_counts": dict(sorted(sum_counters(
+                row["component_mode_turn_counts"] for row in rows).items())),
             "behavioral_mode_counts": dict(sorted(sum_counters(
                 row["behavioral_mode_counts"] for row in rows).items())),
             "mode_transition_counts": dict(sorted(sum_counters(
@@ -358,8 +391,10 @@ def compare_behavior_trace_outcomes(trials: Sequence[Mapping[str, Any]]) -> dict
     )
     differences = {}
     for metric in metrics:
-        complete = [row[metric] for row in grouped["complete_4_of_4"]]
-        below = [row[metric] for row in grouped["below_4_of_4"]]
+        complete = [row[metric] for row in grouped["complete_4_of_4"]
+                    if type(row[metric]) in {int, float}]
+        below = [row[metric] for row in grouped["below_4_of_4"]
+                 if type(row[metric]) in {int, float}]
         complete_mean = (statistics.fmean(complete) if complete else None)
         below_mean = (statistics.fmean(below) if below else None)
         differences[metric] = (
@@ -380,4 +415,5 @@ def sum_counters(values: Sequence[Mapping[str, int]]) -> Counter[str]:
     return result
 
 
-__all__ = ["anti_hyperfocus_metrics", "compare_behavior_trace_outcomes"]
+__all__ = ["anti_hyperfocus_metrics", "bounded_payload_sha256",
+           "compare_behavior_trace_outcomes"]

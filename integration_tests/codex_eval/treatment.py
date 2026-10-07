@@ -13,6 +13,7 @@ from codex_app_server_adapter import (
     JsonlAppServerClient,
 )
 from codex_host.launch import CodexLaunchProfile
+from digital_psychology_adapter import CFWBehaviorAdapter
 
 from .csw_setup import (
     _complete_getter_workflow,
@@ -23,10 +24,42 @@ from .report import (
     _app_server_error_events,
     _execution_failure_class,
     _failure_domain,
+    _validator_channel_metrics,
 )
 from .scoring import _run_baseline_validator_set
+from .trace_analysis import bounded_payload_sha256
 from .triad_setup import _build_treatment_host
 from .validators import VALIDATOR_FILES
+
+
+def _action_gate_summary(receipts: Any, invocation_id: str) -> dict[str, Any]:
+    """Return the final CFW gate result correlated to one host action."""
+    if not isinstance(receipts, (tuple, list)) or not invocation_id:
+        return {}
+    matches = [item for item in receipts[-8:]
+               if isinstance(item, Mapping)
+               and item.get("invocation_id") == invocation_id]
+    receipt = next((item for item in reversed(matches)
+                    if item.get("stage") == "final"),
+                   matches[-1] if matches else None)
+    if receipt is None:
+        return {}
+    summary: dict[str, Any] = {}
+    if receipt.get("stage") in {"preflight", "final"}:
+        summary["cfw_gate_stage"] = receipt["stage"]
+    decision = receipt.get("decision")
+    if isinstance(decision, str):
+        summary["cfw_gate_decision"] = decision[:64]
+    reasons = receipt.get("reason_codes")
+    if isinstance(reasons, (tuple, list)):
+        summary["cfw_gate_reason_codes"] = [
+            item[:128] for item in reasons[:8]
+            if isinstance(item, str)]
+    action_digest = receipt.get("action_digest")
+    if (isinstance(action_digest, str) and len(action_digest) == 64
+            and all(character in "0123456789abcdef" for character in action_digest)):
+        summary["action_digest_sha256"] = action_digest
+    return summary
 
 
 async def _run_treatment(*, condition: str, workspace: Path, root: Path,
@@ -58,7 +91,7 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
     csw_workflow_identities = setup.csw_workflow_identities
     csw_workflow_results = setup.csw_workflow_results
     getter_prepared = setup.getter_prepared
-    cognitive_host = setup.cognitive_host
+    runtime_lifecycle = setup.runtime_lifecycle
     server_request_counts = setup.server_request_counts
     completion_results: list[dict[str, Any]] = []
     completion_attempts: list[dict[str, Any]] = []
@@ -127,7 +160,7 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
                                      if isinstance(code, str)]
                     if isinstance(reason_codes, (tuple, list)) else [],
                 })
-            probe_bridge = probe_status.get("cognitive_host_status") or {}
+            probe_bridge = probe_status.get("runtime_harness_lifecycle_status") or {}
             probe_metrics = probe_bridge.get("production_metrics") or {}
             probe_counters = probe_metrics.get("counters") or {}
             probe_csw_selection = _csw_selection_snapshot(
@@ -195,7 +228,7 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
                 "boundary_probe": probe,
                 "cognitive_fault": probe_status.get("cognitive_fault"),
                 "cognitive_fault_detail": probe_status.get("cognitive_fault_detail"),
-                "cognitive_host_status": probe_bridge,
+                "runtime_harness_lifecycle_status": probe_bridge,
                 "cfw_gate_receipts": gate_receipt_summary,
                 "dp_observation_records": dp_observation_records,
                 "csw_selection_snapshot": probe_csw_selection,
@@ -286,17 +319,21 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
                                 progress_deltas[criterion_id] = -1
                                 criterion_progress[criterion_id] = False
                 counters = turn_trace.get("retry_recovery_counters", {})
-                retry_count = (counters.get("same_approach_retries", 0)
-                               if isinstance(counters, Mapping) else 0)
-                equivalent_retry_count = (
-                    counters.get("equivalent_retry_count", 0)
-                    if isinstance(counters, Mapping) else 0)
+                retry_count = (counters.get("same_approach_retries")
+                               if isinstance(counters, Mapping) else None)
+                call_id = str(params.get("callId") or "")
+                gate_summary = _action_gate_summary(cfw_gate_receipts, call_id)
+                retry_trace = ({"same_approach_retry_count": retry_count}
+                               if type(retry_count) is int
+                               and 0 <= retry_count <= 1_000_000 else {})
                 behavior_action_trace.append({
                     "action_index": len(behavior_action_trace) + 1,
                     "turn_index": len(turn_records) + 1,
                     "elapsed_ms": round(
                         (time.perf_counter() - wall_started) * 1000, 3),
                     "tool": tool_name,
+                    "arguments_digest_sha256": bounded_payload_sha256(arguments),
+                    "result_digest_sha256": bounded_payload_sha256(result),
                     "action_class": {
                         "cfw_read": "read", "cfw_write": "write",
                         "cfw_run_validator": "validator",
@@ -313,20 +350,16 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
                     "behavioral_mode": (turn_trace.get("behavioral_mode")
                                         if isinstance(turn_trace.get(
                                             "behavioral_mode"), str) else ""),
-                    "same_approach_retry_count": (
-                        retry_count if type(retry_count) is int
-                        and 0 <= retry_count <= 1_000_000 else 0),
-                    "equivalent_retry_count": (
-                        equivalent_retry_count
-                        if type(equivalent_retry_count) is int
-                        and 0 <= equivalent_retry_count <= 1_000_000 else 0),
+                    **gate_summary,
+                    **retry_trace,
                     "redirected": turn_trace.get("redirected") is True,
                 })
             return result
         client.set_handlers(request_handler=record_action_call,
                             notification_handler=adapter.handle_notification)
         if with_csw:
-            workflow_ids = dict(adapter._task_handle.digital_psychology_adapter()
+            workflow_ids = dict(adapter._task_handle.create_component_adapter(
+                                CFWBehaviorAdapter)
                                 .workflow_authority_identities())
             csw_workflow_identities.update({
                 str(statework_id): {**dict(identity),
@@ -501,8 +534,8 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
             workspace, validation_runs=validation_runs,
             channel="external_final_score")
             if model_execution_observed and not dynamic_tool_probe else [])
-        if cognitive_host is not None:
-            bridge_status = dict(status.get("cognitive_host_status") or {})
+        if runtime_lifecycle is not None:
+            bridge_status = dict(status.get("runtime_harness_lifecycle_status") or {})
         else:
             bridge_status = {}
         wall_ms = round((time.perf_counter() - wall_started) * 1000, 3)
@@ -594,7 +627,7 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
                       "triad-multipath": "cfw-csw-dp-multipath"}[condition],
             "trial_id": trial_id, "model": model,
             "host_initialized": status.get("cfw_session_id") is not None,
-            "cognitive_host_initialized": (
+            "runtime_harness_lifecycle_initialized": (
                 bridge_status.get("private_dp_bridge_open") is True if with_dp else None),
             "thread_started": status.get("thread_id") is not None,
             "turn_started": bool(turn_records),
@@ -616,10 +649,16 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
             "turns": turn_records,
             "behavior_trace": status.get("behavior_trace", []),
             "behavior_action_trace": behavior_action_trace[-512:],
+            "action_calls": action_calls[-512:],
+            "model_tool_call_count": len(action_calls),
+            "model_validator_call_count": sum(
+                item.get("tool") == "cfw_run_validator" for item in action_calls),
+            "validator_channel_metrics": _validator_channel_metrics(validation_runs),
             "required_criterion_ids": list(criterion_ids),
             "turn_status": turn_records[-1]["status"] if turn_records else "not_started",
             "assistant_message": str(adapter._last_assistant_message or "")[-4000:],
             "completion_status": completion_status,
+            "completion_applicable": True,
             "completion_decision": (completion.get("decision")
                                     if "completion" in locals() else None),
             "completion_error_class": (completion.get("error_class")
@@ -653,7 +692,7 @@ async def _run_treatment(*, condition: str, workspace: Path, root: Path,
                 "native_action_feature_categories"),
             "native_action_feature_catalog": status.get(
                 "native_action_feature_catalog"),
-            "cognitive_host_status": bridge_status,
+            "runtime_harness_lifecycle_status": bridge_status,
             "cfw_gate_receipts": cfw_gate_receipts,
             "registered_dynamic_tool_names": sorted(adapter.action_bindings),
             "server_request_method_counts": dict(sorted(server_request_counts.items())),

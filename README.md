@@ -58,7 +58,11 @@ The example resolves an `implement` task, shows the host action gate decision, a
 - **CFW alone:** CFW uses its deterministic standalone behavior authority and action gates; the host-owned `TaskGoalContract` remains authoritative for the objective and completion criteria. No CSW or DP installation is loaded.
 - **CFW + CSW:** install CSW's optional CFW provider and point `--statework-root` at its registry. CSW owns workflow state, evidence, and legal transitions; CFW consumes the provider contract for compatible component context and action gates.
 - **CFW + CSW + DP:** CFW and CSW keep those same authorities; the trusted DP host uses their declared ports to coordinate bounded behavioral interventions and measures outcomes using host evidence.
-- **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, the trusted host passes `RuntimeTaskHandle.digital_psychology_adapter()` to DP's `HostControlBridge`; the host launches DP's private MCP process and applies its prepared directives through CFW's lifecycle overlay. The bridge is not part of `AgentSessionHandle`, and CFW keeps its hard permission gates active.
+- **CFW + DP:** inject a `BehavioralAdvisor` backed by DP, or load a validated routing profile. For live adaptation, the trusted host selects DP's `CFWBehaviorAdapter` through the generic `RuntimeTaskHandle.create_component_adapter(factory)` port and passes it to DP's `HostControlBridge`. The host launches DP's private MCP process and applies its prepared directives through CFW's lifecycle overlay. CFW's task handle has no built-in knowledge of DP, and its hard permission gates remain active.
+
+CFW's host convergence ledger is the source for bounded task-local attempt and recovery limits used by hard gates. CFW's task evidence ledger stores local criterion, evidence, blocker, and workflow facts. Its attention and redirect tracker is constructed only under the standalone fallback authority; a DP-bound session has no CFW attention controller. Cross-framework behavior interpretation and focus belong to DP.
+
+Historical System-1 protocol and signal readers are isolated for old artifacts; the live CFW runtime does not instantiate them. Semantic assessment, provider state, and global behavior selection belong to DP.
 
 The sibling projects are optional integrations, not CFW dependencies. See the sibling READMEs for their standalone entry points.
 
@@ -87,13 +91,28 @@ CFW and CSW each have standalone entry points and work together without DP.
 The full three-system mode is recommended when behavioral interventions should
 adapt across both cognitive components and domain workflows.
 
-### Generic Codex App Server host
+### Codex App Server adapter
 
-`scripts/codex_app_server_adapter.py` connects a host-authored CFW task to the
-generic Codex App Server stdio API. The host registers `cfw_` dynamic tools with
-JSON schemas, CFW action descriptors, and trusted executors; each call passes
-through CFW's action gate before the executor runs. The host owns the task
-contract, stable session identity, recovery record, validation, and completion.
+Codex is one optional harness adapter. It translates App Server events into the
+shared lifecycle contract; it does not define the Triad runtime or its policy.
+Other harnesses use their own adapters against the same neutral contracts.
+
+The optional CFW adapter distribution exposes `codex_app_server_adapter.py` as
+a compatibility facade over the CFW task host in
+`cognitive_runtime_core.integrations.codex.cfw_host`. That host connects a
+host-authored CFW task to the generic Codex App Server stdio API. It registers
+dynamically named tools with JSON schemas, CFW action descriptors, and trusted
+executors; each call passes through CFW's action gate before the executor
+runs. The host owns the task contract, stable session identity, recovery
+record, validation, and completion. Codex protocol, launch, feature-catalog,
+and transport implementation live in the optional runtime-core Codex
+integration; `scripts/codex_host` contains compatibility imports only.
+Host adapters translate trusted execution results into the neutral
+`artifact_changed` observation. CFW uses that host-observed signal to reset
+verification limits for evidence that changed; this policy does not inspect a
+harness protocol or model-supplied result. The Codex adapter maps an explicit
+boolean `artifact_changed` or `changed` field from a registered write
+executor; other adapters translate their host result into the same field.
 The default child configuration disables every recognized native execution,
 tool, integration, and local side-effect feature that is outside the host's
 registered CFW tools. It also disables MCP servers and web search while
@@ -103,24 +122,55 @@ tools. Codex App Server dynamic tools are experimental and require the client's
 [Codex App Server guide](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server) for the
 protocol details.
 
-The adapter is an optional generic host integration. CFW does not require a
-Codex App Server installation to run. It launches `codex` from `PATH` by
-default; set `CODEX_APP_SERVER_BIN` to the App Server executable when the
-`codex` command is a wrapper or resolves to another launcher.
+The Codex transport adapter is a separate optional distribution named
+`cognitive-runtime-codex-adapter`. CFW's integration is also a separate
+distribution, `cognitive-frameworks-codex-adapter`; the base CFW wheel contains
+no Codex host package or App Server import facades. In a workspace with
+adjacent CFW and DP checkouts, install the neutral runtime, the CFW runtime,
+the Codex adapter with its CFW extra, then the compatibility distribution:
 
-For a composite CFW+CSW+DP host, pass a `CodexCognitiveHost` implementation as
-`cognitive_host`. `scripts/codex_app_server_dp_bridge.py` connects DP's private
-`HostControlBridge` to the App Server lifecycle. Its `bridge_factory` runs
-after the CFW task starts, so the application can build DP identity and a
-CFW behavior port from that exact task. The trusted application host supplies
-the shared CSW authority, private DP control client, a candidate projector,
-and an evidence projector. The connector checks that DP's CFW adapter belongs
-to the same task and that both systems use the same task objective and criteria
-before opening. DP control tools remain host-private; the App Server receives
-only the registered `cfw_` actions.
+```bash
+python3 -m pip install ../DigitalPsychology/cognitive_runtime_core
+python3 -m pip install .
+python3 -m pip install '../DigitalPsychology/cognitive_runtime_core/integrations/codex[cfw]'
+python3 -m pip install ./integrations/cfw-codex-adapter
+```
+
+Hosts using the shared lifecycle contracts without Codex can install only
+CFW's `harness-runtime` extra. It provides the neutral `CognitiveHarnessLifecycle`
+and canonical event contracts; each harness supplies its own adapter and
+declared capabilities. When the lifecycle is enabled, CFW requires the Codex
+identity to qualify as `FULL_CONTROL` before a trial can start. The CFW core
+package can also be installed without the neutral runtime when no shared
+harness lifecycle is needed.
+
+CFW core and its neutral lifecycle integration consume host-authored task,
+action, validator, and completion contracts; neither depends on a harness
+protocol or authentication scheme. Optional Codex support is split across the
+generic `cognitive-runtime-codex-adapter`, which translates App Server events
+to neutral contracts and contains the optional CFW task host, and the
+`cognitive-frameworks-codex-adapter` compatibility distribution. CFW does not
+require Codex to run. The Codex adapter
+launches `codex` from `PATH` by default; set `CODEX_APP_SERVER_BIN` to the App
+Server executable when `codex` is a wrapper or resolves to another launcher.
+
+For a composite CFW+CSW+DP host, pass a neutral
+`CognitiveHarnessLifecycle` implementation as `runtime_harness_lifecycle`.
+Codex projects App Server observations into canonical task, model, action,
+validation, completion, and task-end events. The optional DP lifecycle adapter
+connects those events to DP's private `HostControlBridge`; it receives the
+application's CFW and CSW authority context after the CFW task starts. Its
+`bridge_factory` binds the DP session to that exact task, and candidate and
+evidence projectors receive bounded shared contracts. The composition root
+supplies its selected CFW component adapter factory to the DP lifecycle; the
+DP integration does not choose a CFW implementation. Raw App Server events and
+action arguments stay in the Codex adapter. DP control tools remain
+host-private; the App Server receives only explicitly registered host actions.
+The `cfw_` names used in fixtures are conventional labels, not a runtime
+requirement.
 Visibility status reports zero model-visible DP tools only when the adapter's
 own constrained App Server launcher (or a host-verified client) is used.
-The adapter status also includes a bounded `cognitive_host_status` snapshot:
+The adapter status also includes a bounded runtime lifecycle snapshot:
 private DP bridge readiness, CFW authority verification, shared CSW workflow
 bindings, CFW/DP behavior revisions, intervention count, and DP's aggregate
 production counters and timing data. This lets an operator distinguish a
@@ -130,6 +180,10 @@ such as the shared CSW-backed `state_authority`; the adapter reserves session
 identity and resume fields so these objects cannot replace recovery identity.
 The DP connector requires `combined_enforcing` mode and non-empty CFW workflow
 bindings by default. `require_shared_csw=False` is an explicit CFW+DP-only mode.
+Combined startup keeps behavior authority pending until the host-selected DP
+adapter binds. The host must run the initial DP task-start boundary and apply
+its projection before model or planning context is requested; until then those
+boundaries fail closed and CFW blocks action proposals.
 
 This is a direct integration with the regular packaged Codex CLI and its generic
 App Server protocol. It is independent of HarvardCodex Control. The host pins
@@ -137,11 +191,13 @@ the CLI version and complete feature catalog and refuses startup for an
 unreviewed catalog. Provider credentials come from `--provider-env-file`, then
 `CODEX_PROVIDER_ENV_FILE`, then the explicitly named environment variable; no
 machine-specific credential path is assumed. The native model action surfaces
-remain disabled, and only host-registered `cfw_` tools are available to the
-model.
+remain disabled, and only host-registered tools are available to the model.
+Tool names are selected by the host and need only satisfy the adapter's bounded
+identifier rules.
 
-Recorded ChatGPT-mode attempts stopped during App Server workspace-routing
-discovery before the host or model turn started. The completed external-provider
+Recorded ChatGPT-mode attempts, including a user-approved preflight-only recheck
+on 2026-10-07, stopped during App Server workspace-routing discovery before the
+host, triad, or model turn started. The completed external-provider
 sample used FreeInference's Responses endpoint. This is a provider-path
 qualification for regular Codex; it does not change the host boundary or imply
 that the ChatGPT routing failure was caused by CFW.
@@ -154,13 +210,33 @@ integration and sample-specific non-regression only; they do not establish
 general efficacy. The [live-results index](evaluation_fixtures/live-results/README.md)
 records the exact artifacts and limitations.
 
+The matched coding evaluation records a canonical runtime cohort identity on
+each trial, including model/provider pins, task and binding digests, source
+snapshots for CFW/CSW/DP, the Codex feature catalog, and Laya configuration.
+Paired efficacy deltas are counted only when both trials have valid, identical
+cohort hashes. Missing, malformed, or different identities remain visible as
+excluded pair statuses and cannot support a same-cohort causal claim.
+Trial summaries classify outcomes as `PASS`, `FAIL`, `INVALID_TREATMENT`,
+`INFRASTRUCTURE_BLOCKED`, `CAPABILITY_BLOCKED`, or `INSUFFICIENT_EVIDENCE`;
+matched-pair reporting adds `INCOMPARABLE_COHORT` when identity hashes differ.
+
 Completion validators use `CodexValidatorBinding` entries keyed to host-owned
 acceptance criteria. Each entry fixes the action binding and arguments, declares
 the criteria and boundary evidence it covers, and validates output against a
-host-authored JSON Schema. `validate_completion()` runs these actions through
-CFW and, when attached, DP, then asks CFW to issue the completion permit.
-Missing, blocked, or failed validators leave the task incomplete; the model
-cannot supply a pass boolean or invent validator evidence.
+host-authored JSON Schema. `validate_completion()` aggregates validator
+evidence with typed completion receipts from CFW and the host-selected runtime
+authorities. Combined mode requires both DP and CSW receipts; the runtime then
+rechecks its completion permit and current workflow state before finalizing.
+Missing, blocked, or failed validators or authorities leave the task incomplete;
+the model cannot supply a pass boolean or invent evidence.
+
+The Codex adapter emits the neutral `CognitiveHarnessLifecycle` event contract
+for task, model, action, validation, and completion boundaries. It pins its
+declared capabilities to the reviewed Codex feature catalog; an unverified
+host version or catalog degrades those boundaries explicitly. Codex has no
+separate cognitive-host callback contract: it only translates App Server
+events into the shared lifecycle, while the runtime connects CFW, CSW, and DP
+through their neutral ports.
 
 The deterministic adapter contract fixture is in
 `evaluation_fixtures/codex-app-server-host-v1.json`. It runs matched baseline,
@@ -186,36 +262,44 @@ CognitiveFrameWorks is one of three complementary systems:
 | **CognitiveStateWorks** | **Which workflow states and transitions are legal now?** | Domain state, workflow legality, transition requirements, handoffs, recovery |
 | **DigitalPsychology** | **How should behavior adapt, and did the intervention improve progress?** | Behavioral observation, intervention control, outcome attribution, and longitudinal learning |
 
-When all three are enabled, they form a **closed-loop cognitive-behavioral control architecture**:
+When all three are enabled, a **harness-neutral runtime** coordinates their
+contracts. Harness adapters translate host events into the shared lifecycle;
+CFW, CSW, and DP consume those neutral contracts and do not depend on Codex or
+another agent host:
 
 ```text
-                    DigitalPsychology runtime host
-                 observes and selects a bounded intervention
-                          ↙                       ↘
-          CFW signals and directives       CSW state and eligible choices
-          CFW validates controls           CSW validates workflow operations
-                          ↘                       ↙
-                                     Agent
-                                       │
-                        actions, artifacts, host evidence
-                                       │
-                                       ▼
-                      independent DP outcome evaluator
-                                       │
-                  retain, relax, reverse, or refine policy
+                         Cognitive Runtime
+          lifecycle, capability negotiation, transactions,
+                    completion aggregation
+                 ↙              ↓              ↘
+                CFW            CSW              DP
+          local authority   workflow truth   adaptive behavior
+                 ↘              ↓              ↙
+                        Harness adapter
+                   Codex / Athena / other
+                              ↓
+                            Agent
+                              │
+                 actions, artifacts, evidence
+                              └──────────→ DP outcome attribution
 ```
 
 This separation is intentional.
 
 CFW and CSW each run independently, and they can run together without DP.
 Enabling DP adds cross-system adaptation and independent credit assignment;
-it does not transfer CFW's action authority or CSW's workflow authority.
+it does not transfer CFW's action authority or CSW's workflow authority. In
+the target architecture, the neutral runtime owns host orchestration while
+Codex and other harnesses remain replaceable adapters around the same triad
+contracts. `cognitive_runtime_core` now owns generic transaction sequencing
+and reversible CFW/CSW application. DP's `RuntimeHost` supplies DP-specific
+decision projections and reconciles uncertain behavior-decision receipts.
 
 A behavioral problem should not automatically become another paragraph in the model's prompt. A workflow problem should not be solved with generic reasoning advice. And a behavioral hypothesis should not become runtime policy before it has been tested.
 
 ## What CognitiveFrameWorks governs
 
-CFW owns reusable cognitive components and their enforcement contracts. DP owns the cross-component behavioral state and adaptation policy.
+CFW owns reusable cognitive components and their enforcement contracts. DP owns the cross-component behavioral state and adaptation policy. In combined mode, DP supplies global semantic interpretation and behavior selection while CFW keeps its local gates. CFW rejects provider injection and no longer carries semantic-provider policy in task bundles; configure semantic assessment in DP. Standalone CFW uses its deterministic fallback over host facts. Action accounting follows the host descriptor or objective binding; semantic output cannot relabel it.
 
 It governs things such as:
 
@@ -439,8 +523,8 @@ The StateWork transition contract determines what evidence is required to reach 
 
 DigitalPsychology's runtime host consumes CFW's bounded signals, projects its
 revisioned behavioral state into CFW model and planning contexts, and measures
-the result against host and CSW evidence. CFW's `CFWBehaviorAdapter` is an
-explicit capability returned by `RuntimeTaskHandle.digital_psychology_adapter()`.
+the result against host and CSW evidence. CFW's `CFWBehaviorAdapter` is selected
+by the trusted integration through `RuntimeTaskHandle.create_component_adapter(factory)`.
 The adapter uses CFW's declared prepare/apply/synchronize/rollback APIs and
 revision checks; CFW keeps its session lifecycle and validates every action
 through its own authority gate. The host can run a side-effect-free

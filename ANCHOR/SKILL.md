@@ -38,6 +38,22 @@ Full checkpoint format, state transition diagram, and recovery procedures: `refe
 
 **Pressure variant:** Under time pressure, the temptation is to treat uncertain things as resolved. Hold the classification. An uncertain thing treated as resolved is worse than an uncertain thing labeled uncertain.
 
+For consequential changes, track affected task claims and criteria in the
+existing task state:
+
+```text
+claim_id
+affected_boundary_ids
+validity: ESTABLISHED | AT_RISK | INVALIDATED | PENDING_VERIFICATION | INTENTIONALLY_CHANGED
+evidence_refs
+invalidated_by
+```
+
+This is task-local epistemic validity, not another durable guarantee
+database. CSW owns durable workflow facts and transitions. ANCHOR may link a
+task claim to an invalidated CSW fact and reopen its own claim, but it never
+changes that CSW fact.
+
 ---
 
 ### 2. Object Continuity
@@ -87,13 +103,13 @@ Full checkpoint format, state transition diagram, and recovery procedures: `refe
 
 **Default:** Track approach health. When an approach has failed, identify the last verified state, roll back mentally or physically, re-verify assumptions, and resume. Recovery is not a rollback — it is a reorientation.
 
-**ANCHOR is the single owner of recovery procedure.** Detection of failure is distributed — OWL detects reasoning/approach failure, FUSE detects execution/termination failure, and WARD detects authority-blocked or unsafe-action failure. All three trigger into ANCHOR's recovery state machine. They do not independently run recovery procedures.
+**ANCHOR is the single owner of recovery procedure.** OWL detects reasoning/approach failure, FUSE detects execution/termination failure, and WARD identifies action-authority outcomes. A blocked candidate or required alternative goes back to planning under the same valid approach. Only WARD's explicit `RECOVER_APPROACH` result, or independent evidence that the approach itself failed, triggers ANCHOR recovery.
 
 **Active when:** The same error has recurred after 2+ fix attempts. An approach has been modified multiple times without improvement. The implementation has grown more complex without working better. Prior work is the reason a wrong path is being continued.
 
 **Trigger:** Transition `Active → Degraded` when the first failure occurs. Transition `Degraded → Failed` when the same failure recurs. Transition `Failed → Recovered` after identifying last verified state and proposing the new approach.
 
-**Failure handoff:** When OWL's Integrity principle has already surfaced an `approach_failed` signal, OWL owns the surface output (finding + implication). When FUSE's Termination principle has surfaced `retry_bound_exceeded`, FUSE owns the finding (what failed, how many retries). When WARD has refused an action (`refuse` required_action), WARD owns the finding (what was blocked and why). In all cases, ANCHOR owns the recovery procedure (last verified state, new approach, recovery cost). These merge into one block — not two separate outputs. The combined format is:
+**Failure handoff:** When OWL's Integrity principle has surfaced `approach_failed`, OWL owns the finding and implication. When FUSE's Termination principle has surfaced `retry_bound_exceeded`, FUSE owns the execution finding. When WARD returns `RECOVER_APPROACH`, WARD owns the authority finding. A `BLOCK_ACTION` result alone is not an approach failure. ANCHOR owns recovery only when an approach-recovery trigger exists.
 
 ```
 **[Integrity | Termination | WARD]:** [finding — what failed or was blocked]. [implication — what continuing it costs.]
@@ -187,7 +203,8 @@ Request
       if WARD allows → execute → FUSE interprets evidence
       if WARD constrains → re-plan → execute
       if WARD confirms → halt for user
-      if WARD refuses → block → ANCHOR Recovery
+      if WARD returns BLOCK_ACTION → choose another action under the same approach
+      if WARD returns RECOVER_APPROACH → enter ANCHOR Recovery
   → Edit
   → FLOW (operational efficiency evaluation)
       evaluates: produced artifact for operational drag

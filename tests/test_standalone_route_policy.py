@@ -2,7 +2,7 @@ import pytest
 
 from runtime_session.standalone_route_policy import (
     PolicyEpochRecord, RoutePolicyContext, RouteSelectionUnavailable,
-    SemanticRouteResolution, StandaloneRoutePolicy,
+    StandaloneRoutePolicy,
 )
 
 
@@ -20,33 +20,19 @@ def test_standalone_route_policy_uses_owner_scores_and_explicit_preference():
     assert (operator.route, operator.source) == ("route-a", "operator")
 
 
-def test_standalone_route_policy_validates_learned_and_semantic_preferences():
+def test_standalone_route_policy_rejects_learned_and_semantic_preferences():
     strategy = StandaloneRoutePolicy()
-    with pytest.raises(PermissionError, match="not pinned"):
+    for source in ("learned_profile", "semantic_advisory"):
+        with pytest.raises(ValueError, match="unsupported deterministic route preference"):
+            strategy.select(
+                ("route-a", "route-b"),
+                RoutePolicyContext(route_preference="route-a",
+                                   preference_source=source))
+
+    with pytest.raises(RouteSelectionUnavailable, match="no deterministic preference"):
         strategy.select(
             ("route-a", "route-b"),
-            RoutePolicyContext(route_preference="route-a",
-                               preference_source="learned_profile"))
-
-    tied = strategy.select(
-        ("route-a", "route-b"),
-        RoutePolicyContext(
-            scores={"route-a": 1.0, "route-b": 1.0},
-            confidence_threshold=0.8,
-            resolve_tie=lambda _routes: SemanticRouteResolution(
-                "route-b", "decision-1", 0.9, True)))
-    assert tied.route == "route-b"
-    assert tied.source == "semantic_advisory"
-    assert tied.semantic_decision_ref == "decision-1"
-
-    with pytest.raises(RouteSelectionUnavailable, match="not calibrated"):
-        strategy.select(
-            ("route-a", "route-b"),
-            RoutePolicyContext(
-                scores={"route-a": 1.0, "route-b": 1.0},
-                confidence_threshold=0.8,
-                resolve_tie=lambda _routes: SemanticRouteResolution(
-                    "route-b", "decision-2", 0.7, True)))
+            RoutePolicyContext(scores={"route-a": 1.0, "route-b": 1.0}))
 
 
 def test_standalone_route_policy_owns_restorable_epoch_state():

@@ -134,8 +134,11 @@ def test_bound_dp_session_never_runs_cfw_standalone_global_controller(
 
     assert session.behavior.is_external
     assert session.ensure_standalone_behavior_authority() is None
-    assert session.behavior.metacognitive_controller is None
-    assert session.behavior.system_one_judge is None
+    assert session.behavior.standalone_behavior_policy is None
+    assert session.behavior.standalone_attention_state is None
+    assert not hasattr(session.behavior.task_evidence, "active_attention_window")
+    assert "system_one_policy" not in session.bundle.pinned
+    assert not hasattr(session.behavior, "system_one_judge")
 
     assert "ACTION STRATEGY" not in session.before_model_call(tool_capable=True)
     assert session.lifecycle_workflow.lifecycle.component_mode("fuse") == "constrained"
@@ -518,9 +521,10 @@ def test_criterion_free_candidate_rejection_does_not_index_empty_criteria():
     """
     if str(DP) not in sys.path:
         sys.path.insert(0, str(DP))
-    from lib.host import transaction_coordinator as coordinator
+    from lib.runtime import transactions as coordinator
 
-    source = (DP / "lib" / "host" / "transaction_coordinator.py").read_text()
+    assert coordinator.HostTransactionCoordinator.__module__ == "lib.runtime.transactions"
+    source = (DP / "lib" / "runtime" / "transactions.py").read_text()
     assert "affected_criterion_ids[0]" not in source, \
         "an empty affected-criterion tuple must not be indexed unconditionally"
     assert "candidate_criteria[0] if candidate_criteria else None" in source

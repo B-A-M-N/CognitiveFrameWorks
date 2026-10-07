@@ -6,7 +6,9 @@ permission; FUSE owns selection, sequencing, bounds, and evidence scope.
 ## Decision logic
 - Action relevance: prefer actions that advance a required task criterion.
   Support actions require a concrete uncertainty, blocker, or verification
-  claim. Repeated support actions without goal progress trigger goal re-anchoring.
+  claim. The support-action budget triggers a bounded redirect; the total
+  committed-action budget also redirects direct actions that make no goal
+  progress. Required verification and concrete blocker removal remain available.
 - Need current external evidence? Choose the narrowest tool that produces it.
 - Serialize real dependencies; parallelize independent reads.
 - WARD-gate any mutation/boundary action before executing.

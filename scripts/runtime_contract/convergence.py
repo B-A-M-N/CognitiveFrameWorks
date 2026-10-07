@@ -1,14 +1,10 @@
-"""Host-owned convergence ledger.
+"""Host-owned attempt facts and bounded retry enforcement.
 
-The convergence controller answers three questions with host state only:
-
-    Did the last attempt produce objective progress?
-    Is the next attempt materially different from already-failed attempts?
-    Have we exhausted the amount of autonomous recovery justified here?
-
-It never trusts the model's self-report of novelty. Identity is bound to the
-execution identity plus a cause, so two agents investigating the same subject
-never share a retry budget and never poison each other's context.
+``AttemptEvidenceTracker`` records progress, failed paths, and retry facts.
+``RetryBoundaryEnforcer`` applies the fixed CFW retry and recovery limits to
+those facts; it does not choose global attention or adaptive behavior. When a
+DP authority is bound, it consumes the host facts to make those global choices.
+Identity is execution-scoped so independent agents never share retry budgets.
 """
 from __future__ import annotations
 
@@ -354,8 +350,8 @@ class RetryState:
         return "\n".join(lines)
 
 
-class ConvergenceController:
-    """Owns convergence state for one session, keyed by execution identity."""
+class AttemptEvidenceTracker:
+    """Record attempt, retry, progress, and recovery facts for one session."""
 
     def __init__(self, *, identity: Mapping[str, Any],
                  max_recovery_epochs_without_progress: int = 3,
@@ -509,54 +505,21 @@ class ConvergenceController:
         """
         return "|".join((cause_id, premise_digest or "", hypothesis_fingerprint))
 
-    def evaluate_retry(self, *, cause_id: str, action_fingerprint: str,
-                       hypothesis_fingerprint: str, premise_digest: str | None = None,
-                       failure_digest: str | None = None,
-                       delegated: bool = False,
-                       support_action_limit: int = 5) -> str:
-        """Decide one retry. Novelty is judged against host state, not claims."""
-        state = self.state(cause_id)
-        if delegated and state.action_fingerprint == action_fingerprint \
-                and state.hypothesis_fingerprint == hypothesis_fingerprint \
-                and state.premise_digest == premise_digest:
-            # Delegated work that repeats this branch is not an independent
-            # recovery attempt.
-            state.same_approach_retries += 1
-        if state.disposition in TERMINAL_DISPOSITIONS:
-            # A terminated cause cannot be revived by another retry.
-            return GATE_BLOCK
-        if state.support_actions_since_goal_progress >= int(support_action_limit):
-            return GATE_GOAL_REANCHOR
-        if state.recovery_epochs_since_goal_progress >= self.max_recovery_epochs_without_progress:
-            state.disposition = "BLOCKED"
-            state.terminated_reason = "max_recovery_epochs_without_progress"
-            return GATE_BLOCK
-        unchanged = (state.action_fingerprint == action_fingerprint
-                     and state.hypothesis_fingerprint == hypothesis_fingerprint
-                     and state.premise_digest == premise_digest)
-        if unchanged:
-            # Repeated identical attempts are exactly what the budget bounds.
-            if state.last_reinspection_revision:
-                return GATE_CHANGED_HYPOTHESIS
-            if state.same_approach_retries >= self.max_same_approach_retries:
-                return GATE_CHANGED_HYPOTHESIS
-            return GATE_REINSPECT
-        if (failure_digest is not None and state.last_progress_digest
-                and state.last_progress_digest == state.last_failure_digest):
-            # No objective progress since the last recorded failure.
-            if state.last_reinspection_revision:
-                return GATE_CHANGED_HYPOTHESIS
-            return GATE_REINSPECT
-        if state.same_approach_retries >= self.max_same_approach_retries:
-            return GATE_CHANGED_HYPOTHESIS
-        return GATE_ALLOW
-
     def terminate(self, *, disposition: str, reason: str) -> None:
         if disposition not in TERMINAL_DISPOSITIONS:
             raise ValueError("termination disposition is not terminal")
         for state in self._states.values():
             state.disposition = disposition
             state.terminated_reason = reason
+
+    def terminate_cause(self, *, cause_id: str, disposition: str,
+                        reason: str) -> RetryState:
+        if disposition not in TERMINAL_DISPOSITIONS:
+            raise ValueError("termination disposition is not terminal")
+        state = self.state(cause_id)
+        state.disposition = disposition
+        state.terminated_reason = reason
+        return state
 
     def export(self) -> dict[str, Any]:
         return {"schema_version": CONVERGENCE_SCHEMA_VERSION,
@@ -579,3 +542,58 @@ class ConvergenceController:
                 self._states[str(key)] = RetryState.from_dict(data)
             except (KeyError, TypeError, ValueError):
                 continue
+
+
+class RetryBoundaryEnforcer:
+    """Apply CFW's fixed retry and recovery limits to tracked host facts.
+
+    This gate can reject an unsafe or unbounded retry. It does not choose the
+    session's global mode, focus, recovery strategy, or adaptive behavior.
+    """
+
+    def evaluate(self, tracker: AttemptEvidenceTracker, *, cause_id: str,
+                 action_fingerprint: str, hypothesis_fingerprint: str,
+                 premise_digest: str | None = None,
+                 failure_digest: str | None = None,
+                 delegated: bool = False,
+                 support_action_limit: int = 5) -> str:
+        if not isinstance(tracker, AttemptEvidenceTracker):
+            raise TypeError("retry enforcement requires an attempt evidence tracker")
+        state = tracker.state(cause_id)
+        if delegated and state.action_fingerprint == action_fingerprint \
+                and state.hypothesis_fingerprint == hypothesis_fingerprint \
+                and state.premise_digest == premise_digest:
+            state.same_approach_retries += 1
+        if state.disposition in TERMINAL_DISPOSITIONS:
+            return GATE_BLOCK
+        if state.support_actions_since_goal_progress >= int(support_action_limit):
+            return GATE_GOAL_REANCHOR
+        if (state.recovery_epochs_since_goal_progress
+                >= tracker.max_recovery_epochs_without_progress):
+            tracker.terminate_cause(
+                cause_id=cause_id, disposition="BLOCKED",
+                reason="max_recovery_epochs_without_progress")
+            return GATE_BLOCK
+        unchanged = (state.action_fingerprint == action_fingerprint
+                     and state.hypothesis_fingerprint == hypothesis_fingerprint
+                     and state.premise_digest == premise_digest)
+        if unchanged:
+            if state.last_reinspection_revision:
+                return GATE_CHANGED_HYPOTHESIS
+            if state.same_approach_retries >= tracker.max_same_approach_retries:
+                return GATE_CHANGED_HYPOTHESIS
+            return GATE_REINSPECT
+        if (failure_digest is not None and state.last_progress_digest
+                and state.last_progress_digest == state.last_failure_digest):
+            return (GATE_CHANGED_HYPOTHESIS if state.last_reinspection_revision
+                    else GATE_REINSPECT)
+        if state.same_approach_retries >= tracker.max_same_approach_retries:
+            return GATE_CHANGED_HYPOTHESIS
+        return GATE_ALLOW
+
+
+class ConvergenceController(AttemptEvidenceTracker):
+    """Compatibility wrapper for callers of the former mixed controller API."""
+
+    def evaluate_retry(self, **kwargs: Any) -> str:
+        return RetryBoundaryEnforcer().evaluate(self, **kwargs)

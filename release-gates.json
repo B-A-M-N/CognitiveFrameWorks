@@ -143,6 +143,13 @@
       ]
     },
     {
+      "name": "runtime_package_matrix",
+      "cwd": "CognitiveFrameWorks",
+      "command": [
+        "scripts/acceptance-runtime-package-matrix.py"
+      ]
+    },
+    {
       "name": "cfw_upgrade_install",
       "cwd": "CognitiveFrameWorks",
       "command": [

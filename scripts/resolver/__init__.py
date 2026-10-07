@@ -4,7 +4,7 @@ from __future__ import annotations
 from importlib import import_module
 
 _PUBLIC = {"AcceptanceCriterion", "RuntimeBundle", "SnapshotIntegrityError",
-           "SystemOnePolicy", "TaskGoalContract", "TaskRequest", "resolve"}
+           "TaskGoalContract", "TaskRequest", "resolve"}
 
 
 def __getattr__(name: str):

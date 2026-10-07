@@ -9,10 +9,10 @@ from typing import Any, Dict, List, Mapping
 
 from runtime_contract.convergence import AttemptDescriptor
 from runtime_contract.evidence import CompletionPermit, EvidenceRecord, StateSegment
-from runtime_contract.metacognition import MetaDecision, SemanticSignals
 from runtime_contract.stateworks import SegmentStatus
-from runtime_contract.system_one import AttemptSemanticDescriptor, SystemOneIdentity
+from runtime_contract.behavior_facts import AttemptSemanticDescriptor
 from runtime_session.behavior_authority import StandaloneBehaviorAuthority
+from runtime_session.standalone_behavior_policy import StandaloneBehaviorDecision
 from runtime_session.resolver_bridge import resolve_runtime
 from runtime_session.session import RuntimeSession
 from runtime_session.standalone_route_policy import PolicyEpochRecord
@@ -123,29 +123,27 @@ def _restore_session(session: RuntimeSession) -> None:
             event_id = str(record.get("event_id") or "")
             if event_id:
                 session.actions.route_outcomes[event_id] = dict(record.get("outcome") or {})
-        elif event_type == "system_one_sequence":
-            session.behavior.system_one_sequence = max(
-                session.behavior.system_one_sequence, int(record.get("sequence", 0) or 0))
-        elif event_type == "system_one_projection_changed":
-            session.behavior.metacognitive.restore(record.get("snapshot") or {})
-        elif event_type == "semantic_signal_store_changed":
-            if (int(record.get("metacognitive_revision", -1)) >= 0
-                    and not session.behavior.is_external):
-                records = tuple(record.get("records") or ())
-                if session.behavior.authority is None:
-                    session.behavior.deferred_semantic_signal_records = records
-                else:
-                    session.behavior.semantic_signal_store.restore(records)
-        elif event_type == "system_one_decision_recorded":
-            decision = dict(record.get("decision") or {})
-            decision_id = str(decision.get("decision_id") or "")
-            if decision_id:
-                session.behavior.system_one_decisions[decision_id] = decision
-                session.behavior.system_one_sequence = max(
-                    session.behavior.system_one_sequence, int(decision.get("sequence", 0) or 0))
-        elif event_type == "system_one_outcome_recorded":
-            session.behavior.system_one_outcomes.add(
-                f"{record.get('decision_id') or ''}:{record.get('label') or ''}")
+        elif event_type in {
+                "metacognitive_state_changed",
+                # Read snapshots written by older CFW journals.
+                "system_one_projection_changed",
+                "metacognitive_blocker_recorded",
+                "metacognitive_blocker_cleared"}:
+            snapshot = record.get("snapshot") or {}
+            session.behavior.task_evidence.restore(snapshot)
+            legacy_attention = snapshot.get("criterion_attention")
+            if legacy_attention is not None and not session.behavior.is_external:
+                authority = session.ensure_standalone_behavior_authority()
+                authority.attention_state.restore(
+                    legacy_attention, criteria=session.behavior.task_evidence.criteria)
+        elif event_type == "standalone_attention_state_changed":
+            if session.behavior.is_external:
+                raise PermissionError(
+                    "external behavior session contains standalone attention state")
+            authority = session.ensure_standalone_behavior_authority()
+            authority.attention_state.restore(
+                record.get("snapshot") or {},
+                criteria=session.behavior.task_evidence.criteria)
         elif event_type == "evidence_attested":
             evidence_id = str(record["evidence_id"])
             session.evidence.ledger._records[evidence_id] = EvidenceRecord(
@@ -212,7 +210,7 @@ def _restore_session(session: RuntimeSession) -> None:
                                       or transition.get("progress_class")
                                       or "LATERAL")
             progress_class = "WORKFLOW_PROGRESS"
-            session.behavior.metacognitive.record_workflow_progress(
+            session.behavior.task_evidence.record_workflow_progress(
                 statework_id=key[0], subject_ref=key[1],
                 engine_kind=str(transition.get("engine_kind") or "state_machine"),
                 workflow_revision=int(transition.get("revision") or 0),
@@ -237,7 +235,7 @@ def _restore_session(session: RuntimeSession) -> None:
                     progress_class="WORKFLOW_PROGRESS",
                     evidence_ref=evidence_refs[-1] if evidence_refs else None)
         elif event_type == "workflow_step_allowed":
-            session.behavior.metacognitive.record_workflow_progress(
+            session.behavior.task_evidence.record_workflow_progress(
                 statework_id=str(record["statework_id"]),
                 subject_ref=str(record["subject_ref"]),
                 engine_kind=str(record["engine_kind"]),
@@ -301,7 +299,7 @@ def _restore_session(session: RuntimeSession) -> None:
                     **semantic_data)
         elif event_type == "attempt_failure_recorded":
             session.attempts.failures.add(str(record.get("attempt_ref") or ""))
-    session.behavior.metacognitive.ensure_criteria(
+    session.behavior.task_evidence.ensure_criteria(
         session.bundle.pinned.get("goal_contract") or {})
     current = session.lifecycle_workflow.current_segment
     session.lifecycle_workflow.active_statework_ids = ({current.statework_id}
@@ -310,31 +308,15 @@ def _restore_session(session: RuntimeSession) -> None:
         os.chmod(session.telemetry_state.journal_path, 0o600)
     if session.telemetry_state.journal_db_path is not None and session.telemetry_state.journal_db_path.exists():
         os.chmod(session.telemetry_state.journal_db_path, 0o600)
-    # A resumed model-visible behavior decision may have been based on stale
-    # state. Keep the host reconstruction, clear transient influence, then
-    # send a complete frame on the next eligible query.
-    if isinstance(session.behavior.authority, StandaloneBehaviorAuthority):
-        session.behavior.set_semantic_signals(SemanticSignals())
-        session.behavior.set_metacognitive_decision(
-            MetaDecision("DELIVER", "session restored"))
-    session.behavior.semantic_signals_revision = -1
+    # Recompute the local fallback decision from restored host facts.
+    standalone_behavior = isinstance(
+        session.ensure_standalone_behavior_authority(), StandaloneBehaviorAuthority)
+    if standalone_behavior:
+        session.behavior.set_standalone_behavior_decision(
+            StandaloneBehaviorDecision("DELIVER", "session restored"))
     session.actions.clear_pending()
     session.attempts.clear_pending_retries()
-    if session.behavior.system_one_judge is not None:
-        identity = SystemOneIdentity(
-            namespace_id=session.identity_authority.identity.execution_identity.namespace_id,
-            application_id=str(session.bundle.pinned.get("application_id") or "unknown-application"),
-            application_instance_id=session.identity_authority.identity.execution_identity.application_instance_id,
-            agent_id=str(session.bundle.pinned.get("agent_id") or "agent"),
-            agent_instance_id=session.identity_authority.identity.execution_identity.agent_instance_id,
-            session_id=session.identity_authority.identity.execution_identity.session_id,
-            task_id=session.identity_authority.identity.execution_identity.task_id,
-            attempt_id=session.identity_authority.identity.execution_identity.attempt_id,
-            interaction_id=session.identity_authority.identity.execution_identity.interaction_id)
-        reset = getattr(session.behavior.system_one_judge, "reset_identity", None)
-        if callable(reset):
-            reset(identity)
-    session._evaluate_metacognition(semantic=SemanticSignals())
-    session._journal("system_one_resume_state_invalidated",
-                     projector_restored=True, metacognitive_control_recomputed=True,
-                     provider_resync_required=True)
+    if standalone_behavior:
+        session._evaluate_standalone_behavior()
+    session._journal("standalone_behavior_resume_recomputed",
+                     metacognitive_control_recomputed=standalone_behavior)

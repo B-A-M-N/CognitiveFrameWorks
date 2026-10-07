@@ -13,8 +13,7 @@ from .handlers import SUPPORTED_HANDLERS, enforcement_for_guard, validate_enforc
 from .stateworks import ExecutionSegment, SegmentStatus
 from .component_control import (AppliedControlLease, ComponentControl, ComponentOverlay,
                                 ExternalBehaviorProjection, PreparedComponentOverlay)
-from .task import (AcceptanceCriterion, TaskGoalContract, TaskRequest,
-                  VerificationPolicy, SystemOnePolicy)
+from .task import AcceptanceCriterion, TaskGoalContract, TaskRequest, VerificationPolicy
 from .composite_snapshot import (CFWPolicySnapshot,
                                 CompositeCognitiveRuntimeSnapshot)
 from .shared_csw_workflow_port import SharedCSWWorkflowPort
@@ -30,7 +29,7 @@ __all__ = [
     "AppliedControlLease", "ComponentControl", "ComponentOverlay",
     "ExternalBehaviorProjection", "PreparedComponentOverlay",
     "TaskRequest",
-    "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy", "SystemOnePolicy",
+    "AcceptanceCriterion", "TaskGoalContract", "VerificationPolicy",
     "CFWPolicySnapshot", "CompositeCognitiveRuntimeSnapshot",
     "SharedCSWWorkflowPort",
 ]

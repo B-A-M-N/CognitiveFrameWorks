@@ -118,7 +118,7 @@ async def _inference_preflight(args: argparse.Namespace) -> dict[str, Any]:
             return {
                 "condition": args.condition, "trial_id": args.trial_id,
                 "model": args.model, "inference_preflight_only": True,
-                "host_initialized": False, "cognitive_host_initialized": False,
+                "host_initialized": False, "runtime_harness_lifecycle_initialized": False,
                 "thread_started": False, "turn_started": False,
                 "inference_ready": True,
                 "inference_readiness": readiness.to_dict(),
@@ -132,7 +132,7 @@ async def _inference_preflight(args: argparse.Namespace) -> dict[str, Any]:
             return {
                 "condition": args.condition, "trial_id": args.trial_id,
                 "model": args.model, "inference_preflight_only": True,
-                "host_initialized": False, "cognitive_host_initialized": False,
+                "host_initialized": False, "runtime_harness_lifecycle_initialized": False,
                 "thread_started": False, "turn_started": False,
                 "inference_ready": False,
                 "inference_readiness": exc.readiness.to_dict(),
@@ -147,7 +147,7 @@ async def _inference_preflight(args: argparse.Namespace) -> dict[str, Any]:
             return {
                 "condition": args.condition, "trial_id": args.trial_id,
                 "model": args.model, "inference_preflight_only": True,
-                "host_initialized": False, "cognitive_host_initialized": False,
+                "host_initialized": False, "runtime_harness_lifecycle_initialized": False,
                 "thread_started": False, "turn_started": False,
                 "inference_ready": False,
                 "inference_readiness": readiness.to_dict() if readiness else None,

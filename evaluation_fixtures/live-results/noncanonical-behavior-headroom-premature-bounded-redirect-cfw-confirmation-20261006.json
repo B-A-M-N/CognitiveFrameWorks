@@ -1,0 +1,19 @@
+{
+  "condition": "cfw",
+  "interpretation": "single-arm post-fix diagnostic; not a matched efficacy claim",
+  "model": "deepseek-v4-flash",
+  "provider_base_url": "https://freeinference.org/v1",
+  "provider_id": "freeinference",
+  "recorded_at": "2026-10-06T17:53:04.380497+00:00",
+  "scenario_id": "premature-completion",
+  "schema": "noncanonical-behavior-headroom-post-fix-trial/v1",
+  "trial": {
+    "condition": "cfw",
+    "failure_class": "trial_timeout",
+    "inference_ready": null,
+    "model": "deepseek-v4-flash",
+    "model_execution_observed": null,
+    "trial_id": "premature-bounded-redirect-cfw-postfix-confirmation-20261006",
+    "trial_valid": false
+  }
+}

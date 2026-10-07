@@ -14,7 +14,9 @@ from codex_eval.report import (
     _failure_domain,
     _validator_channel_metrics,
 )
+from codex_eval.treatment import _action_gate_summary
 from codex_host import launch as host_launch
+from cognitive_runtime_core.integrations.codex import feature_policy as codex_feature_policy
 from codex_host.diagnostics import (
     _native_feature_catalog,
     _native_feature_categories,
@@ -140,10 +142,16 @@ def test_sanitized_trial_summary_preserves_errors_without_model_or_tool_payloads
         }],
         "behavior_action_trace": [{
             "action_index": 1, "turn_index": 1, "elapsed_ms": 12.5,
+            "tool": "cfw_read",
+            "arguments_digest_sha256": "d" * 64,
+            "result_digest_sha256": "e" * 64,
             "target_criterion_id": "parser_fix", "target_source": "test_path",
             "criterion_ids": ["parser_fix"], "action_class": "read",
             "result_class": "success", "same_approach_retry_count": 0,
-            "equivalent_retry_count": 0,
+            "equivalent_retry_count": 0, "cfw_gate_stage": "final",
+            "action_digest_sha256": "c" * 64,
+            "cfw_gate_decision": "allow",
+            "cfw_gate_reason_codes": ["flow.action_allowed"],
         }],
         "required_criterion_ids": ["parser_fix"],
         "action_calls": [{"arguments": {"path": "/private/path"}}],
@@ -161,7 +169,7 @@ def test_sanitized_trial_summary_preserves_errors_without_model_or_tool_payloads
         "boundary_probe_invariants": {
             "app_server_connected": True, "completion_not_applicable": None},
         "integration_invariants": {"app_server_connected": True},
-        "cognitive_host_status": {
+        "runtime_harness_lifecycle_status": {
             "status": "ready", "private_dp_bridge_open": True,
             "cfw_authority_verified": True, "shared_csw_authority_verified": True,
             "dp_faulted": False, "dp_behavior_revision": 7,
@@ -255,16 +263,22 @@ def test_sanitized_trial_summary_preserves_errors_without_model_or_tool_payloads
     assert summary["required_criterion_ids"] == ["parser_fix"]
     assert summary["behavior_action_trace"] == [{
         "action_index": 1, "turn_index": 1, "elapsed_ms": 12.5,
+        "tool": "cfw_read",
+        "arguments_digest_sha256": "d" * 64,
+        "result_digest_sha256": "e" * 64,
         "target_criterion_id": "parser_fix", "target_source": "test_path",
         "criterion_ids": ["parser_fix"], "focus_criterion_ids": [],
         "action_class": "read", "result_class": "success",
+        "cfw_gate_stage": "final", "cfw_gate_decision": "allow",
+        "action_digest_sha256": "c" * 64,
+        "cfw_gate_reason_codes": ["flow.action_allowed"],
         "same_approach_retry_count": 0, "equivalent_retry_count": 0,
     }]
     assert summary["boundary_probe_valid"] is True
     assert summary["boundary_probe_invariants"] == {
         "app_server_connected": True, "completion_not_applicable": None}
-    assert summary["cognitive_host_status"]["dp_behavior_revision"] == 7
-    assert summary["cognitive_host_status"]["dp_intervention_metrics"] == {
+    assert summary["runtime_harness_lifecycle_status"]["dp_behavior_revision"] == 7
+    assert summary["runtime_harness_lifecycle_status"]["dp_intervention_metrics"] == {
         "unique_created": 3, "active": 1, "applications": 3,
         "closed": 2, "effective": 1, "ineffective": 0,
         "unknown": 1,
@@ -273,7 +287,7 @@ def test_sanitized_trial_summary_preserves_errors_without_model_or_tool_payloads
             "post_action": 1, "completion": 0},
         "semantics": "bounded intervention accounting",
     }
-    assert summary["cognitive_host_status"]["production_metrics"] == {
+    assert summary["runtime_harness_lifecycle_status"]["production_metrics"] == {
         "counters": {"control_ticks_committed": 4, "reconciliations": 17},
         "timers": {"control_tick": {
             "count": 2, "total_ms": 13.5, "max_ms": 8.0}}}
@@ -307,12 +321,54 @@ def test_sanitized_trial_summary_preserves_errors_without_model_or_tool_payloads
             "total_elapsed_ms": 120.5, "mean_elapsed_ms": 60.25,
             "min_elapsed_ms": 45.0, "max_elapsed_ms": 75.5}}
     assert "assistant_message" not in summary
-    assert "action_calls" not in summary
+    assert summary["action_calls"] == []
     assert "secret" not in repr(summary)
     assert "/private/path" not in repr(summary)
     assert "private assistant text" not in repr(summary)
     assert "private fault detail" not in repr(summary)
     assert "result payload" not in repr(summary)
+
+
+def test_action_trace_uses_invocation_matched_final_cfw_gate_receipt():
+    receipts = [
+        {"stage": "preflight", "invocation_id": "call-1",
+         "decision": "allow", "reason_codes": ["host.preflight_allowed"]},
+        {"stage": "final", "invocation_id": "call-1",
+         "decision": "block", "reason_codes": ["flow.goal_progress_limit"],
+         "action_digest": "a" * 64},
+        {"stage": "final", "invocation_id": "call-2",
+         "decision": "allow", "reason_codes": ["host.gate_allowed"]},
+    ]
+
+    assert _action_gate_summary(receipts, "call-1") == {
+        "cfw_gate_stage": "final", "cfw_gate_decision": "block",
+        "cfw_gate_reason_codes": ["flow.goal_progress_limit"],
+        "action_digest_sha256": "a" * 64,
+    }
+    assert _action_gate_summary(receipts, "missing-call") == {}
+
+
+def test_cfw_gate_invariant_requires_retained_action_trace_and_gate_receipt():
+    action = {"action_index": 1, "action_class": "read", "result_class": "success",
+              "cfw_gate_stage": "final", "cfw_gate_decision": "allow",
+              "action_digest_sha256": "a" * 64}
+    receipt = {"stage": "final", "decision": "allow",
+               "action_digest": "a" * 64}
+
+    unsupported_claim = _sanitized_trial_summary({
+        "condition": "cfw",
+        "integration_invariants": {"cfw_action_gate_observed": True},
+    })
+    assert unsupported_claim["integration_invariants"][
+        "cfw_action_gate_observed"] is False
+
+    observed = _sanitized_trial_summary({
+        "condition": "cfw",
+        "integration_invariants": {"cfw_action_gate_observed": False},
+        "behavior_action_trace": [action], "cfw_gate_receipts": [receipt],
+    })
+    assert observed["integration_invariants"][
+        "cfw_action_gate_observed"] is True
 
 
 def test_sanitized_summary_derives_zero_dp_tools_from_boundary_invariant():
@@ -325,8 +381,8 @@ def test_sanitized_summary_derives_zero_dp_tools_from_boundary_invariant():
 
 def test_sanitizer_keeps_absent_hosts_and_probes_not_applicable():
     summary = _sanitized_trial_summary({
-        "condition": "cfw", "cognitive_host_status": {},
-        "cognitive_host_initialized": None, "dynamic_probe_valid": None,
+        "condition": "cfw", "runtime_harness_lifecycle_status": {},
+        "runtime_harness_lifecycle_initialized": None, "dynamic_probe_valid": None,
         "boundary_probe_valid": None, "integration_valid": None,
         "completion_decision": None, "completion_permitted": None,
         "inference_ready": None, "model_execution_observed": None,
@@ -334,7 +390,7 @@ def test_sanitizer_keeps_absent_hosts_and_probes_not_applicable():
         "model_infrastructure_valid": None, "host_integration_valid": None,
     })
 
-    assert summary["cognitive_host_initialized"] is None
+    assert summary["runtime_harness_lifecycle_initialized"] is None
     assert summary["dynamic_probe_valid"] is None
     assert summary["boundary_probe_valid"] is None
     assert summary["integration_valid"] is None
@@ -346,7 +402,7 @@ def test_sanitizer_keeps_absent_hosts_and_probes_not_applicable():
     assert summary["infrastructure_valid"] is None
     assert summary["model_infrastructure_valid"] is None
     assert summary["host_integration_valid"] is None
-    assert "cognitive_host_status" not in summary
+    assert "runtime_harness_lifecycle_status" not in summary
 
 
 def test_sanitizer_preserves_explicit_inference_status_values():
@@ -411,7 +467,7 @@ def test_evaluation_aggregates_sanitized_dp_counters_and_keeps_baseline_completi
          "model_tool_call_count": 6, "model_validator_call_count": 2,
          "validator_channel_metrics": {"host_completion": {
              "runs": 2, "passed": 2, "failed": 0, "total_elapsed_ms": 30.0}},
-         "cognitive_host_status": {
+         "runtime_harness_lifecycle_status": {
              "dp_intervention_count": 3,
              "production_metrics": {"counters": {
                  "control_ticks_committed": 7, "reconciliations": 2}},
@@ -427,6 +483,12 @@ def test_evaluation_aggregates_sanitized_dp_counters_and_keeps_baseline_completi
     assert summary["triad"]["dp_reconciliations"] == 2
     assert summary["triad"]["wall_time_ms_distribution"]["median"] == 1500
     assert summary["triad"]["model_tool_calls_distribution"]["max"] == 6
+    assert summary["triad"]["mean_model_validator_calls"] == 2
+    assert summary["triad"]["model_validator_calls_distribution"]["max"] == 2
+    assert "mean_validator_tool_calls" not in summary["triad"]
+    assert "validator_tool_calls_distribution" not in summary["triad"]
+    assert summary["triad"]["validator_channel_metrics"]["host_completion"][
+        "runs"] == 2
     assert summary["triad"]["validator_channel_metrics"]["host_completion"][
         "total_elapsed_ms"] == 30
     assert _validator_channel_metrics([
@@ -492,6 +554,7 @@ def test_native_feature_policy_is_version_pinned_and_unknown_catalog_fails_close
     assert identity["version"] == "codex-native-host-policy-v1"
     assert identity["policy_sha256"] == (
         "82b363a94a1372a9ef42cafe5b160c67f38bf2502583d34858faa97d8b4bada2")
-    monkeypatch.setattr(host_launch, "_NATIVE_EXEC_FEATURES", ("new_exec_surface",))
+    monkeypatch.setattr(
+        codex_feature_policy, "_NATIVE_EXEC_FEATURES", ("new_exec_surface",))
     with pytest.raises(RuntimeError, match="native feature policy catalog is unknown"):
         _native_feature_catalog(["new_exec_surface"], [])

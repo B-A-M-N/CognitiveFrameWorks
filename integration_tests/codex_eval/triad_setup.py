@@ -15,8 +15,9 @@ from codex_app_server_adapter import (
     CodexAppServerAdapter,
     CodexValidatorBinding,
 )
-from codex_app_server_dp_bridge import DigitalPsychologyBridgeHost
+from cognitive_runtime_core.integrations.cfw import DigitalPsychologyHarnessLifecycle
 from codex_host.launch import CodexLaunchProfile
+from digital_psychology_adapter import CFWBehaviorAdapter
 from lib.behavior_state import GoalItemSnapshot, GoalSetSnapshot
 from lib.host import HostControlBridge, MCPControlClient
 from lib.runtime.adapters.cfw import CFWRuntimeAdapter
@@ -53,7 +54,7 @@ class TriadSetup:
     csw_workflow_identities: dict[str, Mapping[str, Any]]
     csw_workflow_results: list[dict[str, Any]]
     getter_prepared: dict[str, Any]
-    cognitive_host: Any
+    runtime_lifecycle: Any
     server_request_counts: Counter[str]
 
 
@@ -154,7 +155,7 @@ def _build_treatment_host(
     def bridge_factory(*, request: TaskRequest, task_handle: Any,
                        host_handle: Any, session_id: str,
                        **kwargs: Any) -> HostControlBridge:
-        behavior = task_handle.digital_psychology_adapter()
+        behavior = task_handle.create_component_adapter(CFWBehaviorAdapter)
         workflow_ids = behavior.workflow_authority_identities()
         if not workflow_ids:
             raise RuntimeError("CFW task did not bind a CSW workflow authority")
@@ -260,20 +261,17 @@ def _build_treatment_host(
 
     def candidate_factory(*, action: Mapping[str, Any], binding: str,
                           invocation_id: str, **kwargs: Any) -> ActionCandidate:
-        arguments = action.get("arguments") or {}
+        target = str(action.get("parameter_digest") or "")
+        proposal_criteria = tuple(action.get("affected_criterion_ids") or ())
         if binding == "host_validator":
-            validator_id = str(arguments.get("validator") or "")
-            affected = ((criterion_by_validator[validator_id],)
-                        if validator_id in criterion_by_validator else ())
-            target = f"validator:{validator_id}"
+            affected = proposal_criteria
             action_class = "test"
         elif binding == "write":
-            affected = criterion_ids
-            target = str(arguments.get("path") or "")
+            affected = proposal_criteria or criterion_ids
             action_class = "file_change"
         elif binding == "read":
-            affected = criterion_ids if dynamic_tool_probe else ()
-            target = str(arguments.get("path") or "")
+            affected = (proposal_criteria if proposal_criteria else
+                        criterion_ids if dynamic_tool_probe else ())
             action_class = "read"
             if dynamic_tool_probe:
                 dp_observation_records.append({"boundary": "pre_action"})
@@ -299,17 +297,18 @@ def _build_treatment_host(
         result = kwargs.get("actual_result")
         validator_id = str(kwargs.get("validator_id") or "")
         if boundary == "post_action" and kwargs.get("binding") == "test":
-            if isinstance(result, Mapping):
-                validator_id = str(result.get("validator") or "")
-                if (result.get("status") == "passed"
-                        and validator_id in criterion_by_validator):
-                    verified.add(criterion_by_validator[validator_id])
+            projection = kwargs.get("projection")
+            projected_status = (getattr(projection, "criterion_status", {})
+                                if projection is not None else {})
+            for criterion_id, criterion_state in projected_status.items():
+                if criterion_state == "verified" and criterion_id not in verified:
+                    verified.add(criterion_id)
                     goal_revision["value"] += 1
-                    status[criterion_by_validator[validator_id]] = "verified"
+                    status[criterion_id] = "verified"
         elif boundary in {"validator", "pre_completion"}:
             raw_result = kwargs.get("validator_result")
             if boundary == "validator" and isinstance(raw_result, Mapping):
-                validator_id = str(raw_result.get("validator") or "")
+                validator_id = str(kwargs.get("validator_id") or "")
                 if (raw_result.get("status") == "passed"
                         and validator_id in criterion_by_validator
                         and criterion_by_validator[validator_id] not in verified):
@@ -338,6 +337,7 @@ def _build_treatment_host(
             refs = kwargs.get("criterion_evidence_refs") or {}
             evidence_refs = tuple(ref for values in refs.values() for ref in values)[:16]
         completed_action = boundary == "post_action"
+        projection = kwargs.get("projection")
         observed_index = (max(1, bridge._action_index + 1) if completed_action
                           else max(0, bridge._action_index))
         expected_index = (max(1, bridge._action_index + 1)
@@ -353,26 +353,27 @@ def _build_treatment_host(
         return RuntimeObservation(
             action_index=observed_index,
             action_completed=completed_action,
-            progress_made=(completed_action and isinstance(result, Mapping)
-                           and result.get("status") == "passed"),
-            artifact_changed=(completed_action and kwargs.get("binding") == "write"
-                              and isinstance(result, Mapping)
-                              and result.get("changed") is True),
+            progress_made=(completed_action and getattr(
+                projection, "progress_made", False)),
+            artifact_changed=(completed_action and getattr(
+                projection, "artifact_changed", False)),
             actions_since_goal_progress=0 if any(
                 item in verified for item in criterion_ids) else 1,
             equivalent_retry_count=0, goal_set=current,
             criterion_status=status, evidence_refs=evidence_refs)
 
-    cognitive_host = None
+    runtime_lifecycle = None
     if with_dp:
-        cognitive_host = DigitalPsychologyBridgeHost(
-            bridge_factory=bridge_factory, candidate_factory=candidate_factory,
+        runtime_lifecycle = DigitalPsychologyHarnessLifecycle(
+            bridge_factory=bridge_factory,
+            component_adapter_factory=CFWBehaviorAdapter,
+            candidate_factory=candidate_factory,
             observation_factory=observation_factory)
 
     adapter = CodexAppServerAdapter(
         request=request, action_bindings=actions, validator_bindings=validators,
         model=model, cwd=workspace, runtime=runtime,
-        cognitive_host=cognitive_host,
+        runtime_harness_lifecycle=runtime_lifecycle,
         runtime_mode="combined_enforcing" if with_csw else "standalone_enforcing",
         task_start_options=({"state_authority": state_authority}
                             if with_csw else None),
@@ -395,6 +396,6 @@ def _build_treatment_host(
         csw_workflow_identities=csw_workflow_identities,
         csw_workflow_results=csw_workflow_results,
         getter_prepared=getter_prepared,
-        cognitive_host=cognitive_host,
+        runtime_lifecycle=runtime_lifecycle,
         server_request_counts=server_request_counts,
     )
