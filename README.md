@@ -702,6 +702,30 @@ report is explicitly ineligible as intervention evidence because it does not
 assign system cohorts or verify host-applied controls. Real-agent qualification
 must include host receipts and independent outcome attribution before it can
 pass.
+
+The production cohort runner retains durable evidence only when given an
+explicit `--evidence-dir`. Selecting `cfw_csw_dp_laya` requires this option:
+
+```sh
+python scripts/cohort/run_cohort.py --evidence-dir /path/to/private/cohort-evidence
+```
+
+Before starting the runner, set `DIGITALPSYCHOLOGY_ROOT` to the DP checkout
+being evaluated when it differs from the sibling `DigitalPsychology` path.
+The manifest records the actual DP revision used by the host process.
+
+Each run gets a unique private directory containing a manifest, per-cell
+benchmark reports and trial JSONL, the host's DP event and behavior databases,
+the task workspaces, and the preflight report. The manifest captures the CFW,
+CSW, and DP Git revisions plus a digest of tracked local changes. Trial records
+contain host evaluator results, runtime behavior telemetry, treatment exposure,
+and action receipts; they omit the agent conversation trajectory. The task
+workspaces can contain fixture and source contents, so use a user-owned
+directory that is not writable by other users. Run directories are mode `0700`,
+and JSON evidence files are mode `0600`. The manifest remains `running` if the
+process stops before completion, while already fsynced trial records and runtime
+state remain available for review.
+
 The final release gate requires every qualification marked
 `mandatory_for_release` to have a `pass` result; `not_run`, `fail`, and
 `blocked` results stop release.

@@ -62,8 +62,12 @@ else:
 print(json.dumps({"answer":json.dumps(answer),"complete":True,"usage":{"input_tokens":3,"output_tokens":2,"cost":0.001}}),flush=True)
 ''')
     contract = benchmark.load_json(benchmark.CONTRACT_PATH)
+    workspace_root = tmp_path / "retained-workspaces"
+    trial_evidence = tmp_path / "trials.jsonl"
     report = benchmark.execute_benchmark(
-        contract, [sys.executable, str(fake_agent)], trials_per_cell=2, holdout_fraction=0.5)
+        contract, [sys.executable, str(fake_agent)], trials_per_cell=2,
+        holdout_fraction=0.5, workspace_root=workspace_root,
+        trial_evidence_out=trial_evidence)
     assert report["evidence_scope"] == "task_outcome_only"
     assert report["qualification_eligible"] is False
     assert report["qualification_blockers"]
@@ -72,10 +76,19 @@ print(json.dumps({"answer":json.dumps(answer),"complete":True,"usage":{"input_to
     assert sum(bool(item["holdout"]) for item in report["results"]) == 8
     assert all(item["failure_category"] is None for item in report["results"])
     assert all(item["evaluator_version"] for item in report["results"])
+    assert all(item["task_id"] for item in report["results"])
     assert all(item["latency_seconds"] >= 0 for item in report["results"])
     assert all(item["token_overhead"] == 5 for item in report["results"])
     assert all("intervention_assignment" not in item for item in report["results"])
     assert all("intervention_execution" not in item for item in report["results"])
+    assert trial_evidence.stat().st_mode & 0o777 == 0o600
+    retained = [json.loads(line) for line in trial_evidence.read_text().splitlines()]
+    assert len(retained) == len(report["results"])
+    assert all("trajectory" not in row for row in retained)
+    assert all((workspace_root / row["task_family"] / str(row["trial"])).is_dir()
+               for row in retained)
+    assert all((workspace_root / "code_repair" / str(trial) / "fixed.py").is_file()
+               for trial in range(2))
 
 
 def test_agent_task_view_hides_holdout_and_exposure_metadata() -> None:
@@ -89,6 +102,14 @@ def test_agent_task_view_hides_holdout_and_exposure_metadata() -> None:
     view = benchmark.agent_task_view(task)
     assert view == {"task_family": "code_repair", "instruction": "repair it",
                     "workspace": "/tmp/task"}
+
+
+def test_durable_benchmark_paths_reject_group_or_world_access(tmp_path: Path) -> None:
+    public_dir = tmp_path / "shared"
+    public_dir.mkdir()
+    public_dir.chmod(0o755)
+    with pytest.raises(ValueError, match="user-owned and private"):
+        benchmark._require_private_directory(public_dir)
 
 
 def test_run_agent_enforces_model_call_budget(tmp_path: Path) -> None:

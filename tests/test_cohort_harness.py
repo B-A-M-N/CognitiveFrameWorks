@@ -49,6 +49,144 @@ def test_harness_defines_the_five_required_configurations():
         previous = current
 
 
+def test_laya_cohort_requires_explicit_durable_evidence_directory(tmp_path: Path):
+    cohort = _cohort()
+    with pytest.raises(ValueError, match="require --evidence-dir"):
+        cohort._require_durable_laya_evidence(["cfw_csw_dp_laya"], None)
+    cohort._require_durable_laya_evidence(["cfw_csw_dp"], None)
+    cohort._require_durable_laya_evidence(["cfw_csw_dp_laya"], tmp_path)
+
+
+def test_laya_evidence_gate_runs_before_preflight_or_model_call(
+        monkeypatch: pytest.MonkeyPatch):
+    cohort = _cohort()
+
+    def unexpected_preflight(**_kwargs):
+        raise AssertionError("preflight must not run before the evidence gate")
+
+    monkeypatch.setattr(cohort.cohort_preflight, "run_canaries", unexpected_preflight)
+    monkeypatch.setattr(sys, "argv", [
+        "run_cohort.py", "--configurations", "cfw_csw_dp_laya",
+        "--trials-per-cell", "1",
+    ])
+    with pytest.raises(ValueError, match="require --evidence-dir"):
+        cohort.main()
+
+
+def test_evidence_bundle_uses_private_unique_run_directories_and_files(tmp_path: Path):
+    cohort = _cohort()
+    first = cohort._create_evidence_run(tmp_path / "evidence")
+    second = cohort._create_evidence_run(tmp_path / "evidence")
+    assert first != second
+    assert first.stat().st_mode & 0o777 == 0o700
+    output = first / "manifest.json"
+    cohort._write_private_json(output, {"status": "running"})
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert json.loads(output.read_text()) == {"status": "running"}
+
+
+def test_evidence_bundle_rejects_symlink_and_shared_writable_parent(tmp_path: Path):
+    cohort = _cohort()
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        cohort._create_evidence_run(alias)
+
+    shared = tmp_path / "shared"
+    shared.mkdir(mode=0o777)
+    shared.chmod(0o777)
+    with pytest.raises(ValueError, match="not writable by others"):
+        cohort._create_evidence_run(shared)
+
+
+def test_cohort_main_persists_manifest_and_cell_artifacts_without_model_calls(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    cohort = _cohort()
+
+    def fake_execute(_contract, _command, *, workspace_root, trial_evidence_out,
+                     **_kwargs):
+        assert workspace_root is not None
+        assert trial_evidence_out is not None
+        workspace_root.mkdir(parents=True, mode=0o700)
+        trial_evidence_out.write_text("{}\n", encoding="utf-8")
+        return {
+            "contract_hash": "contract-digest",
+            "results": [{
+                "task_id": "sample-task",
+                "task_family": "code_repair",
+                "holdout": False,
+                "completion_success": True,
+                "latency_seconds": 1.0,
+                "evidence_quality": 1.0,
+                "regression_rate": 0.0,
+                "treatment_exposure": [{
+                    "host_generated": True,
+                    "configuration": "baseline",
+                    "frameworks": [],
+                    "context_sha256": "a" * 64,
+                    "context_bytes": 12,
+                }],
+                "host_action_receipts": [{"executed": True}],
+                "runtime_behavioral_telemetry": [],
+            }],
+        }
+
+    monkeypatch.setattr(cohort.benchmark, "execute_benchmark", fake_execute)
+    monkeypatch.setattr(sys, "argv", [
+        "run_cohort.py", "--configurations", "baseline",
+        "--trials-per-cell", "1", "--skip-canaries",
+        "--evidence-dir", str(tmp_path / "evidence"),
+    ])
+    assert cohort.main() == 0
+    capsys.readouterr()
+
+    runs = list((tmp_path / "evidence").iterdir())
+    assert len(runs) == 1
+    run_root = runs[0]
+    manifest = json.loads((run_root / "manifest.json").read_text())
+    assert manifest["status"] == "complete"
+    assert manifest["preflight_status"] == "skipped"
+    assert manifest["cells"]["baseline"]["status"] == "complete"
+    assert set(manifest["source_revisions"]) == {"CFW", "CSW", "DP"}
+    assert manifest["source_revisions"]["CFW"]["head"]
+    assert (run_root / "baseline" / "trials.jsonl").is_file()
+    assert (run_root / "baseline" / "benchmark-report.json").is_file()
+    assert (run_root / "report.json").is_file()
+    assert (run_root / "cohort-labels.json").is_file()
+
+
+def test_failed_preflight_persists_bounded_failure_before_reraising(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cohort = _cohort()
+
+    def fail_canary(**_kwargs):
+        raise cohort.cohort_preflight.PreflightError("private response text")
+
+    def unexpected_benchmark(*_args, **_kwargs):
+        raise AssertionError("benchmark must not run after failed preflight")
+
+    monkeypatch.setattr(cohort.cohort_preflight, "run_canaries", fail_canary)
+    monkeypatch.setattr(cohort.benchmark, "execute_benchmark", unexpected_benchmark)
+    evidence_parent = tmp_path / "evidence"
+    monkeypatch.setattr(sys, "argv", [
+        "run_cohort.py", "--configurations", "baseline",
+        "--trials-per-cell", "1", "--evidence-dir", str(evidence_parent),
+    ])
+    with pytest.raises(cohort.cohort_preflight.PreflightError):
+        cohort.main()
+
+    run_root = next(evidence_parent.iterdir())
+    manifest = json.loads((run_root / "manifest.json").read_text())
+    preflight = json.loads((run_root / "preflight.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["preflight_status"] == "failed"
+    assert manifest["failure_stage"] == "preflight"
+    assert preflight == {"status": "failed", "error_type": "PreflightError"}
+    assert "private response text" not in (run_root / "preflight.json").read_text()
+
+
 def test_baseline_does_not_configure_the_optional_provider():
     cohort = _cohort()
     with tempfile.TemporaryDirectory() as raw:

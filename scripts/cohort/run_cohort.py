@@ -12,11 +12,18 @@ what actually ran; it never asserts a pass that was not observed.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
+import os
+import stat
 import statistics
+import subprocess
 import sys
 import tempfile
+import uuid
+from contextlib import nullcontext
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +68,83 @@ EXPECTED_FRAMEWORKS = {
     "cfw_csw_dp": ("CFW", "CSW", "DP"),
     "cfw_csw_dp_laya": ("CFW", "CSW", "DP", "Laya"),
 }
+
+
+def _require_durable_laya_evidence(
+        configurations: list[str], evidence_dir: Path | None) -> None:
+    if "cfw_csw_dp_laya" in configurations and evidence_dir is None:
+        raise ValueError(
+            "Laya cohort runs require --evidence-dir so opportunity records and "
+            "independently evaluated trials survive process cleanup")
+
+
+def _create_evidence_run(base: Path) -> Path:
+    supplied = Path(base).expanduser()
+    if supplied.is_symlink():
+        raise ValueError("evidence directory must not be a symlink")
+    supplied.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = supplied.stat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o022):
+        raise ValueError(
+            "evidence directory must be a user-owned directory not writable by others")
+    run_id = ("laya-cohort-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+              + "-" + uuid.uuid4().hex[:10])
+    run_root = supplied / run_id
+    run_root.mkdir(mode=0o700)
+    base_fd = os.open(supplied, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(base_fd)
+    finally:
+        os.close(base_fd)
+    return run_root
+
+
+def _write_private_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, sort_keys=True, indent=2, ensure_ascii=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(
+            path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _source_revision(root: Path) -> dict[str, Any]:
+    """Capture reproducible Git identity without persisting source diffs."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True, timeout=5).stdout.strip()
+        branch_result = subprocess.run(
+            ["git", "-C", str(root), "branch", "--show-current"],
+            check=True, capture_output=True, text=True, timeout=5)
+        diff = subprocess.run(
+            ["git", "-C", str(root), "diff", "HEAD", "--binary"],
+            check=True, capture_output=True, timeout=10).stdout
+        return {
+            "head": head,
+            "branch": branch_result.stdout.strip() or None,
+            "tracked_changes": bool(diff),
+            "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+        }
+    except (OSError, subprocess.SubprocessError):
+        return {"available": False}
 
 
 def _agent_env(configuration: str, *, state_root: Path) -> dict[str, str]:
@@ -118,6 +202,10 @@ def main() -> int:
     parser.add_argument("--trials-per-cell", type=int, default=3)
     parser.add_argument("--holdout-fraction", type=float, default=0.34)
     parser.add_argument("--report-out", type=Path)
+    parser.add_argument(
+        "--evidence-dir", type=Path,
+        help=("private parent directory for durable cohort evidence; required "
+              "when the Laya configuration is selected"))
     parser.add_argument("--skip-canaries", action="store_true",
                         help="bypass harness preflight; for debugging only")
     parser.add_argument("--label-out", type=Path,
@@ -133,14 +221,74 @@ def main() -> int:
     unknown = [c for c in wanted if c not in dict(CONFIGURATIONS)]
     if unknown:
         raise SystemExit(f"unknown configuration(s): {unknown}")
+    _require_durable_laya_evidence(wanted, args.evidence_dir)
+
+    evidence_root = (_create_evidence_run(args.evidence_dir)
+                     if args.evidence_dir is not None else None)
+    manifest: dict[str, Any] | None = None
+    if evidence_root is not None:
+        manifest = {
+            "schema": "cfw-laya-cohort-evidence/v1",
+            "status": "running",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "preflight_status": "skipped" if args.skip_canaries else "pending",
+            "configurations": wanted,
+            "contract_path": str(args.contract.resolve()),
+            "contract_hash": hashlib.sha256(json.dumps(
+                contract, sort_keys=True, separators=(",", ":")
+            ).encode()).hexdigest(),
+            "trials_per_cell": args.trials_per_cell,
+            "holdout_fraction": args.holdout_fraction,
+            "source_revisions": {
+                "CFW": _source_revision(ROOT),
+                "CSW": _source_revision(cohort_runtime.COW),
+                "DP": _source_revision(cohort_runtime.DP),
+            },
+            "cells": {
+                name: {
+                    "status": "pending",
+                    "path": name,
+                    "workspaces": f"{name}/workspaces/",
+                    "trial_evidence": f"{name}/trials.jsonl",
+                    "benchmark_report": f"{name}/benchmark-report.json",
+                    "host_state": f"{name}/host-state/",
+                    "dp_event_db": f"{name}/host-state/runtime/dp-events.sqlite3",
+                    "dp_behavior_db": f"{name}/host-state/runtime/dp-behavior.sqlite3",
+                }
+                for name in wanted
+            },
+        }
+        _write_private_json(evidence_root / "manifest.json", manifest)
 
     # Prove the harness before spending inference on the matrix. Three full
     # runs were previously discarded after the fact because the adapter scored
     # correct work as zero; canaries make that fail here instead.
     if not args.skip_canaries:
-        canaries = cohort_preflight.run_canaries(
-            agent_command=command, families=contract["task_families"],
-            limits=contract["limits"])
+        try:
+            canaries = cohort_preflight.run_canaries(
+                agent_command=command, families=contract["task_families"],
+                limits=contract["limits"])
+        except Exception as exc:
+            if evidence_root is not None:
+                _write_private_json(evidence_root / "preflight.json", {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                })
+                assert manifest is not None
+                manifest["preflight_status"] = "failed"
+                manifest["status"] = "failed"
+                manifest["failure_stage"] = "preflight"
+                manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
+                _write_private_json(evidence_root / "manifest.json", manifest)
+            raise
+        if evidence_root is not None:
+            _write_private_json(evidence_root / "preflight.json", {
+                "status": "passed",
+                "results": canaries,
+            })
+            assert manifest is not None
+            manifest["preflight_status"] = "passed"
+            _write_private_json(evidence_root / "manifest.json", manifest)
         print(json.dumps({"canaries": canaries}, indent=2), flush=True)
 
     cohorts: dict[str, dict] = {}
@@ -149,7 +297,17 @@ def main() -> int:
         subsystems = dict(CONFIGURATIONS)[configuration]
         # Host assigns a blinded label so trial order cannot reveal treatment.
         label = f"cohort-{chr(ord('A') + index)}"
-        with tempfile.TemporaryDirectory(prefix=f"cohort-{configuration}-") as raw:
+        cell_root = evidence_root / configuration if evidence_root is not None else None
+        if cell_root is not None:
+            cell_root.mkdir(mode=0o700)
+            assert manifest is not None
+            manifest["cells"][configuration]["status"] = "running"
+            _write_private_json(evidence_root / "manifest.json", manifest)
+            cell_context = nullcontext(str(cell_root))
+        else:
+            cell_context = tempfile.TemporaryDirectory(
+                prefix=f"cohort-{configuration}-")
+        with cell_context as raw:
             state_root = Path(raw)
             env = _agent_env(configuration, state_root=state_root)
             import os
@@ -161,9 +319,16 @@ def main() -> int:
                 report = benchmark.execute_benchmark(
                     contract, cell_command,
                     trials_per_cell=args.trials_per_cell,
-                    holdout_fraction=args.holdout_fraction)
+                    holdout_fraction=args.holdout_fraction,
+                    workspace_root=(cell_root / "workspaces"
+                                    if cell_root is not None else None),
+                    trial_evidence_out=(cell_root / "trials.jsonl"
+                                        if cell_root is not None else None))
             finally:
                 os.environ.clear(); os.environ.update(saved)
+
+        if cell_root is not None:
+            _write_private_json(cell_root / "benchmark-report.json", report)
 
         raw_results = report["results"]
         exposures = [exposure for row in raw_results
@@ -239,6 +404,10 @@ def main() -> int:
         }
         labels.append({"blinded_label": label, "configuration": configuration,
                        "subsystems": list(subsystems)})
+        if evidence_root is not None:
+            assert manifest is not None
+            manifest["cells"][configuration]["status"] = "complete"
+            _write_private_json(evidence_root / "manifest.json", manifest)
 
     all_exposure_verified = all(
         cohorts[name]["treatment_exposure_verified"] for name in wanted)
@@ -266,7 +435,7 @@ def main() -> int:
     out = {
         "cohort_id": "real-agent-behavioral-cohort-v1",
         "evidence_source": "host_evaluator_with_host_action_receipts",
-        "agent_command": args.agent_command,
+        "agent_command": Path(command[0]).name,
         "configurations_run": wanted,
         "treatment_exposure_verified": all_exposure_verified,
         "host_action_receipts_verified": all_receipts_verified,
@@ -277,12 +446,17 @@ def main() -> int:
     for entry in out["cohorts"].values():
         entry.pop("_raw_results", None)
     text = json.dumps(out, indent=2, sort_keys=True)
+    if evidence_root is not None:
+        _write_private_json(evidence_root / "report.json", out)
+        _write_private_json(evidence_root / "cohort-labels.json", labels)
+        assert manifest is not None
+        manifest["status"] = "complete"
+        manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
+        _write_private_json(evidence_root / "manifest.json", manifest)
     if args.report_out:
-        args.report_out.parent.mkdir(parents=True, exist_ok=True)
-        args.report_out.write_text(text + "\n", encoding="utf-8")
+        _write_private_json(args.report_out, out)
     if args.label_out:
-        args.label_out.parent.mkdir(parents=True, exist_ok=True)
-        args.label_out.write_text(json.dumps(labels, indent=2) + "\n", encoding="utf-8")
+        _write_private_json(args.label_out, labels)
     print(text)
     return 0
 

@@ -15,10 +15,12 @@ import os
 import selectors
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -30,6 +32,14 @@ AGENT_VISIBLE_TASK_FIELDS = frozenset({"task_id", "task_family", "instruction", 
 
 class BenchmarkBudgetExceeded(RuntimeError):
     pass
+
+
+def _require_private_directory(path: Path) -> None:
+    info = path.stat(follow_symlinks=False)
+    user_id = getattr(os, "getuid", lambda: info.st_uid)()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != user_id
+            or info.st_mode & 0o077):
+        raise ValueError("durable benchmark paths must be user-owned and private")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -142,11 +152,38 @@ def run_agent(command: list[str], task: Mapping[str, Any], *, timeout: float,
 
 
 def execute_benchmark(contract: Mapping[str, Any], command: list[str],
-                      *, trials_per_cell: int, holdout_fraction: float) -> dict[str, Any]:
+                      *, trials_per_cell: int, holdout_fraction: float,
+                      workspace_root: Path | None = None,
+                      trial_evidence_out: Path | None = None) -> dict[str, Any]:
     validate_contract(contract)
     limits = dict(contract["limits"])
     results: list[dict[str, Any]] = []
-    with tempfile.TemporaryDirectory(prefix="cfw-behavioral-benchmark-") as raw:
+    if trial_evidence_out is not None:
+        trial_evidence_out = Path(trial_evidence_out)
+        trial_evidence_out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _require_private_directory(trial_evidence_out.parent)
+        evidence_flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                          | getattr(os, "O_NOFOLLOW", 0))
+        evidence_fd = os.open(trial_evidence_out, evidence_flags, 0o600)
+        os.fsync(evidence_fd)
+        os.close(evidence_fd)
+        parent_fd = os.open(
+            trial_evidence_out.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+    if workspace_root is None:
+        root_context = tempfile.TemporaryDirectory(
+            prefix="cfw-behavioral-benchmark-")
+    else:
+        workspace_root = Path(workspace_root)
+        workspace_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _require_private_directory(workspace_root)
+        root_context = nullcontext(workspace_root)
+    with root_context as raw:
         root = Path(raw)
         for family in contract["task_families"]:
             family_id = str(family["id"])
@@ -193,8 +230,9 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                     evaluation = {"completion_success": False, "evidence_quality": 0.0, "regression_rate": 1.0, "metrics": {}, "failure_category": "resource_limit", "error": str(exc)}
                 except Exception as exc:
                     trajectory, usage = [], {"model_calls": 0, "external_tokens": 0, "monetary_cost": 0.0}
-                    evaluation = {"completion_success": False, "evidence_quality": 0.0, "regression_rate": 1.0, "metrics": {}, "failure_category": "invalid_completion", "error": str(exc)}
+                    evaluation = {"completion_success": False, "evidence_quality": 0.0, "regression_rate": 1.0, "metrics": {}, "failure_category": "invalid_completion", "error": type(exc).__name__}
                 row = {
+                    "task_id": task["task_id"],
                     "task_family": family_id,
                     "trial": trial,
                     "holdout": task["holdout"],
@@ -220,6 +258,23 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                         and trajectory[-1]["response"].get("infrastructure_failure")):
                     row["infrastructure_failure"] = True
                 results.append(row)
+                if trial_evidence_out is not None:
+                    encoded = (json.dumps(
+                        row, sort_keys=True, separators=(",", ":"),
+                        ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+                    append_fd = os.open(
+                        trial_evidence_out,
+                        os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+                    try:
+                        pending = memoryview(encoded)
+                        while pending:
+                            written = os.write(append_fd, pending)
+                            if written <= 0:
+                                raise OSError("short write to trial evidence log")
+                            pending = pending[written:]
+                        os.fsync(append_fd)
+                    finally:
+                        os.close(append_fd)
     return {
         "benchmark_id": contract["benchmark_id"],
         "evidence_scope": "task_outcome_only",
