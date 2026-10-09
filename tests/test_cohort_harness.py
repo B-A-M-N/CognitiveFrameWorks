@@ -58,6 +58,95 @@ def test_baseline_does_not_configure_the_optional_provider():
     assert env["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] == "disabled"
 
 
+def test_shadow_laya_attestation_does_not_require_calibration_but_advisory_does():
+    runtime = _load(
+        "cohort_runtime_harness_attestation",
+        ROOT / "scripts" / "cohort" / "runtime_harness.py")
+    base = {
+        "backend_id": "digitalpsychology-laya-native",
+        "model_id": "pinned-model",
+        "model_revision": "pinned-revision",
+        "model_content_hash": "a" * 64,
+        "provider_protocol_hash": "b" * 64,
+        "calibration_bundle_hash": "",
+        "provider_mode": "shadow",
+        "capability_digest": "c" * 64,
+        "enabled_question_families": ["progress_relation"],
+    }
+
+    assert runtime._missing_provider_attestation_fields(base) == []
+
+    advisory_without_calibration = {
+        **base,
+        "provider_mode": "advisory",
+    }
+    assert runtime._missing_provider_attestation_fields(
+        advisory_without_calibration) == ["calibration_bundle_hash"]
+
+    advisory_with_calibration = {
+        **advisory_without_calibration,
+        "calibration_bundle_hash": "d" * 64,
+    }
+    assert runtime._missing_provider_attestation_fields(
+        advisory_with_calibration) == []
+
+
+def test_host_codex_environment_uses_authenticated_cli_without_api_credentials():
+    scripts = str(ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    host = _load("cohort_agent_codex_host_environment",
+                 ROOT / "scripts" / "cohort" / "agent_codex_host.py")
+    env = host._codex_environment({
+        "PATH": "/usr/bin",
+        "HOME": "/home/test-user",
+        "CODEX_HOME": "/home/test-user/.codex",
+        "OPENAI_API_KEY": "api-key-sentinel",
+        "OPENROUTER_API_KEY": "router-key-sentinel",
+        "HUGGINGFACE_HUB_TOKEN": "hf-token-sentinel",
+        "DIGITALPSYCHOLOGY_ROOT": "/tmp/dp",
+        "COGNITIVE_STATEWORK_ROOT": "/tmp/csw",
+        "PYTHONPATH": "/tmp/project",
+        "LANG": "C.UTF-8",
+    })
+    assert env == {
+        "PATH": "/usr/bin",
+        "HOME": "/home/test-user",
+        "CODEX_HOME": "/home/test-user/.codex",
+        "LANG": "C.UTF-8",
+    }
+    isolated = host._codex_environment(
+        {"HOME": "/home/test-user", "PATH": "/usr/bin"},
+        writable_home=Path("/tmp/codex-canary-home"),
+    )
+    assert isolated["HOME"] == "/tmp/codex-canary-home"
+    assert isolated["CODEX_HOME"] == "/home/test-user/.codex"
+
+
+def test_host_codex_diagnostics_bound_protocol_shape_and_redact_secrets():
+    scripts = str(ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    host = _load("cohort_agent_codex_host_diagnostics",
+                 ROOT / "scripts" / "cohort" / "agent_codex_host.py")
+    stdout = "\n".join([
+        json.dumps({"type": "thread.started"}),
+        json.dumps({"type": "item.completed",
+                    "item": {"type": "agent_message", "text": "synthetic answer"}}),
+        json.dumps({"type": "turn.completed"}),
+    ])
+    diagnostics = host._codex_jsonl_diagnostics(stdout)
+    assert diagnostics["jsonl_event_types"] == [
+        "thread.started", "item.completed", "turn.completed"]
+    assert diagnostics["jsonl_item_types"] == ["agent_message"]
+    assert diagnostics["final_agent_message_present"] is True
+    assert "synthetic answer" not in json.dumps(diagnostics)
+    excerpt = host._bounded_stderr_excerpt(
+        "auth failed Bearer abc123 api_key=secret-value")
+    assert "abc123" not in excerpt
+    assert "secret-value" not in excerpt
+
+
 @pytest.mark.parametrize("name", ["cfw_csw", "cfw_csw_dp", "cfw_csw_dp_laya"])
 def test_workflow_configurations_supply_the_statework_root(name):
     cohort = _cohort()

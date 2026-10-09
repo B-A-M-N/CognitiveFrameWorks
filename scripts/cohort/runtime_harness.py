@@ -48,6 +48,23 @@ REQUIRED_PROVIDER_ATTESTATION = (
 )
 
 
+def _missing_provider_attestation_fields(attestation: Any) -> list[str]:
+    """Require provider identity for shadow; require calibration for advisory."""
+    if not isinstance(attestation, Mapping):
+        return list(REQUIRED_PROVIDER_ATTESTATION)
+    missing = [field for field in REQUIRED_PROVIDER_ATTESTATION
+               if field != "calibration_bundle_hash" and not attestation.get(field)]
+    calibration_hash = attestation.get("calibration_bundle_hash")
+    if (not isinstance(calibration_hash, str)
+            or (calibration_hash and (
+                len(calibration_hash) != 64
+                or any(char not in "0123456789abcdef" for char in calibration_hash)))
+            or (attestation.get("provider_mode") == "advisory"
+                and not calibration_hash)):
+        missing.append("calibration_bundle_hash")
+    return missing
+
+
 class HarnessError(RuntimeError):
     """The requested configuration could not be constructed as specified."""
 
@@ -377,11 +394,13 @@ class CohortTrialHost:
             command=sys.executable, args=("-m", "lib.transport.control_mcp"),
             cwd=DP, env=dp_env)
         runtime_host = RuntimeHost(service=None, model_visible_tools=AGENT_FILE_TOOLS)
+        objective = str(self.task.get("instruction")
+                        or "Complete the benchmark task.")
         goals = GoalSetSnapshot(revision=0, items=(GoalItemSnapshot(
-            criterion_id=self.criterion_id),))
+            criterion_id=self.criterion_id, claim=objective[:512]),))
         self.bridge = await runtime_host.open_control_bridge(
             identity=self.dp_identity,
-            objective=str(self.task.get("instruction") or "Complete the benchmark task."),
+            objective=objective,
             objective_criteria=(self.criterion_id,), initial_goal_set=goals,
             cfw=self.cfw_port, csw=csw, client=self.client,
             csw_authority_identity=csw.authority_identity(),
@@ -400,9 +419,7 @@ class CohortTrialHost:
         if self.configuration.endswith("laya"):
             from lib.telemetry.behavioral_trace import provider_status
             attestation = self.dp_record.get("semantic_provider_attestation")
-            required = REQUIRED_PROVIDER_ATTESTATION
-            missing = [key for key in required
-                       if not isinstance(attestation, Mapping) or not attestation.get(key)]
+            missing = _missing_provider_attestation_fields(attestation)
             if (missing or attestation.get("backend_id") != "digitalpsychology-laya-native"
                     or attestation.get("provider_mode") not in {"shadow", "advisory"}
                     or provider_status(attestation, factory_configured=True)
@@ -604,8 +621,7 @@ def build_session(*, configuration: str, task_id: str, state_root: Path,
             system_one_service = SystemOneService.from_environment()
             factory = create_system_one_frame_factory(system_one_service)
             attestation = provider_attestation(factory)
-            missing = [field for field in REQUIRED_PROVIDER_ATTESTATION
-                       if attestation is None or not attestation.get(field)]
+            missing = _missing_provider_attestation_fields(attestation)
             if (missing
                     or attestation.get("backend_id") != "digitalpsychology-laya-native"
                     or attestation.get("provider_mode") not in {"shadow", "advisory"}):

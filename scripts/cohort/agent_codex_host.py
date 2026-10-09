@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -56,16 +57,27 @@ def _codex_command(workspace: Path, schema_path: Path) -> list[str]:
     ]
 
 
-def _codex_environment() -> dict[str, str]:
-    env = dict(os.environ)
+def _codex_environment(source: Mapping[str, str] | None = None, *,
+                      writable_home: Path | None = None) -> dict[str, str]:
+    env = dict(os.environ if source is None else source)
     env.pop("CODEX_SANDBOX", None)
+    if writable_home is not None:
+        original_home = env.get("HOME")
+        if not env.get("CODEX_HOME") and original_home:
+            env["CODEX_HOME"] = str(Path(original_home) / ".codex")
+        env["HOME"] = str(writable_home)
     # Runtime and provider configuration is passed to the private DP child by
     # MCPControlClient. Keep it out of the model subprocess environment. In
     # particular, the OpenRouter credential used to launch FreeCodex must not
     # become visible to a model-issued shell command in this separate process.
+    # API/provider credentials are also removed so this path uses the normal
+    # authenticated Codex session rather than silently switching to API billing.
     for key in tuple(env):
-        if (key.startswith("DIGITALPSYCHOLOGY_")
-                or key == "OPENROUTER_API_KEY"):
+        upper_key = key.upper()
+        if (key.startswith(("DIGITALPSYCHOLOGY_", "COGNITIVE_"))
+                or key in {"PYTHONPATH", "PYTHONHOME"}
+                or upper_key.endswith(("_API_KEY", "_TOKEN", "_SECRET",
+                                       "_PASSWORD", "_ACCESS_KEY", "_PRIVATE_KEY"))):
             env.pop(key, None)
     return env
 
@@ -84,6 +96,54 @@ def _previous_turns(previous: Any) -> list[dict[str, Any]]:
         if result:
             results.append(result)
     return results
+
+
+def _codex_jsonl_diagnostics(stdout: str) -> dict[str, Any]:
+    """Summarize protocol shape without retaining prompt or response contents."""
+    event_types: list[str] = []
+    item_types: list[str] = []
+    malformed_lines = 0
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            malformed_lines += 1
+            continue
+        if not isinstance(event, Mapping):
+            malformed_lines += 1
+            continue
+        event_type = event.get("type")
+        if isinstance(event_type, str) and len(event_types) < 32:
+            event_types.append(event_type[:64])
+        item = event.get("item")
+        item_type = item.get("type") if isinstance(item, Mapping) else None
+        if isinstance(item_type, str) and len(item_types) < 32:
+            item_types.append(item_type[:64])
+    return {
+        "jsonl_event_types": event_types,
+        "jsonl_item_types": item_types,
+        "malformed_jsonl_lines": malformed_lines,
+        "final_agent_message_present": "agent_message" in item_types,
+    }
+
+
+def _bounded_stderr_excerpt(stderr: str) -> str:
+    text = " ".join(stderr.split())
+    text = re.sub(r"(?i)(bearer\s+)[^\s,;]+", r"\1[redacted]", text)
+    text = re.sub(
+        r"(?i)((?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s,;]+",
+        r"\1[redacted]", text)
+    return text[-512:]
+
+
+class CodexAdapterFailure(RuntimeError):
+    """Bounded Codex process/protocol failure with non-content diagnostics."""
+
+    def __init__(self, message: str, diagnostics: Mapping[str, Any]) -> None:
+        super().__init__(message)
+        self.codex_diagnostics = dict(diagnostics)
 
 
 def _prompt(task: Mapping[str, Any], context: str, previous: list[dict[str, Any]]) -> str:
@@ -169,14 +229,33 @@ async def _process_turn(host: CohortTrialHost, request: Mapping[str, Any],
     if workspace != host.workspace:
         raise HarnessError("benchmark workspace changed within a treatment trial")
     previous = _previous_turns(request.get("previous"))
+    codex_home = schema_path.parent / f"codex-home-turn-{turn}"
+    codex_home.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
         _codex_command(workspace, schema_path), input=_prompt(task, context, previous),
         capture_output=True, text=True, timeout=CODEX_TIMEOUT_SECONDS,
-        cwd=workspace, env=_codex_environment(), check=False)
+        cwd=workspace, env=_codex_environment(writable_home=codex_home), check=False)
+    codex_diagnostics = _codex_jsonl_diagnostics(proc.stdout)
     if proc.returncode != 0:
-        raise RuntimeError(f"codex exec exited with status {proc.returncode}")
-    message, usage = parse_codex_jsonl(proc.stdout)
-    proposed = _load_reply(message)
+        codex_diagnostics.update({
+            "process_exit_code": proc.returncode,
+            "stderr_excerpt": _bounded_stderr_excerpt(proc.stderr),
+        })
+        raise CodexAdapterFailure(
+            f"codex exec exited with status {proc.returncode}", codex_diagnostics)
+    try:
+        message, usage = parse_codex_jsonl(proc.stdout)
+    except Exception as exc:
+        codex_diagnostics["parse_error_class"] = type(exc).__name__
+        raise CodexAdapterFailure(
+            "Codex returned an invalid JSONL response", codex_diagnostics) from exc
+    try:
+        proposed = _load_reply(message)
+    except Exception as exc:
+        codex_diagnostics["output_parse_error_class"] = type(exc).__name__
+        raise CodexAdapterFailure(
+            "Codex final message did not match the host action schema",
+            codex_diagnostics) from exc
 
     action_results: list[dict[str, Any]] = []
     turn_receipts: list[dict[str, Any]] = []
@@ -215,6 +294,11 @@ async def _process_turn(host: CohortTrialHost, request: Mapping[str, Any],
         "complete": complete,
         "usage": usage,
         "usage_source": "codex.exec.turn.completed",
+        "codex_diagnostics": {
+            **codex_diagnostics,
+            "action_proposal_count": len(proposed["actions"]),
+            "host_action_receipt_count": len(turn_receipts),
+        },
         "treatment_exposure": exposure,
         "action_results": action_results,
         "host_action_receipts": turn_receipts,
@@ -266,6 +350,9 @@ async def _serve(*, configuration: str, raw_state: Path,
                        "treatment_exposure": {"configuration": configuration,
                                                "host_generated": False},
                        "host_action_receipts": []}
+            diagnostics = getattr(exc, "codex_diagnostics", None)
+            if isinstance(diagnostics, Mapping):
+                payload["codex_diagnostics"] = dict(diagnostics)
         print(json.dumps(payload, sort_keys=True), flush=True)
     if host is not None:
         await host.close()
