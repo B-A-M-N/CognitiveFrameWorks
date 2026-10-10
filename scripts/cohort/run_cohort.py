@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production qualification cohort across the five supported compositions.
+"""Production qualification cohort across deterministic, shadow, and advisory arms.
 
 Runs the real-agent benchmark under each configuration, assigns host-side
 blinded cohort labels, keeps holdout trials separate from treatment results,
@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import stat
 import statistics
@@ -60,22 +61,91 @@ CONFIGURATIONS = (
     ("cfw_csw", ("CFW", "CSW")),
     ("cfw_csw_dp", ("CFW", "CSW", "DP")),
     ("cfw_csw_dp_laya", ("CFW", "CSW", "DP", "Laya")),
+    ("cfw_csw_dp_laya_advisory", ("CFW", "CSW", "DP", "Laya")),
 )
+ADVISORY_CONFIGURATION = "cfw_csw_dp_laya_advisory"
+LAYA_CONFIGURATIONS = frozenset({"cfw_csw_dp_laya", ADVISORY_CONFIGURATION})
+DEFAULT_CONFIGURATIONS = tuple(
+    name for name, _subsystems in CONFIGURATIONS
+    if name != ADVISORY_CONFIGURATION)
 EXPECTED_FRAMEWORKS = {
     "baseline": (),
     "cfw": ("CFW",),
     "cfw_csw": ("CFW", "CSW"),
     "cfw_csw_dp": ("CFW", "CSW", "DP"),
     "cfw_csw_dp_laya": ("CFW", "CSW", "DP", "Laya"),
+    ADVISORY_CONFIGURATION: ("CFW", "CSW", "DP", "Laya"),
 }
 
 
 def _require_durable_laya_evidence(
         configurations: list[str], evidence_dir: Path | None) -> None:
-    if "cfw_csw_dp_laya" in configurations and evidence_dir is None:
+    if LAYA_CONFIGURATIONS.intersection(configurations) and evidence_dir is None:
         raise ValueError(
             "Laya cohort runs require --evidence-dir so opportunity records and "
             "independently evaluated trials survive process cleanup")
+
+
+def _require_advisory_inputs(configurations: list[str],
+                             environment: dict[str, str] | None = None) -> None:
+    """Validate a qualified calibration and explicit experiment before canaries."""
+    if ADVISORY_CONFIGURATION not in configurations:
+        return
+    env = dict(os.environ if environment is None else environment)
+    calibration_path = Path(env.get(
+        "DIGITALPSYCHOLOGY_SYSTEM_ONE_CALIBRATION_PATH", "")).expanduser()
+    experiment_id = env.get(
+        "DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID", "").strip()
+    if not calibration_path.is_file():
+        raise ValueError(
+            "the Laya advisory arm requires an existing DP calibration bundle")
+    if not experiment_id or len(experiment_id) > 128:
+        raise ValueError(
+            "the Laya advisory arm requires an explicit bounded experiment ID")
+
+    validation_code = "\n".join((
+        "import json, os, sys",
+        "from pathlib import Path",
+        "from lib.protocol_artifact import (PROTOCOL_HASH, PROTOCOL_VERSION, "
+        "QUESTION_REGISTRY, QUESTION_REGISTRY_HASH, STATE_PROJECTION_SCHEMA_HASH)",
+        "from lib.system_one_backends import LayaProvider",
+        "from lib.system_one_calibration import CalibrationBundle",
+        "bundle = CalibrationBundle.from_mapping(json.loads(",
+        "    Path(sys.argv[1]).read_text(encoding='utf-8'))) ",
+        "capability = LayaProvider.from_environment().capability()",
+        "raw = os.environ.get('DIGITALPSYCHOLOGY_SYSTEM_ONE_QUESTIONS')",
+        "enabled = (set(filter(None, raw.split(','))) if raw is not None "
+        "else set(QUESTION_REGISTRY))",
+        "qualified = any(record.question_id in enabled and "
+        "record.status == 'active' and record.drift_status == 'clear' and "
+        "record.qualification_passed and "
+        "record.backend_id == capability.backend_id and "
+        "record.model_id == capability.model_id and "
+        "record.model_revision == capability.model_revision and "
+        "record.model_content_hash == capability.model_content_hash and "
+        "record.provider_protocol_hash == capability.provider_protocol_hash and "
+        "record.protocol_version == PROTOCOL_VERSION and "
+        "record.protocol_hash == PROTOCOL_HASH and "
+        "record.question_registry_hash == QUESTION_REGISTRY_HASH and "
+        "record.state_projection_schema_hash == STATE_PROJECTION_SCHEMA_HASH and "
+        "'code_behavior' in record.deliverable_kinds and "
+        "bool(set(record.work_modes) & "
+        "{'delivery', 'diagnose', 'review', 'research'}) "
+        "for record in bundle.records.values())",
+        "print('qualified' if qualified else 'ineligible')",
+    ))
+    try:
+        checked = subprocess.run(
+            [sys.executable, "-c", validation_code, str(calibration_path)],
+            cwd=cohort_runtime.DP, env=env, check=False,
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(
+            "could not validate the Laya advisory calibration bundle") from exc
+    if checked.returncode != 0 or checked.stdout.strip() != "qualified":
+        raise ValueError(
+            "the Laya advisory arm requires at least one active, qualified, "
+            "drift-cleared DP calibration for an enabled question family")
 
 
 def _create_evidence_run(base: Path) -> Path:
@@ -155,15 +225,20 @@ def _agent_env(configuration: str, *, state_root: Path) -> dict[str, str]:
     env["COGNITIVE_FRAMEWORKS_ROOT"] = str(ROOT)
     env["DIGITALPSYCHOLOGY_ROOT"] = str(cohort_runtime.DP)
     (state_root / "xdg").mkdir(parents=True, exist_ok=True)
-    if configuration in {"cfw_csw", "cfw_csw_dp", "cfw_csw_dp_laya"}:
+    if configuration in cohort_runtime.CSW_CONFIGURATIONS:
         env["COGNITIVE_STATEWORK_ROOT"] = str(cohort_runtime.COW)
     else:
         env.pop("COGNITIVE_STATEWORK_ROOT", None)
-    # Ordinary cells always run without System-1. A Laya cell inherits only
-    # explicit provider settings; the private MCP server must attest them.
-    if configuration != "cfw_csw_dp_laya":
+    if configuration in LAYA_CONFIGURATIONS:
+        env["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] = "laya-native"
+        env["DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE"] = (
+            "advisory" if configuration == ADVISORY_CONFIGURATION else "shadow")
+        if configuration != ADVISORY_CONFIGURATION:
+            env.pop("DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID", None)
+    else:
         env["DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE"] = "disabled"
         env["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] = "disabled"
+        env.pop("DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID", None)
     return env
 
 
@@ -192,13 +267,229 @@ def _aggregate(results: list[dict]) -> dict:
     return out
 
 
+def _numeric(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+        return float(value)
+    return None
+
+
+def _final_behavioral_record(row: dict[str, Any]) -> dict[str, Any] | None:
+    snapshots = row.get("runtime_behavioral_telemetry")
+    if not isinstance(snapshots, list):
+        return None
+    return next((record for record in reversed(snapshots)
+                 if isinstance(record, dict)), None)
+
+
+def _delta_summary(values: list[tuple[float, float]]) -> dict[str, Any]:
+    deltas = [treatment - control for control, treatment in values]
+    return {
+        "paired_n": len(deltas),
+        "treatment_minus_control_mean": (
+            round(statistics.fmean(deltas), 6) if deltas else None),
+        "positive_deltas": sum(delta > 0 for delta in deltas),
+        "negative_deltas": sum(delta < 0 for delta in deltas),
+        "zero_deltas": sum(delta == 0 for delta in deltas),
+    }
+
+
+def _paired_split_summary(pairs: list[tuple[dict[str, Any], dict[str, Any]]]
+                          ) -> dict[str, Any]:
+    scalar_metrics = (
+        "completion_success", "evidence_quality", "regression_rate",
+        "latency_seconds", "model_calls", "token_overhead", "host_action_count",
+        "semantic_query_opportunities", "semantic_queries", "semantic_results",
+        "semantic_uses", "semantic_failures", "semantic_influenced_decisions",
+        "semantic_deterministic_selection_flips",
+    )
+    metrics: dict[str, Any] = {}
+    for name in scalar_metrics:
+        values = []
+        for control, treatment in pairs:
+            if name.startswith("semantic_"):
+                control_record = _final_behavioral_record(control)
+                treatment_record = _final_behavioral_record(treatment)
+                left = _numeric(control_record.get(name) if control_record else None)
+                right = _numeric(treatment_record.get(name) if treatment_record else None)
+            else:
+                left = _numeric(control.get(name))
+                right = _numeric(treatment.get(name))
+            if left is not None and right is not None:
+                values.append((left, right))
+        metrics[name] = _delta_summary(values)
+
+    completion_pairs = [
+        (control.get("completion_success"), treatment.get("completion_success"))
+        for control, treatment in pairs
+        if isinstance(control.get("completion_success"), bool)
+        and isinstance(treatment.get("completion_success"), bool)
+    ]
+    task_metrics: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    for control, treatment in pairs:
+        family = str(control.get("task_family") or "unknown")
+        left = control.get("metrics")
+        right = treatment.get("metrics")
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            continue
+        for name in sorted(set(left) & set(right)):
+            first, second = _numeric(left[name]), _numeric(right[name])
+            if first is not None and second is not None:
+                task_metrics.setdefault(family, {}).setdefault(name, []).append(
+                    (first, second))
+
+    return {
+        "matched_trials": len(pairs),
+        "completion_outcomes": {
+            "treatment_only_success": sum(
+                not control and treatment for control, treatment in completion_pairs),
+            "control_only_success": sum(
+                control and not treatment for control, treatment in completion_pairs),
+            "both_success": sum(
+                control and treatment for control, treatment in completion_pairs),
+            "neither_success": sum(
+                not control and not treatment for control, treatment in completion_pairs),
+        },
+        "scalar_metrics": metrics,
+        "task_evaluator_metrics": {
+            family: {name: _delta_summary(values)
+                     for name, values in sorted(by_name.items())}
+            for family, by_name in sorted(task_metrics.items())
+        },
+    }
+
+
+def _behavioral_telemetry_summary(raw_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize each trial's final cumulative DP record once."""
+    fields = (
+        "semantic_query_opportunities", "semantic_queries", "semantic_results",
+        "semantic_uses", "semantic_failures", "semantic_influenced_decisions",
+        "semantic_candidate_changes", "semantic_deterministic_selection_flips",
+        "semantic_query_planner_evaluations", "semantic_query_planner_skips",
+        "semantic_decision_value_heuristic_observations",
+        "semantic_observation_value_estimates",
+        "semantic_influenced_interventions", "semantic_effective_interventions",
+        "semantic_ineffective_interventions", "semantic_unresolved_interventions",
+    )
+    totals = {name: 0 for name in fields}
+    skip_reasons: dict[str, int] = {}
+    records_seen = 0
+    trials_with_record = 0
+    latency_weighted_sum = 0.0
+    latency_observations = 0
+
+    for row in raw_results:
+        snapshots = row.get("runtime_behavioral_telemetry")
+        if not isinstance(snapshots, list) or not snapshots:
+            continue
+        records_seen += sum(isinstance(record, dict) for record in snapshots)
+        final = _final_behavioral_record(row)
+        if final is None:
+            continue
+        trials_with_record += 1
+        for name in fields:
+            value = final.get(name)
+            if type(value) is int and value >= 0:
+                totals[name] += value
+        reasons = final.get("semantic_query_planner_skip_reasons")
+        if isinstance(reasons, dict):
+            for reason, count in reasons.items():
+                if (isinstance(reason, str) and len(reason) <= 128
+                        and type(count) is int and count >= 0):
+                    skip_reasons[reason] = skip_reasons.get(reason, 0) + count
+        causal = final.get("semantic_causal_metrics")
+        if isinstance(causal, dict):
+            count = causal.get("query_latency_observations")
+            mean = causal.get("query_latency_mean_ms")
+            if (type(count) is int and count > 0
+                    and isinstance(mean, (int, float)) and not isinstance(mean, bool)
+                    and math.isfinite(float(mean)) and mean >= 0):
+                latency_observations += count
+                latency_weighted_sum += count * float(mean)
+
+    return {
+        "trial_record_basis": "last cumulative DP record per task",
+        "trials_with_behavioral_record": trials_with_record,
+        "record_snapshots_retained": records_seen,
+        "totals": totals,
+        "planner_skip_reasons": dict(sorted(skip_reasons.items())),
+        "query_latency_observations": latency_observations,
+        "query_latency_mean_ms": (
+            round(latency_weighted_sum / latency_observations, 3)
+            if latency_observations else None),
+        "observation_value_estimates_are_predictions_not_measured_utility": True,
+    }
+
+
+def _paired_comparison(control_name: str, treatment_name: str,
+                       cohorts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def index_rows(name: str) -> dict[str, dict[str, Any]]:
+        indexed: dict[str, dict[str, Any]] = {}
+        for row in cohorts[name].get("_raw_results", []):
+            task_id = row.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                if task_id in indexed:
+                    raise ValueError(f"duplicate matched task ID in {name}")
+                indexed[task_id] = row
+        return indexed
+
+    control_rows, treatment_rows = index_rows(control_name), index_rows(treatment_name)
+    common_ids = set(control_rows) & set(treatment_rows)
+    pairs = []
+    mismatched = 0
+    for task_id in sorted(common_ids):
+        control, treatment = control_rows[task_id], treatment_rows[task_id]
+        if (control.get("task_family") != treatment.get("task_family")
+                or control.get("holdout") != treatment.get("holdout")):
+            mismatched += 1
+            continue
+        pairs.append((control, treatment))
+
+    splits = {
+        "all": pairs,
+        "assigned": [(left, right) for left, right in pairs
+                     if left.get("holdout") is False],
+        "holdout": [(left, right) for left, right in pairs
+                    if left.get("holdout") is True],
+    }
+    return {
+        "control": control_name,
+        "treatment": treatment_name,
+        "match_key": "task_id",
+        "matched_trials": len(pairs),
+        "unmatched_control_trials": len(set(control_rows) - common_ids),
+        "unmatched_treatment_trials": len(set(treatment_rows) - common_ids),
+        "mismatched_pairs_excluded": mismatched,
+        "interpretation": (
+            "Signed deltas are treatment minus control; descriptive only, "
+            "with no confidence interval."),
+        "by_split": {name: _paired_split_summary(rows)
+                     for name, rows in splits.items()},
+    }
+
+
+def _paired_effects(wanted: list[str],
+                    cohorts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    comparisons = (
+        ("cfw_csw_dp", "cfw_csw_dp_laya"),
+        ("cfw_csw_dp_laya", ADVISORY_CONFIGURATION),
+        ("cfw_csw_dp", ADVISORY_CONFIGURATION),
+    )
+    return [
+        _paired_comparison(control, treatment, cohorts)
+        for control, treatment in comparisons
+        if control in wanted and treatment in wanted
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-command", default=(
         f"{sys.executable} {ROOT / 'scripts' / 'cohort' / 'agent_codex_host.py'}"))
     parser.add_argument("--contract", type=Path,
                         default=ROOT / "contracts" / "real-agent-benchmark-v1.json")
-    parser.add_argument("--configurations", default=",".join(c for c, _ in CONFIGURATIONS))
+    parser.add_argument("--configurations", default=",".join(DEFAULT_CONFIGURATIONS))
     parser.add_argument("--trials-per-cell", type=int, default=3)
     parser.add_argument("--holdout-fraction", type=float, default=0.34)
     parser.add_argument("--report-out", type=Path)
@@ -221,6 +512,7 @@ def main() -> int:
     unknown = [c for c in wanted if c not in dict(CONFIGURATIONS)]
     if unknown:
         raise SystemExit(f"unknown configuration(s): {unknown}")
+    _require_advisory_inputs(wanted)
     _require_durable_laya_evidence(wanted, args.evidence_dir)
 
     evidence_root = (_create_evidence_run(args.evidence_dir)
@@ -369,7 +661,7 @@ def main() -> int:
         receipt_verified = bool(raw_results) and all(
             any(_authoritative_receipt(item) for item in row.get(
                 "host_action_receipts", [])) for row in raw_results)
-        if configuration == "cfw_csw_dp_laya":
+        if configuration in LAYA_CONFIGURATIONS:
             for row in raw_results:
                 per_trial = row.get("runtime_behavioral_telemetry") or []
                 if not per_trial:
@@ -390,6 +682,7 @@ def main() -> int:
             "runtime_behavioral_telemetry": [
                 telemetry for row in raw_results
                 for telemetry in row.get("runtime_behavioral_telemetry", [])],
+            "behavioral_telemetry_summary": _behavioral_telemetry_summary(raw_results),
             "treatment_exposure_verified": exposure_verified,
             "host_action_receipts_verified": receipt_verified,
             "validation_blockers": cell_blockers,
@@ -442,6 +735,7 @@ def main() -> int:
         "qualification_eligible": False,
         "qualification_blockers": qualification_blockers,
         "cohorts": cohorts,
+        "paired_effects": _paired_effects(wanted, cohorts),
     }
     for entry in out["cohorts"].values():
         entry.pop("_raw_results", None)

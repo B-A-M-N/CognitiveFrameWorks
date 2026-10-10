@@ -238,6 +238,7 @@ def execute_benchmark(contract: Mapping[str, Any], command: list[str],
                     "holdout": task["holdout"],
                     "evaluator_version": task["evaluator_version"],
                     "latency_seconds": round(time.monotonic() - started, 3),
+                    "model_calls": usage["model_calls"],
                     "token_overhead": usage["external_tokens"],
                     **evaluation,
                 }

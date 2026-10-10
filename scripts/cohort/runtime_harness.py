@@ -12,13 +12,15 @@ turns, inject context from that instance, and execute model-proposed actions at
 the host boundary. Merely calling :func:`build_session` is a construction
 probe, not trial exposure.
 
-The five configurations are:
+The system configurations are:
 
 - ``baseline``       : no CFW, CSW, DP, or Laya runtime.
 - ``cfw``            : CFW only.
 - ``cfw_csw``        : CFW plus one shared CSW WorkflowAuthority.
 - ``cfw_csw_dp``     : the above plus DP through its private stdio MCP.
 - ``cfw_csw_dp_laya``: the above plus a live Laya attestation from that MCP.
+- ``cfw_csw_dp_laya_advisory``: the same live Laya treatment in explicitly
+  qualified advisory mode under a bounded experiment.
 
 Nothing here is stubbed. If a configuration cannot be constructed, that is
 reported rather than silently downgraded to a weaker cell.
@@ -112,7 +114,11 @@ def _real_csw_authority(state_root: Path):
         })
 
 
-DP_CONFIGURATIONS = frozenset({"cfw_csw_dp", "cfw_csw_dp_laya"})
+LAYA_CONFIGURATIONS = frozenset({
+    "cfw_csw_dp_laya", "cfw_csw_dp_laya_advisory",
+})
+ADVISORY_CONFIGURATION = "cfw_csw_dp_laya_advisory"
+DP_CONFIGURATIONS = frozenset({"cfw_csw_dp", *LAYA_CONFIGURATIONS})
 CSW_CONFIGURATIONS = frozenset({"cfw_csw", *DP_CONFIGURATIONS})
 FRAMEWORK_CONFIGURATIONS = frozenset({"cfw", *CSW_CONFIGURATIONS})
 AGENT_FILE_TOOLS = ("read", "inspect", "write")
@@ -406,7 +412,7 @@ class CohortTrialHost:
             csw_authority_identity=csw.authority_identity(),
             host_policy_context={"deliverable_kind": "code",
                                  "semantic_provider_status": (
-                                     "enabled" if self.configuration.endswith("laya")
+                                     "enabled" if self.configuration in LAYA_CONFIGURATIONS
                                      else "disabled")})
         status = await self.bridge.lifecycle_hooks.open()
         if status.get("status") != "ready" or self.bridge._needs_reconciliation:
@@ -416,19 +422,21 @@ class CohortTrialHost:
         # loaded the attested provider.
         self.dp_record = await self.client.behavioral_trial_record(
             self.dp_identity.scope, trial_id=self.task_id)
-        if self.configuration.endswith("laya"):
+        if self.configuration in LAYA_CONFIGURATIONS:
             from lib.telemetry.behavioral_trace import provider_status
             attestation = self.dp_record.get("semantic_provider_attestation")
             missing = _missing_provider_attestation_fields(attestation)
+            expected_mode = (
+                "advisory" if self.configuration == ADVISORY_CONFIGURATION else "shadow")
             if (missing or attestation.get("backend_id") != "digitalpsychology-laya-native"
-                    or attestation.get("provider_mode") not in {"shadow", "advisory"}
+                    or attestation.get("provider_mode") != expected_mode
                     or provider_status(attestation, factory_configured=True)
-                    != attestation.get("provider_mode")):
+                    != expected_mode):
                 raise InvalidTreatment(
                     "private DP MCP lacks a live pinned Laya capability handshake")
         self.exposure = {
             "frameworks": ["CFW", "CSW", "DP"] +
-                          (["Laya"] if self.configuration.endswith("laya") else []),
+                          (["Laya"] if self.configuration in LAYA_CONFIGURATIONS else []),
             "private_dp_mcp": True,
             "dp_control_session_id": self.dp_identity.scope,
             "dp_behavior_revision": int(status.get("behavior_revision", -1)),
@@ -604,11 +612,10 @@ def build_session(*, configuration: str, task_id: str, state_root: Path,
     the CSW authority when configured. Raising is preferred to silently
     substituting a weaker composition.
     """
-    if configuration not in {"baseline", "cfw", "cfw_csw", "cfw_csw_dp",
-                             "cfw_csw_dp_laya"}:
+    if configuration not in {"baseline", "cfw", "cfw_csw", *DP_CONFIGURATIONS}:
         raise HarnessError(f"unknown cohort configuration {configuration!r}")
     system_one_service = None
-    if configuration == "cfw_csw_dp_laya":
+    if configuration in LAYA_CONFIGURATIONS:
         # Caller-supplied metadata is not evidence that a provider is live.
         # Build the provider from its pinned environment and derive attestation
         # from the capability handshake DP will actually use.
@@ -622,9 +629,11 @@ def build_session(*, configuration: str, task_id: str, state_root: Path,
             factory = create_system_one_frame_factory(system_one_service)
             attestation = provider_attestation(factory)
             missing = _missing_provider_attestation_fields(attestation)
+            expected_mode = (
+                "advisory" if configuration == ADVISORY_CONFIGURATION else "shadow")
             if (missing
                     or attestation.get("backend_id") != "digitalpsychology-laya-native"
-                    or attestation.get("provider_mode") not in {"shadow", "advisory"}):
+                    or attestation.get("provider_mode") != expected_mode):
                 raise ValueError(
                     "the live provider handshake is incomplete or is not a pinned Laya treatment")
         except Exception as exc:
@@ -665,7 +674,7 @@ def build_session(*, configuration: str, task_id: str, state_root: Path,
         "runtime": runtime,
     }
 
-    if configuration in {"cfw_csw_dp", "cfw_csw_dp_laya"}:
+    if configuration in DP_CONFIGURATIONS:
         handles["dp_session"] = _bind_dp(
             cfw_session, task_id=task_id, state_root=state_root,
             statework_id=statework_id, authority=authority,

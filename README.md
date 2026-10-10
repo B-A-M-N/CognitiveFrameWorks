@@ -704,11 +704,33 @@ must include host receipts and independent outcome attribution before it can
 pass.
 
 The production cohort runner retains durable evidence only when given an
-explicit `--evidence-dir`. Selecting `cfw_csw_dp_laya` requires this option:
+explicit `--evidence-dir`. Either Laya arm requires this option. The default
+matrix includes the deterministic DP and Laya shadow arms; it never enables
+advisory mode implicitly:
 
 ```sh
-python scripts/cohort/run_cohort.py --evidence-dir /path/to/private/cohort-evidence
+python scripts/cohort/run_cohort.py \
+  --configurations cfw_csw_dp,cfw_csw_dp_laya \
+  --evidence-dir /path/to/private/cohort-evidence
 ```
+
+The `cfw_csw_dp_laya_advisory` arm is explicit opt-in. Before running any
+canaries, the runner validates the supplied DP calibration bundle and requires
+at least one active, qualified, drift-cleared record for an enabled question
+family, plus a bounded experiment ID:
+
+```sh
+DIGITALPSYCHOLOGY_SYSTEM_ONE_CALIBRATION_PATH=/path/to/qualified-bundle.json \
+DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID=bounded-study-1 \
+python scripts/cohort/run_cohort.py \
+  --configurations cfw_csw_dp,cfw_csw_dp_laya,cfw_csw_dp_laya_advisory \
+  --evidence-dir /path/to/private/cohort-evidence
+```
+
+The shadow arm explicitly forces `DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE=shadow`,
+even if the invoking shell has advisory mode configured. The advisory arm
+forces `advisory`; DP still requires the calibration to match the loaded model,
+protocol, and query context before any selection can change.
 
 Before starting the runner, set `DIGITALPSYCHOLOGY_ROOT` to the DP checkout
 being evaluated when it differs from the sibling `DigitalPsychology` path.
@@ -725,6 +747,16 @@ directory that is not writable by other users. Run directories are mode `0700`,
 and JSON evidence files are mode `0600`. The manifest remains `running` if the
 process stops before completion, while already fsynced trial records and runtime
 state remain available for review.
+
+When matched configurations are run together, the report pairs trials by their
+stable `task_id` and reports treatment-minus-control outcome and evaluator-metric
+deltas separately for assigned and holdout trials. These are descriptive paired
+results with no confidence interval; they do not qualify Laya by themselves.
+Paired rows also include model-call, token, host-action, and semantic-use counts.
+The cohort summary uses the final cumulative DP record once per task and reports
+query opportunities, attempts, results, planner skips by reason, selection
+flips, and measured query latency. Observation-value estimates are kept labeled
+as predictions; they are not measured utility.
 
 The final release gate requires every qualification marked
 `mandatory_for_release` to have a `pass` result; `not_run`, `fail`, and

@@ -2,9 +2,9 @@
 
 These run without a model. They pin the harness guarantees the
 `real_agent_behavioral_cohort` gate depends on: blinded host-side cohort
-labels, holdout separation, host-evaluator-only evidence, and the five
-configurations. They do not assert behavioral outcomes, which only a real
-agent run can establish.
+labels, holdout separation, host-evaluator-only evidence, and explicit
+deterministic, shadow, and advisory arms. They do not assert behavioral
+outcomes, which only a real agent run can establish.
 """
 from __future__ import annotations
 
@@ -32,10 +32,17 @@ def _cohort():
     return _load("cohort_runner", ROOT / "scripts" / "cohort" / "run_cohort.py")
 
 
-def test_harness_defines_the_five_required_configurations():
+def test_harness_defines_deterministic_shadow_and_explicit_advisory_arms():
     cohort = _cohort()
     names = [name for name, _ in cohort.CONFIGURATIONS]
-    assert names == ["baseline", "cfw", "cfw_csw", "cfw_csw_dp", "cfw_csw_dp_laya"]
+    assert names == [
+        "baseline", "cfw", "cfw_csw", "cfw_csw_dp", "cfw_csw_dp_laya",
+        "cfw_csw_dp_laya_advisory",
+    ]
+    assert "cfw_csw_dp_laya_advisory" not in cohort.DEFAULT_CONFIGURATIONS
+    assert cohort.LAYA_CONFIGURATIONS == {
+        "cfw_csw_dp_laya", "cfw_csw_dp_laya_advisory",
+    }
     # Baseline is the no-framework control; every later cell is a strict
     # superset of the one before it, so each step adds and never removes.
     baseline_name, baseline_subsystems = cohort.CONFIGURATIONS[0]
@@ -53,8 +60,79 @@ def test_laya_cohort_requires_explicit_durable_evidence_directory(tmp_path: Path
     cohort = _cohort()
     with pytest.raises(ValueError, match="require --evidence-dir"):
         cohort._require_durable_laya_evidence(["cfw_csw_dp_laya"], None)
+    with pytest.raises(ValueError, match="require --evidence-dir"):
+        cohort._require_durable_laya_evidence(
+            ["cfw_csw_dp_laya_advisory"], None)
     cohort._require_durable_laya_evidence(["cfw_csw_dp"], None)
     cohort._require_durable_laya_evidence(["cfw_csw_dp_laya"], tmp_path)
+
+
+def test_advisory_arm_requires_qualified_bundle_and_experiment_id(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cohort = _cohort()
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text("{}", encoding="utf-8")
+    environment = {
+        "DIGITALPSYCHOLOGY_SYSTEM_ONE_CALIBRATION_PATH": str(calibration),
+        "DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID": "bounded-study-1",
+    }
+
+    def qualified_bundle(args, **kwargs):
+        assert kwargs["cwd"] == cohort.cohort_runtime.DP
+        assert kwargs["env"] == environment
+        compile(args[2], "advisory-calibration-preflight", "exec")
+        return type("Completed", (), {
+            "returncode": 0, "stdout": "qualified\n", "stderr": "",
+        })()
+
+    monkeypatch.setattr(cohort.subprocess, "run", qualified_bundle)
+    cohort._require_advisory_inputs(
+        ["cfw_csw_dp_laya_advisory"], environment)
+
+    def ineligible_bundle(_args, **_kwargs):
+        return type("Completed", (), {
+            "returncode": 0, "stdout": "ineligible\n", "stderr": "",
+        })()
+
+    monkeypatch.setattr(cohort.subprocess, "run", ineligible_bundle)
+    with pytest.raises(ValueError, match="active, qualified"):
+        cohort._require_advisory_inputs(
+            ["cfw_csw_dp_laya_advisory"], environment)
+
+
+def test_advisory_calibration_gate_runs_before_canaries_or_agent_calls(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cohort = _cohort()
+    monkeypatch.delenv("DIGITALPSYCHOLOGY_SYSTEM_ONE_CALIBRATION_PATH", raising=False)
+    monkeypatch.delenv(
+        "DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID", raising=False)
+    monkeypatch.setattr(cohort.cohort_preflight, "run_canaries", lambda **_kwargs: (
+        pytest.fail("advisory calibration must be checked before model canaries")))
+    monkeypatch.setattr(sys, "argv", [
+        "run_cohort.py", "--configurations", "cfw_csw_dp_laya_advisory",
+        "--trials-per-cell", "1", "--evidence-dir", str(tmp_path / "evidence"),
+    ])
+    with pytest.raises(ValueError, match="existing DP calibration bundle"):
+        cohort.main()
+
+
+def test_shadow_arm_overrides_inherited_advisory_environment(
+        monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    cohort = _cohort()
+    monkeypatch.setenv("DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE", "advisory")
+    monkeypatch.setenv("DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER", "laya-native")
+    monkeypatch.setenv(
+        "DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID", "study-1")
+    shadow = cohort._agent_env(
+        "cfw_csw_dp_laya", state_root=tmp_path / "shadow")
+    advisory = cohort._agent_env(
+        "cfw_csw_dp_laya_advisory", state_root=tmp_path / "advisory")
+    assert shadow["DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE"] == "shadow"
+    assert shadow["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] == "laya-native"
+    assert "DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID" not in shadow
+    assert advisory["DIGITALPSYCHOLOGY_SYSTEM_ONE_MODE"] == "advisory"
+    assert advisory["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] == "laya-native"
+    assert advisory["DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID"] == "study-1"
 
 
 def test_laya_evidence_gate_runs_before_preflight_or_model_call(
@@ -155,6 +233,11 @@ def test_cohort_main_persists_manifest_and_cell_artifacts_without_model_calls(
     assert (run_root / "baseline" / "benchmark-report.json").is_file()
     assert (run_root / "report.json").is_file()
     assert (run_root / "cohort-labels.json").is_file()
+    report = json.loads((run_root / "report.json").read_text())
+    assert report["paired_effects"] == []
+    summary = report["cohorts"]["baseline"]["behavioral_telemetry_summary"]
+    assert summary["trials_with_behavioral_record"] == 0
+    assert summary["record_snapshots_retained"] == 0
 
 
 def test_failed_preflight_persists_bounded_failure_before_reraising(
@@ -187,13 +270,15 @@ def test_failed_preflight_persists_bounded_failure_before_reraising(
     assert "private response text" not in (run_root / "preflight.json").read_text()
 
 
-def test_baseline_does_not_configure_the_optional_provider():
+def test_baseline_does_not_configure_the_optional_provider(
+        monkeypatch: pytest.MonkeyPatch):
     cohort = _cohort()
+    monkeypatch.setenv("DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID", "study-1")
     with tempfile.TemporaryDirectory() as raw:
         env = cohort._agent_env("baseline", state_root=Path(raw))
     assert "COGNITIVE_STATEWORK_ROOT" not in env
-    # DP's provider is never enabled implicitly, in any configuration.
     assert env["DIGITALPSYCHOLOGY_SEMANTIC_PROVIDER"] == "disabled"
+    assert "DIGITALPSYCHOLOGY_SYSTEM_ONE_ACTUATION_EXPERIMENT_ID" not in env
 
 
 def test_shadow_laya_attestation_does_not_require_calibration_but_advisory_does():
@@ -285,7 +370,10 @@ def test_host_codex_diagnostics_bound_protocol_shape_and_redact_secrets():
     assert "secret-value" not in excerpt
 
 
-@pytest.mark.parametrize("name", ["cfw_csw", "cfw_csw_dp", "cfw_csw_dp_laya"])
+@pytest.mark.parametrize("name", [
+    "cfw_csw", "cfw_csw_dp", "cfw_csw_dp_laya",
+    "cfw_csw_dp_laya_advisory",
+])
 def test_workflow_configurations_supply_the_statework_root(name):
     cohort = _cohort()
     with tempfile.TemporaryDirectory() as raw:
@@ -308,6 +396,113 @@ def test_aggregation_separates_holdout_from_treatment():
     assert per_family["holdout_completion_rate"] == 0.0
     assert per_family["trials"] == 2
     assert per_family["regressions"] == 1
+
+
+def test_paired_effects_match_trial_ids_and_separate_holdout():
+    cohort = _cohort()
+    control = [
+        {"task_id": "task-1", "task_family": "code_repair", "holdout": False,
+         "completion_success": False, "evidence_quality": 0.0,
+         "regression_rate": 1.0, "latency_seconds": 10.0,
+         "model_calls": 3, "token_overhead": 100, "host_action_count": 4,
+         "runtime_behavioral_telemetry": [{
+             "semantic_query_opportunities": 2, "semantic_queries": 1,
+             "semantic_results": 1, "semantic_uses": 0,
+             "semantic_failures": 0, "semantic_influenced_decisions": 0,
+             "semantic_deterministic_selection_flips": 0,
+         }],
+         "metrics": {"hidden_test_pass_rate": 0.0}},
+        {"task_id": "task-2", "task_family": "code_repair", "holdout": True,
+         "completion_success": True, "evidence_quality": 1.0,
+         "regression_rate": 0.0, "latency_seconds": 8.0,
+         "model_calls": 2, "token_overhead": 80, "host_action_count": 3,
+         "runtime_behavioral_telemetry": [{
+             "semantic_query_opportunities": 0, "semantic_queries": 0,
+             "semantic_results": 0, "semantic_uses": 0,
+             "semantic_failures": 0, "semantic_influenced_decisions": 0,
+             "semantic_deterministic_selection_flips": 0,
+         }],
+         "metrics": {"hidden_test_pass_rate": 1.0}},
+    ]
+    treatment = [
+        {"task_id": "task-1", "task_family": "code_repair", "holdout": False,
+         "completion_success": True, "evidence_quality": 1.0,
+         "regression_rate": 0.0, "latency_seconds": 12.0,
+         "model_calls": 4, "token_overhead": 120, "host_action_count": 3,
+         "runtime_behavioral_telemetry": [{
+             "semantic_query_opportunities": 2, "semantic_queries": 1,
+             "semantic_results": 1, "semantic_uses": 0,
+             "semantic_failures": 0, "semantic_influenced_decisions": 0,
+             "semantic_deterministic_selection_flips": 0,
+         }],
+         "metrics": {"hidden_test_pass_rate": 1.0}},
+        {"task_id": "task-2", "task_family": "code_repair", "holdout": True,
+         "completion_success": True, "evidence_quality": 1.0,
+         "regression_rate": 0.0, "latency_seconds": 7.0,
+         "model_calls": 1, "token_overhead": 70, "host_action_count": 3,
+         "runtime_behavioral_telemetry": [{
+             "semantic_query_opportunities": 0, "semantic_queries": 0,
+             "semantic_results": 0, "semantic_uses": 0,
+             "semantic_failures": 0, "semantic_influenced_decisions": 0,
+             "semantic_deterministic_selection_flips": 0,
+         }],
+         "metrics": {"hidden_test_pass_rate": 1.0}},
+        {"task_id": "unmatched", "task_family": "code_repair", "holdout": False,
+         "completion_success": True},
+    ]
+    comparison = cohort._paired_comparison(
+        "control", "treatment", {
+            "control": {"_raw_results": control},
+            "treatment": {"_raw_results": treatment},
+        })
+
+    assert comparison["matched_trials"] == 2
+    assert comparison["unmatched_treatment_trials"] == 1
+    assigned = comparison["by_split"]["assigned"]
+    assert assigned["completion_outcomes"]["treatment_only_success"] == 1
+    assert assigned["scalar_metrics"]["completion_success"][
+        "treatment_minus_control_mean"] == 1.0
+    assert assigned["scalar_metrics"]["host_action_count"][
+        "treatment_minus_control_mean"] == -1.0
+    assert assigned["scalar_metrics"]["model_calls"][
+        "treatment_minus_control_mean"] == 1.0
+    assert assigned["scalar_metrics"]["semantic_queries"][
+        "treatment_minus_control_mean"] == 0.0
+    holdout = comparison["by_split"]["holdout"]
+    assert holdout["matched_trials"] == 1
+    assert holdout["task_evaluator_metrics"]["code_repair"][
+        "hidden_test_pass_rate"]["treatment_minus_control_mean"] == 0.0
+
+
+def test_behavioral_telemetry_uses_final_cumulative_record_once_per_trial():
+    cohort = _cohort()
+    summary = cohort._behavioral_telemetry_summary([{
+        "task_id": "task-1",
+        "runtime_behavioral_telemetry": [
+            {"semantic_query_opportunities": 1,
+             "semantic_queries": 1,
+             "semantic_query_planner_skips": 0},
+            {"semantic_query_opportunities": 3,
+             "semantic_queries": 2,
+             "semantic_query_planner_skips": 1,
+             "semantic_query_planner_skip_reasons": {"budget_exhausted": 1},
+             "semantic_observation_value_estimates": 0,
+             "semantic_causal_metrics": {
+                 "query_latency_observations": 2,
+                 "query_latency_mean_ms": 12.5,
+             }},
+        ],
+    }, {"task_id": "task-2", "runtime_behavioral_telemetry": []}])
+
+    assert summary["trials_with_behavioral_record"] == 1
+    assert summary["record_snapshots_retained"] == 2
+    assert summary["totals"]["semantic_query_opportunities"] == 3
+    assert summary["totals"]["semantic_queries"] == 2
+    assert summary["totals"]["semantic_query_planner_skips"] == 1
+    assert summary["planner_skip_reasons"] == {"budget_exhausted": 1}
+    assert summary["query_latency_observations"] == 2
+    assert summary["query_latency_mean_ms"] == 12.5
+    assert summary["observation_value_estimates_are_predictions_not_measured_utility"]
 
 
 def test_report_is_never_marked_qualification_eligible_without_evidence():
