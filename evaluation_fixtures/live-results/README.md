@@ -24,33 +24,33 @@ dirty trees.
 
 | Artifact | Setup and result | Tree state | Claim |
 | --- | --- | --- | --- |
-| [`codex-app-server-workspace-routing-preflight-20261007T065902Z.json`](codex-app-server-workspace-routing-preflight-20261007T065902Z.json) | User-approved ChatGPT-mode preflight with `gpt-6-luna`; App Server classified workspace routing unavailable. No host, triad, thread, or turn started. | Dirty development trees; preflight-only result records no repository mutation. | Infrastructure diagnostic only. It has no model or efficacy observation. |
+| [`codex-app-server-workspace-routing-preflight-20261007T065902Z.json`](codex-app-server-workspace-routing-preflight-20261007T065902Z.json) | User-approved ChatGPT-mode preflight with `external-model-a`; App Server classified workspace routing unavailable. No host, triad, thread, or turn started. | Dirty development trees; preflight-only result records no repository mutation. | Infrastructure diagnostic only. It has no model or efficacy observation. |
 | [`behavior-headroom-equivalent-retry-20261007T061225Z.json`](behavior-headroom-equivalent-retry-20261007T061225Z.json) | One matched baseline/CFW pair scheduled after the adapter began forwarding explicit write-change observations. Both arms stopped at ChatGPT App Server workspace-routing preflight; zero host starts and zero model calls. | Dirty development trees; report records state fingerprints. | Infrastructure-only attempt. It does not evaluate the adapter change or model behavior. |
 | [`behavior-headroom-equivalent-retry-20261007T060625Z.json`](behavior-headroom-equivalent-retry-20261007T060625Z.json) | One matched baseline/CFW pair; both scored 4/4 externally. CFW made 50 model tool calls and 14 validator calls; its completion gate blocked 10 calls after the write result's `changed` observation was omitted at the adapter boundary. | Dirty development trees; report records state fingerprints. | Diagnostic trace that exposed missing artifact-change evidence. The CFW completion denial is not a task-score failure. |
 | [`behavior-headroom-equivalent-retry-20261007T055248Z.json`](behavior-headroom-equivalent-retry-20261007T055248Z.json) | Ten matched baseline/CFW pairs; both conditions scored 10/10 at 4/4. The prompt did not produce any same-approach or equivalent retries. | Dirty development trees; report records state fingerprints. | Stimulus check only; it did not exercise retry behavior and is not retry-efficacy evidence. |
-| [`coding-eval-20261007T053122Z.json`](coding-eval-20261007T053122Z.json) | 10 matched baseline/CFW pairs; ChatGPT auth with `gpt-6-luna`; three-turn budget. Both conditions 10/10 valid at 4/4. Each CFW trial records 14–35 action entries, 28–70 gate receipts, and one completion attempt. | Dirty CFW/CSW/DP trees; exact HEADs, working-tree hashes, untracked manifests, and source fingerprints are in the report. | Trace-instrumented CFW reliability rerun. It does not reproduce the historical 7/10 result because the model/auth cohort differs; all 10 CFW trials passed, so this sample has no failure cohort to diagnose. |
-| [`coding-eval-20261006T051814Z.json`](coding-eval-20261006T051814Z.json) | 50 trials; 10 each for baseline, CFW, CFW+CSW, triad, and triad-multipath; `deepseek-v4-flash`. Baseline 10/10 at 4/4; CFW 7/10 at 4/4 (mean 2.8); each combined condition 10/10 at 4/4. | Dirty CFW/CSW/DP trees at `89e76d0`, `a80471f`, `f85df96`. | The three CFW-only misses scored 0/4 and ended with `require_goal_reanchor`; item counters show respectively 16 reads/7 validator calls/6 writes, 55/32/1, and 18/5/4. The normalized artifact records zero gate receipts while a legacy invariant says `cfw_action_gate_observed=true`, so gate execution is not substantiated by receipts. Per-call arguments, results, and action traces were not retained; repeated reads/validation are only a hypothesis, not a causal finding. A same-cohort trace-instrumented rerun is still needed. |
-| [`post-reuse-baseline-cfw-20261006.json`](post-reuse-baseline-cfw-20261006.json) | 20 trials across baseline and CFW; `deepseek-v4-flash`. Baseline 10/10 at 4/4; CFW 7/10 full score (mean 3.1). The three incomplete CFW runs used all three turns (scores 0/4, 3/4, 0/4), with six `convergence.total_action_limit` reason observations and no goal reanchors. Validator evidence reuse was observed 40/40 times. | Dirty trees; report records working-tree and untracked-manifest hashes. | Noncanonical reliability check. Its action-level cause remains unresolved. Current source routes total-action exhaustion through a bounded changed-hypothesis redirect for direct actions while preserving verification and concrete blocker-removal actions. A later trace-instrumented run completed 10/10 with eight CFW gate blocks, but used a different model/auth cohort and cannot establish that this change caused the improvement. |
-| [`coding-eval-20261006T044239Z.json`](coding-eval-20261006T044239Z.json) | 50 trials across the same five conditions; `deepseek-v4-flash`. CFW reached 9/10 at 4/4; the other four conditions reached 10/10. | Dirty CFW/CSW/DP trees. | Earlier integration and non-regression sample. |
-| [`coding-eval-20261005T204440Z.json`](coding-eval-20261005T204440Z.json) | 40 trials across baseline, CFW, CFW+CSW, and triad; `gpt-6-luna`. Baseline 10/10, CFW 6/10, combined conditions 10/10 at 4/4. | Dirty development trees. | Historical score and completion-policy evidence; not a clean comparison. |
-| [`noncanonical-triad-20261006.json`](noncanonical-triad-20261006.json) | One triad run; `deepseek-v4-flash`; 4/4 criteria, 24 model tool calls, 5 validator calls, 48 CFW gate receipts, and 65 committed DP control ticks. | Dirty development tree. Codex CLI `0.160.0`; full catalog SHA-256 `3310a31f8ec0d7a985fb07cf6043bc060dc5c438c4b23058e14b9b1144b86714`. | One successful integration sample only. Not an efficacy estimate or canonical result. |
-| [`noncanonical-behavior-headroom-multitask-pair-20261006.json`](noncanonical-behavior-headroom-multitask-pair-20261006.json) | One matched baseline/CFW pair on `multitask-starvation`; `deepseek-v4-flash`; both 4/4. Baseline: 15 actions, 93.3% criterion attribution, 10 rotations. CFW: 15 actions, 73.3% attribution, 7 rotations. Both touched all four criteria; local-yield and global-blocked instrumentation was unavailable. | Dirty development tree; one pair only. | Pilot confirms the scenario and metrics execute. It does not estimate efficacy or support a causal comparison. |
+| [`coding-eval-20261007T053122Z.json`](coding-eval-20261007T053122Z.json) | 10 matched baseline/CFW pairs; ChatGPT auth with `external-model-a`; three-turn budget. Both conditions 10/10 valid at 4/4. Each CFW trial records 14–35 action entries, 28–70 gate receipts, and one completion attempt. | Dirty CFW/CSW/DP trees; exact HEADs, working-tree hashes, untracked manifests, and source fingerprints are in the report. | Trace-instrumented CFW reliability rerun. It does not reproduce the historical 7/10 result because the model/auth cohort differs; all 10 CFW trials passed, so this sample has no failure cohort to diagnose. |
+| [`coding-eval-20261006T051814Z.json`](coding-eval-20261006T051814Z.json) | 50 trials; 10 each for baseline, CFW, CFW+CSW, triad, and triad-multipath; `external-model-b`. Baseline 10/10 at 4/4; CFW 7/10 at 4/4 (mean 2.8); each combined condition 10/10 at 4/4. | Dirty CFW/CSW/DP trees at `89e76d0`, `a80471f`, `f85df96`. | The three CFW-only misses scored 0/4 and ended with `require_goal_reanchor`; item counters show respectively 16 reads/7 validator calls/6 writes, 55/32/1, and 18/5/4. The normalized artifact records zero gate receipts while a legacy invariant says `cfw_action_gate_observed=true`, so gate execution is not substantiated by receipts. Per-call arguments, results, and action traces were not retained; repeated reads/validation are only a hypothesis, not a causal finding. A same-cohort trace-instrumented rerun is still needed. |
+| [`post-reuse-baseline-cfw-20261006.json`](post-reuse-baseline-cfw-20261006.json) | 20 trials across baseline and CFW; `external-model-b`. Baseline 10/10 at 4/4; CFW 7/10 full score (mean 3.1). The three incomplete CFW runs used all three turns (scores 0/4, 3/4, 0/4), with six `convergence.total_action_limit` reason observations and no goal reanchors. Validator evidence reuse was observed 40/40 times. | Dirty trees; report records working-tree and untracked-manifest hashes. | Noncanonical reliability check. Its action-level cause remains unresolved. Current source routes total-action exhaustion through a bounded changed-hypothesis redirect for direct actions while preserving verification and concrete blocker-removal actions. A later trace-instrumented run completed 10/10 with eight CFW gate blocks, but used a different model/auth cohort and cannot establish that this change caused the improvement. |
+| [`coding-eval-20261006T044239Z.json`](coding-eval-20261006T044239Z.json) | 50 trials across the same five conditions; `external-model-b`. CFW reached 9/10 at 4/4; the other four conditions reached 10/10. | Dirty CFW/CSW/DP trees. | Earlier integration and non-regression sample. |
+| [`coding-eval-20261005T204440Z.json`](coding-eval-20261005T204440Z.json) | 40 trials across baseline, CFW, CFW+CSW, and triad; `external-model-a`. Baseline 10/10, CFW 6/10, combined conditions 10/10 at 4/4. | Dirty development trees. | Historical score and completion-policy evidence; not a clean comparison. |
+| [`noncanonical-triad-20261006.json`](noncanonical-triad-20261006.json) | One triad run; `external-model-b`; 4/4 criteria, 24 model tool calls, 5 validator calls, 48 CFW gate receipts, and 65 committed DP control ticks. | Dirty development tree. Codex CLI `0.160.0`; full catalog SHA-256 `3310a31f8ec0d7a985fb07cf6043bc060dc5c438c4b23058e14b9b1144b86714`. | One successful integration sample only. Not an efficacy estimate or canonical result. |
+| [`noncanonical-behavior-headroom-multitask-pair-20261006.json`](noncanonical-behavior-headroom-multitask-pair-20261006.json) | One matched baseline/CFW pair on `multitask-starvation`; `external-model-b`; both 4/4. Baseline: 15 actions, 93.3% criterion attribution, 10 rotations. CFW: 15 actions, 73.3% attribution, 7 rotations. Both touched all four criteria; local-yield and global-blocked instrumentation was unavailable. | Dirty development tree; one pair only. | Pilot confirms the scenario and metrics execute. It does not estimate efficacy or support a causal comparison. |
 
-The one-trial endpoint probe first tried `gpt-6-luna`; FreeInference returned
+The one-trial endpoint probe first tried `external-model-a`; the provider returned
 `model not found` before any host tool call. The successful sample used the
-model ID already present in the earlier live matrices, `deepseek-v4-flash`.
+model ID already present in the earlier live matrices, `external-model-b`.
 
 ## Noncanonical auth diagnostics
 
-[`noncanonical-aegiskeys-freeinference-auth-20261006.json`](noncanonical-aegiskeys-freeinference-auth-20261006.json)
+[`noncanonical-aegiskeys-provider-auth-20261006.json`](noncanonical-aegiskeys-provider-auth-20261006.json)
 records a regular-Codex triad attempt whose credential was injected from
-AegisKeys through its child-only `with` command. FreeInference returned `401`
+AegisKeys through its child-only `with` command. the provider returned `401`
 for the stored OpenAI-compatible key before assistant output or host-tool
 calls. The attempt is unscored and does not count toward any trial result. The
-other FreeInference profiles in AegisKeys target its Anthropic route and were
+other the provider profiles in AegisKeys target its Anthropic route and were
 not substituted for the Codex Responses endpoint.
 
-The later [`noncanonical-aegiskeys-freeinference-triad-final-20261006.json`](noncanonical-aegiskeys-freeinference-triad-final-20261006.json)
+The later [`noncanonical-aegiskeys-provider-triad-final-20261006.json`](noncanonical-aegiskeys-provider-triad-final-20261006.json)
 attempt confirms that CFW, shared CSW authority, and the private DP bridge
 initialized successfully, with zero model-visible DP tools and two committed
 DP control ticks. The first Responses request still returned `401`; no
@@ -116,11 +116,11 @@ reports.
 
 ```bash
 python integration_tests/run_codex_app_server_coding_evaluation.py \
-  --trials 10 --max-turns 3 --model deepseek-v4-flash \
+  --trials 10 --max-turns 3 --model external-model-b \
   --conditions baseline,cfw,cfw-csw,triad,triad-multipath \
-  --auth-mode external-provider --provider-id freeinference \
-  --provider-base-url https://freeinference.org/v1 \
-  --provider-env-key FREEINFERENCE_API_KEY --provider-wire-api responses
+  --auth-mode external-provider --provider-id external-provider \
+  --provider-base-url https://provider.example/v1 \
+  --provider-env-key PROVIDER_API_KEY --provider-wire-api responses
 ```
 
 The evaluator records score distributions, turn/tool/write counts, completion
@@ -135,5 +135,8 @@ include their validator-to-criterion mappings and pass/reuse status. For a
 pressure case, add
 `--behavioral-scenario <scenario-id>`; the runner permits one-pair pilots and
 requires ten pairs before treating a sample as a benchmark. Trace comparisons
-are descriptive associations, not causal estimates. Internal Codex inference
+are descriptive associations, not causal estimates.
+> **Note:** the model and provider identifiers above are generalized.
+> Substitute a real model id and provider before running this command.
+ Internal Codex inference
 and planning boundaries remain outside host interception.
