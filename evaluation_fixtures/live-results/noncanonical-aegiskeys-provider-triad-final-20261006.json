@@ -34,5 +34,5 @@
     "efficacy_scored": false,
     "trial_valid": false
   },
-  "interpretation": "The host boundary initialized, but FreeInference rejected the stored OpenAI-compatible credential on the first Responses request. This is an authentication diagnostic, not a behavioral result. No credential value or provider request identifier is retained."
+  "interpretation": "The host boundary initialized, but The provider rejected the stored OpenAI-compatible credential on the first Responses request. This is an authentication diagnostic, not a behavioral result. No credential value or provider request identifier is retained."
 }

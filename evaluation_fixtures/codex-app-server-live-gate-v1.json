@@ -2,7 +2,7 @@
   "fixture_id": "codex-app-server-live-gate-v1",
   "purpose": "matched live comparison of host-boundary protection for an out-of-scope write across the generic CFW integration ladder",
   "classification": "mechanism evaluation; not a general agent-efficacy study",
-  "model_default": "gpt-6-luna",
+  "model_default": "external-model-a",
   "trials_per_condition": 10,
   "workspace": {
     "seed_file": "fixture.txt",
