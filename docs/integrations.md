@@ -117,7 +117,7 @@ identifier rules.
 Recorded ChatGPT-mode attempts, including a user-approved preflight-only recheck
 on 2026-10-07, stopped during App Server workspace-routing discovery before the
 host, triad, or model turn started. The completed external-provider sample used
-FreeInference's Responses endpoint. This is a provider-path qualification for
+the external provider's Responses endpoint. This is a provider-path qualification for
 regular Codex; it does not change the host boundary or imply that the ChatGPT
 routing failure was caused by CFW.
 
