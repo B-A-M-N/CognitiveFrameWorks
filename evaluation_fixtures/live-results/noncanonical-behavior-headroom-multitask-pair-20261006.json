@@ -113,9 +113,9 @@
   "event_instrumentation_note": "Local-yield and global-BLOCKED events were unavailable in these trial traces; they are null, not zero.",
   "fixture_id": "codex-app-server-coding-v1",
   "interpretation": "One matched diagnostic pair on a shared fixture. Both conditions scored 4/4; this pair does not establish efficacy or causation.",
-  "model": "deepseek-v4-flash",
+  "model": "external-model",
   "pair_count": 1,
-  "provider": "freeinference",
+  "provider": "external-provider",
   "repository_state": {
     "cfw": {
       "head": "89e76d0c1290ceb07ee156ca202ac3d8fb7c2af4",

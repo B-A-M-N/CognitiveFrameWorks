@@ -3,7 +3,7 @@
   "trial_id": "generic-codex-multipath-approved-20261005",
   "product_boundary": "generic Codex App Server host adapter in CognitiveFrameWorks",
   "condition": "triad-multipath",
-  "model": "gpt-6-luna",
+  "model": "external-model",
   "runtime_mode": "combined_enforcing",
   "turn_status": "completed",
   "turns_completed": 3,

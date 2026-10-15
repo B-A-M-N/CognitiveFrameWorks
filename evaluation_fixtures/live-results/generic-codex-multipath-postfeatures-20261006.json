@@ -60,7 +60,7 @@
   },
   "integration_valid": false,
   "internal_inference_boundaries_intercepted": false,
-  "model": "gpt-6-luna",
+  "model": "external-model",
   "model_tool_call_count": 0,
   "model_validator_call_count": 0,
   "native_action_features_disabled": [

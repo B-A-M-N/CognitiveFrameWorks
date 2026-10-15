@@ -2,7 +2,7 @@
   "schema": "generic-codex-app-server-boundary/v2",
   "trial_id": "generic-codex-multipath-boundary-host-policy-20261005",
   "condition": "triad-multipath",
-  "model": "gpt-6-luna",
+  "model": "external-model",
   "boundary_probe_valid": true,
   "integration_valid": false,
   "internal_inference_boundaries_intercepted": false,

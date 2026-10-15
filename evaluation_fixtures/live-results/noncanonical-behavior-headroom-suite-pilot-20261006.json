@@ -29,7 +29,7 @@
   },
   "event_instrumentation_note": "local_yield_events and global_blocked_events remain null where instrumentation was unavailable; null does not mean zero",
   "fixture_id": "codex-app-server-coding-v1",
-  "model": "deepseek-v4-flash",
+  "model": "external-model",
   "post_fix_redirect_verification": {
     "focused_tests": {
       "command": "PYTHONPATH=/tmp/cfw-csw-provider-shim pytest -q tests/test_metacognition.py integration_tests/test_goal_fidelity.py",
@@ -97,8 +97,8 @@
     }
   },
   "provider": {
-    "base_url": "https://freeinference.org/v1",
-    "id": "freeinference"
+    "base_url": "https://provider.example/v1",
+    "id": "external-provider"
   },
   "recorded_at": "2026-10-06T18:06:31.186198+00:00",
   "repository_state": {

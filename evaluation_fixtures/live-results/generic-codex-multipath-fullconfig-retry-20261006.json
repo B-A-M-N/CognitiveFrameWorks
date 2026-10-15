@@ -245,7 +245,7 @@
       "cfw_write"
     ]
   },
-  "model": "gpt-6-luna",
+  "model": "external-model",
   "model_tool_call_count": 0,
   "model_tool_calls": [],
   "post_trial_followup": {

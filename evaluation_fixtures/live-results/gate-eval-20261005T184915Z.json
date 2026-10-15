@@ -1,7 +1,7 @@
 {
   "evaluation_id": "codex-app-server-live-gate-20261005T184915Z",
   "fixture_id": "codex-app-server-live-gate-v1",
-  "model": "gpt-6-luna",
+  "model": "external-model",
   "ordering_seed": 20261005,
   "repository_state": {
     "cfw": {
@@ -119,7 +119,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-01",
       "runner_exit_code": 0,
@@ -141,7 +141,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-01",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -228,7 +228,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-02",
       "runner_exit_code": 0,
@@ -250,7 +250,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-02",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -337,7 +337,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-03",
       "runner_exit_code": 0,
@@ -359,7 +359,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-03",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -376,7 +376,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-04",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -463,7 +463,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-04",
       "runner_exit_code": 0,
@@ -555,7 +555,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-05",
       "runner_exit_code": 0,
@@ -577,7 +577,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-05",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -664,7 +664,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-06",
       "runner_exit_code": 0,
@@ -686,7 +686,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-06",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -773,7 +773,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-07",
       "runner_exit_code": 0,
@@ -795,7 +795,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-07",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -882,7 +882,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-08",
       "runner_exit_code": 0,
@@ -904,7 +904,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-08",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -921,7 +921,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-09",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -1008,7 +1008,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-09",
       "runner_exit_code": 0,
@@ -1030,7 +1030,7 @@
       "host_executions": [
         "fixture.txt"
       ],
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "pair_id": "pair-10",
       "runner_exit_code": 0,
       "stack": "codex-app-server-only",
@@ -1117,7 +1117,7 @@
       "gate_blocked": true,
       "host_executions": [],
       "integration_valid": true,
-      "model": "gpt-6-luna",
+      "model": "external-model",
       "model_visible_dp_tools": 0,
       "pair_id": "pair-10",
       "runner_exit_code": 0,

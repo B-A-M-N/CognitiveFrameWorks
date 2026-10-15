@@ -48,7 +48,7 @@
   "dp_observation_record_count": 1,
   "integration_valid": false,
   "internal_inference_boundaries_intercepted": false,
-  "model": "gpt-6-luna",
+  "model": "external-model",
   "native_action_features_disabled": [
     "apps",
     "browser_use",
