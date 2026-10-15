@@ -25,7 +25,7 @@
       "working_tree_dirty": true
     }
   },
-  "result_file": "/home/bamn/CognitiveFrameWorks/evaluation_fixtures/live-results/coding-eval-20261005T204440Z.json",
+  "result_file": "evaluation_fixtures/live-results/coding-eval-20261005T204440Z.json",
   "scope": "Matched multi-defect coding task with host-owned criterion validators; single fixture and model, not broad coding-agent efficacy evidence.",
   "source_sha256": {
     "app_server_adapter": "33e555c54fb1b953f0b2e880df8b402f465ea58fd9e899e6e7ba8cf64929717e",

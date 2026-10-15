@@ -159,7 +159,7 @@
       "working_tree_dirty": true
     }
   },
-  "result_file": "/home/bamn/CognitiveFrameWorks/evaluation_fixtures/live-results/behavior-headroom-equivalent-retry-20261007T060625Z.json",
+  "result_file": "evaluation_fixtures/live-results/behavior-headroom-equivalent-retry-20261007T060625Z.json",
   "scope": "Matched multi-defect coding task with host-owned criterion validators; scenario runs add bounded behavioral pressure, but reuse one fixture and do not establish broad coding-agent efficacy.",
   "source_sha256": {
     "app_server_adapter": "7b173b08ceb883fe2ddd7776a4e5afb761e3b255bb9a607b52762c3101e1c5d4",
