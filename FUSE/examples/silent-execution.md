@@ -6,7 +6,7 @@ Calibrates: single obvious tool call, nothing surfaces, clean execution.
 
 ## Input
 
-> Read the database config in `/home/bamn/CognitiveFrameWorks/config/db.yml`.
+> Read the database config in `config/db.yml`.
 
 ---
 
