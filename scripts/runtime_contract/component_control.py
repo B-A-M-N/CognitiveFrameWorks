@@ -26,27 +26,31 @@ if any(component.get("model_visibility") not in _MODEL_VISIBILITY
        for component in _COMPONENT_CATALOG.values()):
     raise RuntimeError("CFW component catalog has missing or invalid model visibility")
 COMPONENT_IDS = frozenset(str(item).lower() for item in _COMPONENT_CATALOG)
-COMPONENT_MODEL_VISIBILITY = {
+COMPONENT_MODEL_VISIBILITY = MappingProxyType({
     str(component_id).lower(): str(component["model_visibility"])
     for component_id, component in _COMPONENT_CATALOG.items()
-}
-COMPONENT_ALLOWED_MODES = {
+})
+COMPONENT_ALLOWED_MODES = MappingProxyType({
     str(component_id).lower(): frozenset(component.get("allowed_modes") or ())
     for component_id, component in _COMPONENT_CATALOG.items()
-}
-COMPONENT_BASELINE_MODES = {
+})
+COMPONENT_BASELINE_MODES = MappingProxyType({
     str(component_id).lower(): str(component["baseline_mode"])
     for component_id, component in _COMPONENT_CATALOG.items()
-}
-COMPONENT_DYNAMIC_CONTROL = {
+})
+COMPONENT_DYNAMIC_CONTROL = MappingProxyType({
     str(component_id).lower(): component.get("dynamic_control") is True
     for component_id, component in _COMPONENT_CATALOG.items()
-}
-COMPONENT_HARD_FLOOR_MODES = {
+})
+COMPONENT_HARD_FLOOR_MODES = MappingProxyType({
     str(component_id).lower(): str(component["hard_floor_mode"])
     for component_id, component in _COMPONENT_CATALOG.items()
     if component.get("hard_floor") is True
-}
+})
+COMPONENT_SCOPE = MappingProxyType({
+    str(component_id).lower(): tuple(component.get("scope") or ())
+    for component_id, component in _COMPONENT_CATALOG.items()
+})
 SUPPORTED_BEHAVIOR_COMPONENTS = frozenset({
     "owl", "anchor", "fuse", "ward", "flow", "sispis", "dox",
 })
@@ -54,6 +58,160 @@ COMPONENT_MODES = frozenset(mode for modes in COMPONENT_ALLOWED_MODES.values()
                             for mode in modes)
 _DP_SCOPE = re.compile(r"^dp-runtime-[0-9a-f]{64}$")
 MAX_EXTERNAL_TARGET_LEASES = 16 * 12
+
+#: Canonical DP-actuated control values. Single source of truth for the
+#: target-lease control plane; the lease/projection validators below and the
+#: capability snapshot all read this table, never a host-supplied copy.
+_CONTROL_VALUE_CHOICES = MappingProxyType({
+    "verification_intensity": frozenset({"passive", "normal", "high", "strict"}),
+    "exploration_budget": frozenset({"disabled", "low", "normal", "bounded"}),
+    "retry_policy": frozenset({"normal", "materially_different_only", "no_retry"}),
+    "context_strategy": frozenset({"standard", "compact", "criterion_focused"}),
+    "response_strategy": frozenset({"direct", "detailed", "structured"}),
+})
+_COGNITIVE_MODES = frozenset({
+    "RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
+    "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED",
+})
+MAX_FOCUS_CRITERIA = 8
+
+#: Version of the host-facing capability snapshot contract.
+CAPABILITY_SNAPSHOT_VERSION = "1.0.0"
+#: Hard bound on the JSON-encoded capability snapshot (bytes). The host may
+#: cache the snapshot; this bound keeps that cache entry small and fixed.
+MAX_CAPABILITY_SNAPSHOT_BYTES = 16_384
+
+
+def validate_component_preference(preference: Mapping[str, Any]) -> dict[str, str]:
+    """Fail-closed gate for a DP/Jev-supplied component-mode preference.
+
+    The preference is checked against the canonical component catalog and a
+    normalized *copy* is returned. The catalog itself is never written to:
+    unknown components, unsupported modes, hard-floor deviations, and
+    non-dynamic-control deviations are all rejected, so a forged preference
+    cannot change a pinned control or disable a WARD-style hard floor.
+    Authority checks (hard floor, non-dynamic pins) run before mode-syntax
+    checks so a pinned control fails as forbidden, not merely malformed.
+    """
+    if not isinstance(preference, Mapping):
+        raise TypeError("component preference must be a mapping")
+    if len(preference) > len(COMPONENT_IDS):
+        raise ValueError("component preference exceeds the supported component bound")
+    normalized: dict[str, str] = {}
+    for raw_id, raw_mode in preference.items():
+        if not isinstance(raw_id, str) or not raw_id:
+            raise ValueError("component preference ID is invalid")
+        component_id = raw_id.lower()
+        if component_id not in COMPONENT_IDS:
+            raise ValueError(f"component preference {raw_id!r} is not a CFW component")
+        if not isinstance(raw_mode, str) or not raw_mode:
+            raise ValueError(
+                f"component preference mode for {component_id!r} is invalid")
+        floor_mode = COMPONENT_HARD_FLOOR_MODES.get(component_id)
+        if floor_mode is not None and raw_mode != floor_mode:
+            raise PermissionError(
+                f"component {component_id!r} is a non-overridable hard floor")
+        if (not COMPONENT_DYNAMIC_CONTROL[component_id]
+                and raw_mode != COMPONENT_BASELINE_MODES[component_id]):
+            raise PermissionError(
+                f"component {component_id!r} is not dynamically controllable")
+        if raw_mode not in COMPONENT_ALLOWED_MODES[component_id]:
+            raise ValueError(
+                f"mode {raw_mode!r} is not defined for component {component_id!r}")
+        if component_id in normalized:
+            raise ValueError(
+                f"component preference repeats component {component_id!r}")
+        normalized[component_id] = raw_mode
+    return normalized
+
+
+def get_capability_snapshot(*, behavior_revision: int = 0) -> dict[str, Any]:
+    """Return one bounded, revisioned snapshot of the modifiable runtime controls.
+
+    The host calls this once and caches the result: ``capability_hash``
+    covers every declared control plus ``behavior_revision``, so the host can
+    compare hashes to detect catalog or revision changes. Each entry states
+    its allowed values, whether the host may modify it, its scope, and its
+    lifetime. The snapshot is built only from the canonical catalog and
+    contains fresh plain-dict copies, so host-side mutation can never leak
+    back into the catalog.
+    """
+    if type(behavior_revision) is not int or behavior_revision < 0:
+        raise ValueError("capability snapshot revision must be a non-negative integer")
+    components: dict[str, Any] = {}
+    for component_id in sorted(COMPONENT_IDS):
+        floor_mode = COMPONENT_HARD_FLOOR_MODES.get(component_id)
+        dynamic = bool(COMPONENT_DYNAMIC_CONTROL[component_id])
+        components[component_id] = {
+            "allowed_modes": sorted(COMPONENT_ALLOWED_MODES[component_id]),
+            "baseline_mode": COMPONENT_BASELINE_MODES[component_id],
+            "modifiable": dynamic and floor_mode is None,
+            "dynamic_control": dynamic,
+            "hard_floor": floor_mode is not None,
+            "hard_floor_mode": floor_mode,
+            "model_visibility": COMPONENT_MODEL_VISIBILITY[component_id],
+            "scope": list(COMPONENT_SCOPE[component_id]),
+            "lifetime": {"kind": "overlay-revision",
+                         "source_revision": behavior_revision},
+        }
+    controls: dict[str, Any] = {}
+    for name in sorted(_CONTROL_VALUE_CHOICES):
+        controls[name] = {
+            "allowed_values": sorted(_CONTROL_VALUE_CHOICES[name]),
+            "modifiable": True,
+            "scope": "target-lease",
+            "lifetime": {"kind": "action-index-lease",
+                         "max_target_leases": MAX_EXTERNAL_TARGET_LEASES},
+        }
+    controls["recovery_level"] = {
+        "allowed_values": ["0", "1", "2", "3"],
+        "modifiable": True,
+        "scope": "target-lease",
+        "lifetime": {"kind": "action-index-lease",
+                     "max_target_leases": MAX_EXTERNAL_TARGET_LEASES},
+    }
+    controls["focus_criteria"] = {
+        "allowed_values": None,
+        "value_shape": (f"unique string list, length <= {MAX_FOCUS_CRITERIA}, "
+                        "each entry non-empty and <= 128 chars"),
+        "modifiable": True,
+        "scope": "target-lease",
+        "lifetime": {"kind": "action-index-lease",
+                     "max_target_leases": MAX_EXTERNAL_TARGET_LEASES},
+    }
+    controls["mode"] = {
+        "allowed_values": sorted(_COGNITIVE_MODES),
+        "modifiable": True,
+        "scope": "target-lease",
+        "lifetime": {"kind": "action-index-lease",
+                     "max_target_leases": MAX_EXTERNAL_TARGET_LEASES},
+    }
+    body: dict[str, Any] = {
+        "snapshot_version": CAPABILITY_SNAPSHOT_VERSION,
+        "pipeline_manifest_version": PIPELINE_MANIFEST_VERSION,
+        "pipeline_manifest_hash": PIPELINE_MANIFEST_HASH,
+        "authority": {"kind": "cfw-component-catalog",
+                      "authority_id": "cfw-component-catalog:"
+                                      + PIPELINE_MANIFEST_HASH[:16]},
+        "behavior_revision": behavior_revision,
+        "components": components,
+        "controls": controls,
+        "bounds": {
+            "max_components": len(COMPONENT_IDS),
+            "max_target_leases": MAX_EXTERNAL_TARGET_LEASES,
+            "max_focus_criteria": MAX_FOCUS_CRITERIA,
+            "max_snapshot_bytes": MAX_CAPABILITY_SNAPSHOT_BYTES,
+        },
+    }
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False, allow_nan=False)
+    capability_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    snapshot = {**body, "capability_hash": capability_hash}
+    final = json.dumps(snapshot, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False, allow_nan=False)
+    if len(final.encode("utf-8")) > MAX_CAPABILITY_SNAPSHOT_BYTES:
+        raise RuntimeError("CFW capability snapshot exceeds its bound")
+    return snapshot
 
 
 def build_task_behavior_contract(selected_components: Any) -> dict[str, Any]:
@@ -154,9 +312,8 @@ class AppliedControlLease:
                      or not self.recovery_epoch_id or len(self.recovery_epoch_id) > 128)):
             raise ValueError("applied behavior lease recovery epoch ID is malformed")
         if self.target == "mode":
-            modes = {"RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
-                     "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}
-            if self.applied_value not in modes or self.previous_value not in modes:
+            if (self.applied_value not in _COGNITIVE_MODES
+                    or self.previous_value not in _COGNITIVE_MODES):
                 raise ValueError("applied behavior lease mode is unsupported")
         elif self.target.startswith("framework:"):
             component_id = self.target.split(":", 1)[1].lower()
@@ -172,13 +329,7 @@ class AppliedControlLease:
             if not self.target.startswith("control:"):
                 raise ValueError("applied behavior lease target is not canonical")
             target = self.target.removeprefix("control:")
-            choices = {
-                "verification_intensity": {"passive", "normal", "high", "strict"},
-                "exploration_budget": {"disabled", "low", "normal", "bounded"},
-                "retry_policy": {"normal", "materially_different_only", "no_retry"},
-                "context_strategy": {"standard", "compact", "criterion_focused"},
-                "response_strategy": {"direct", "detailed", "structured"},
-            }
+            choices = _CONTROL_VALUE_CHOICES
             if target == "recovery_level":
                 if (not self.applied_value.isdigit() or not self.previous_value.isdigit()
                         or not 0 <= int(self.applied_value) <= 3
@@ -191,7 +342,7 @@ class AppliedControlLease:
                 except (TypeError, ValueError) as exc:
                     raise ValueError("applied behavior lease focus is malformed") from exc
                 for values in (applied, previous):
-                    if (not isinstance(values, list) or len(values) > 8
+                    if (not isinstance(values, list) or len(values) > MAX_FOCUS_CRITERIA
                             or len(values) != len(set(values))
                             or any(not isinstance(item, str) or not item or len(item) > 128
                                    for item in values)):
@@ -227,9 +378,7 @@ class ExternalBehaviorProjection:
             raise ValueError("external behavior revision is invalid")
         if type(self.host_action_index) is not int or self.host_action_index < 0:
             raise ValueError("external behavior action index is invalid")
-        if self.cognitive_mode not in {
-                "RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
-                "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}:
+        if self.cognitive_mode not in _COGNITIVE_MODES:
             raise ValueError("external cognitive mode is unsupported")
         if not isinstance(self.framework_modes, Mapping):
             raise ValueError("external framework modes are malformed")
@@ -243,18 +392,11 @@ class ExternalBehaviorProjection:
                for key, mode in COMPONENT_HARD_FLOOR_MODES.items()):
             raise PermissionError("external projection lowers a CFW hard floor")
         focus = tuple(self.focus_criteria)
-        if (len(focus) > 8 or len(focus) != len(set(focus))
+        if (len(focus) > MAX_FOCUS_CRITERIA or len(focus) != len(set(focus))
                 or any(not isinstance(item, str) or not item or len(item) > 128
                        for item in focus)):
             raise ValueError("external focus criteria are malformed")
-        choices = {
-            "verification_intensity": {"passive", "normal", "high", "strict"},
-            "exploration_budget": {"disabled", "low", "normal", "bounded"},
-            "retry_policy": {"normal", "materially_different_only", "no_retry"},
-            "context_strategy": {"standard", "compact", "criterion_focused"},
-            "response_strategy": {"direct", "detailed", "structured"},
-        }
-        for name, allowed in choices.items():
+        for name, allowed in _CONTROL_VALUE_CHOICES.items():
             value = getattr(self, name)
             if value not in allowed:
                 raise ValueError(f"external {name} is unsupported")
@@ -354,9 +496,7 @@ class ComponentOverlay:
     def __post_init__(self) -> None:
         if type(self.behavior_revision) is not int or self.behavior_revision < 0:
             raise ValueError("component overlay revision must be non-negative")
-        if self.behavior_mode not in {
-                "RECOVER", "REINSPECT", "DIAGNOSE", "VERIFY",
-                "READY_TO_COMPLETE", "DELIVER", "REPLAN", "BLOCKED"}:
+        if self.behavior_mode not in _COGNITIVE_MODES:
             raise ValueError("component overlay behavior mode is unsupported")
         if not isinstance(self.controls, tuple) or len(self.controls) > len(COMPONENT_IDS):
             raise ValueError("component overlay exceeds the supported component bound")
@@ -467,8 +607,11 @@ class PreparedComponentOverlay:
 
 
 __all__ = ["COMPONENT_IDS", "COMPONENT_MODES", "COMPONENT_ALLOWED_MODES",
-           "COMPONENT_BASELINE_MODES",
+           "COMPONENT_BASELINE_MODES", "COMPONENT_SCOPE",
            "COMPONENT_DYNAMIC_CONTROL", "COMPONENT_HARD_FLOOR_MODES",
            "COMPONENT_MODEL_VISIBILITY", "MAX_EXTERNAL_TARGET_LEASES",
+           "MAX_FOCUS_CRITERIA", "CAPABILITY_SNAPSHOT_VERSION",
+           "MAX_CAPABILITY_SNAPSHOT_BYTES",
            "AppliedControlLease", "ComponentControl", "ComponentOverlay",
-           "ExternalBehaviorProjection", "PreparedComponentOverlay"]
+           "ExternalBehaviorProjection", "PreparedComponentOverlay",
+           "get_capability_snapshot", "validate_component_preference"]

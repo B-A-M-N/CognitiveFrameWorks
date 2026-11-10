@@ -17,6 +17,127 @@ from runtime_session.host_authority import _HostCapability
 from runtime_session.lifecycle import ActionPreflightResult, ActionPreparation, GateDecision
 
 
+#: Block reason class by exact gate reason code. Classes are deliberately
+#: coarse (authority/policy/evidence/capability) so DP learning sees *why* a
+#: category of action was refused without ever seeing tool arguments.
+BLOCK_REASON_CLASSES: dict[str, str] = {
+    "dp.external_behavior_authority_unbound": "authority",
+    "csw.workflow_authority_unavailable": "authority",
+    "ward.authority_membership_stale": "authority",
+    "ward.confirmation_required": "authority",
+    "ward.authority_mismatch": "authority",
+    "ward.outside_scope_action": "authority",
+    "flow.goal_contract_identity_invalid": "authority",
+    "routing_policy.route_suppressed": "policy",
+    "ward.secret_exposure": "policy",
+    "ward.protected_resource": "policy",
+    "ward.outside_scope_write": "policy",
+    "ward.missing_write_target": "policy",
+    "ward.write_policy_denied": "policy",
+    "ward.untrusted_action": "capability",
+    "ward.capability_missing": "capability",
+    "owl.operator_contradiction": "evidence",
+    "owl.verification_action_limited": "evidence",
+    "flow.goal_progress_limit": "evidence",
+    "flow.progress_redirect_duplicate_action": "evidence",
+}
+
+#: Owner-prefix fallback when a structural handler or tool hook mints a
+#: reason code the table above does not name.
+_REASON_CLASS_BY_OWNER: dict[str, str] = {
+    "dp": "authority",
+    "csw": "authority",
+    "ward": "authority",
+    "owl": "evidence",
+    "sispis": "evidence",
+    "fuse": "evidence",
+    "flow": "evidence",
+    "routing_policy": "policy",
+    "cfw": "policy",
+}
+
+_SEMANTIC_BLOCK_PHRASES: dict[str, str] = {
+    "authority": "blocked: host authority not satisfied",
+    "policy": "blocked: host policy denied the action",
+    "evidence": "blocked: required evidence not established",
+    "capability": "blocked: required capability not available",
+}
+
+_MAX_SEMANTIC_REASON_CHARS = 160
+_MAX_LEARNING_REASON_CODES = 8
+
+
+def block_reason_class(reason_code: Any) -> str:
+    """Return the coarse learning class for one gate reason code."""
+    if not isinstance(reason_code, str) or not reason_code:
+        return "policy"
+    exact = BLOCK_REASON_CLASSES.get(reason_code)
+    if exact is not None:
+        return exact
+    owner = reason_code.split(".", 1)[0].lower()
+    return _REASON_CLASS_BY_OWNER.get(owner, "policy")
+
+
+def _sanitized_reason_code(reason_code: Any) -> str:
+    if not isinstance(reason_code, str) or not reason_code:
+        return "unknown"
+    cleaned = "".join(
+        char if char.isascii() and (char.isalnum() or char in "._-") else "_"
+        for char in reason_code.lower())
+    return cleaned[:64] or "unknown"
+
+
+def semantic_block_reason(reason_code: Any, *, limit: int = _MAX_SEMANTIC_REASON_CHARS) -> str:
+    """Return a bounded, argument-free phrase describing one gate refusal.
+
+    The text is static per reason class plus the sanitized reason code, so
+    DP learning receives the semantic shape of the refusal without any
+    private tool arguments, subjects, or digests.
+    """
+    if not isinstance(limit, int) or limit < 16:
+        raise ValueError("semantic reason limit is out of bounds")
+    if reason_code == "cfw.action_policy_allow":
+        phrase = "allowed by host gate"
+        code = "cfw.action_policy_allow"
+    else:
+        phrase = _SEMANTIC_BLOCK_PHRASES.get(
+            block_reason_class(reason_code), _SEMANTIC_BLOCK_PHRASES["policy"])
+        code = _sanitized_reason_code(reason_code)
+    text = f"{phrase} [{code}]"
+    return text[:limit]
+
+
+def gate_learning_summary(result: Any) -> dict[str, Any]:
+    """Export a bounded, argument-free learning summary for one gate result.
+
+    Only the decision, reason codes, their classes, and the semantic reason
+    cross into DP learning. Action digests, request IDs, subjects, and tool
+    arguments never do.
+    """
+    decision = getattr(result, "decision", None)
+    decision_value = decision.value if isinstance(decision, GateDecision) else "unknown"
+    raw_codes = getattr(result, "reason_codes", ())
+    codes = tuple(_sanitized_reason_code(item)
+                  for item in list(raw_codes)[:_MAX_LEARNING_REASON_CODES])
+    raw_classes = getattr(result, "reason_classes", ())
+    classes = tuple(str(item) for item in list(raw_classes)[:_MAX_LEARNING_REASON_CODES])
+    if not classes:
+        classes = tuple(block_reason_class(item) for item in codes)
+    classes = tuple(item if item in _SEMANTIC_BLOCK_PHRASES else "policy"
+                    for item in classes)
+    first = list(raw_codes)[0] if list(raw_codes) else "cfw.action_policy_allow"
+    return {
+        "decision": decision_value,
+        "reason_codes": list(codes),
+        "reason_classes": list(classes),
+        "semantic_reason": semantic_block_reason(first),
+    }
+
+
+def _reason_classes(reason_codes: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(block_reason_class(code) for code in reason_codes)
+
+
 class ActionGateMethods:
     """Authorization methods operating on RuntimeSession's canonical state."""
     def _action_strategy(self) -> Dict[str, Any]:
@@ -330,7 +451,8 @@ class ActionGateMethods:
             decision, reason = self._decision_with_reason(request)
             reasons = (reason,)
         return ActionPreflightResult(request.digest, decision,
-                                     reason_codes=reasons)
+                                     reason_codes=reasons,
+                                     reason_classes=_reason_classes(reasons))
     def prepare_action(self, action: Dict[str, Any] | AgentActionRequest) -> ActionPreparation:
         """Authorize an action and return its unique request ID for its eventual result."""
         return self._prepare_action(action)
@@ -345,7 +467,8 @@ class ActionGateMethods:
             return ActionPreparation(
                 action_request_id, GateDecision.BLOCK, self._descriptor(request),
                 request.digest,
-                reason_codes=("dp.external_behavior_authority_unbound",))
+                reason_codes=("dp.external_behavior_authority_unbound",),
+                reason_classes=("authority",))
         binding: Optional[ActionObjectiveBinding] = None
         if objective_binding is not None:
             self._require_host(capability)
@@ -359,11 +482,13 @@ class ActionGateMethods:
         if request.subject_ref == self.bundle.policy.subject_ref and not self._authoritative_state_ready():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
                                      self._descriptor(request), request.digest,
-                                     reason_codes=("csw.workflow_authority_unavailable",))
+                                     reason_codes=("csw.workflow_authority_unavailable",),
+                                     reason_classes=("authority",))
         if not self._revocation_current() or not self._membership_current():
             return ActionPreparation(action_request_id, GateDecision.BLOCK,
                                      self._descriptor(request), request.digest,
-                                     reason_codes=("ward.authority_membership_stale",))
+                                     reason_codes=("ward.authority_membership_stale",),
+                                     reason_classes=("authority",))
         descriptor = self._descriptor(request)
         decision, gate_reason = self._decision_with_reason(request)
         strategy = self._action_strategy()
@@ -536,6 +661,12 @@ class ActionGateMethods:
             self._journal("action_request_prepared", action_request_id=action_request_id,
                           subject_ref=request.subject_ref, descriptor=descriptor.__dict__,
                           relation=pending_request["relation"])
+        reason_codes = tuple(dict.fromkeys(
+            hook_reasons + [gate_reason]))
+        reason_classes = _reason_classes(reason_codes)
+        summary = gate_learning_summary(ActionPreparation(
+            action_request_id, decision, descriptor, request.digest,
+            reason_codes=reason_codes, reason_classes=reason_classes))
         self._emit_runtime({"category": "action", "event_type": "action_requested",
                    "subject": request.subject_ref,
                    "payload": {"summary": decision.value,
@@ -544,7 +675,10 @@ class ActionGateMethods:
                                "route_type": "tool_policy",
                                "action_request_id": action_request_id,
                                "advice_priority": strategy["priorities"].get(request.binding_id),
-                               "policy_hash": strategy["policy_hash"]}})
+                               "policy_hash": strategy["policy_hash"],
+                               "reason_codes": summary["reason_codes"],
+                               "reason_classes": summary["reason_classes"],
+                               "semantic_reason": summary["semantic_reason"]}})
         if self.lifecycle_workflow.lifecycle is not None:
             prior = set(self.lifecycle_workflow.active_lifecycle)
             self.lifecycle_workflow.lifecycle.on_action(decision, descriptor=descriptor)
@@ -557,10 +691,9 @@ class ActionGateMethods:
             self._journal("confirmation_consumed", grant_id=confirmation.grant_id)
         if decision != GateDecision.ALLOW:
             self.actions.take_pending_request(action_request_id)
-        reason_codes = tuple(dict.fromkeys(
-            hook_reasons + [gate_reason]))
         return ActionPreparation(action_request_id, decision, descriptor, request.digest,
-                                 reason_codes=reason_codes)
+                                 reason_codes=reason_codes,
+                                 reason_classes=reason_classes)
     def before_retry(self, request: Mapping[str, Any] | AgentActionRequest) -> GateDecision:
         """Dispatch retry-specific structural handlers at the host boundary."""
         action = self._request(request)

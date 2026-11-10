@@ -115,7 +115,8 @@ def context_for(session: Any, *, behavior_context: str = "",
     visible_stages = [
         stage for stage in active_stages
         if COMPONENT_MODEL_VISIBILITY.get(
-            str(session.lifecycle_workflow.lifecycle.specs.get(stage, {}).get("owner") or stage).lower(),
+            str(session.lifecycle_workflow.lifecycle.specs.get(stage, {}).get("owner")
+                or stage.split("_", 1)[0]).lower(),
             "none") == "guidance"
     ]
     # Only guidance-visible stages belong in the prompt's pipeline summary.

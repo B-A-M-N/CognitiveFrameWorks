@@ -18,8 +18,11 @@ from runtime_contract.component_control import (COMPONENT_ALLOWED_MODES,
                                                 COMPONENT_HARD_FLOOR_MODES,
                                                 COMPONENT_IDS,
                                                 COMPONENT_MODEL_VISIBILITY,
+                                                MAX_CAPABILITY_SNAPSHOT_BYTES,
                                                 PIPELINE_MANIFEST_HASH,
-                                                PIPELINE_MANIFEST_VERSION)
+                                                PIPELINE_MANIFEST_VERSION,
+                                                get_capability_snapshot,
+                                                validate_component_preference)
 
 
 _SCOPE = re.compile(r"^dp-runtime-[0-9a-f]{64}$")
@@ -141,6 +144,33 @@ class CFWBehaviorAdapter:
                 raise RuntimeError("CFW StateAuthority returned a malformed workflow identity")
             result[statework_id] = dict(identity)
         return result
+
+    def capability_snapshot(self) -> dict[str, Any]:
+        """One host-facing capability snapshot the host can cache and compare.
+
+        Declares which runtime controls are modifiable, their allowed values,
+        scope, and lifetime, plus the current behavior revision and the
+        session authority identity. The catalog half is built by
+        ``runtime_contract.component_control`` — never from DP-supplied data —
+        so a DP/Jev preference cannot reshape it; this method only attaches
+        the live session authority and revision. The JSON encoding is bounded
+        so the host cache entry stays small and comparable by hash.
+        """
+        revision = self._session.external_behavior_revision
+        snapshot = get_capability_snapshot(behavior_revision=revision)
+        identity = self.authority_identity()
+        enriched = {**snapshot,
+                    "authority_id": identity["authority_id"],
+                    "adapter_kind": identity["adapter_kind"],
+                    "adapter_protocol_version": identity["adapter_protocol_version"],
+                    "lifecycle_revision": revision,
+                    "task_behavior_contract_hash":
+                        identity["task_behavior_contract_hash"]}
+        encoded = json.dumps(enriched, sort_keys=True, separators=(",", ":"),
+                             ensure_ascii=False, allow_nan=False)
+        if len(encoded.encode("utf-8")) > MAX_CAPABILITY_SNAPSHOT_BYTES:
+            raise RuntimeError("CFW capability snapshot exceeds its bound")
+        return enriched
 
     @property
     def lifecycle_revision(self) -> int:
@@ -467,14 +497,12 @@ class CFWBehaviorAdapter:
             if target != "mode" or raw_value not in _MODES:
                 raise ValueError("CFW mode directive is unsupported")
         elif operation == "set_framework":
+            # Catalog-level validation (unknown component, unsupported mode,
+            # hard-floor and non-dynamic pins) lives in component_control so
+            # a DP preference can never bypass it or rewrite the catalog.
+            # Only the task-specific baseline floor is checked here.
+            validate_component_preference({target: raw_value})
             component_id = target.lower()
-            if (component_id not in COMPONENT_IDS
-                    or raw_value not in COMPONENT_ALLOWED_MODES[component_id]):
-                raise ValueError("CFW framework directive is unsupported")
-            if (component_id in COMPONENT_HARD_FLOOR_MODES
-                    and raw_value != COMPONENT_HARD_FLOOR_MODES[component_id]):
-                raise PermissionError(
-                    f"DigitalPsychology cannot lower the {component_id.upper()} hard floor")
             if raw_value in self.task_behavior_contract()["suppression_modes"].get(
                     component_id, ()):
                 raise PermissionError(

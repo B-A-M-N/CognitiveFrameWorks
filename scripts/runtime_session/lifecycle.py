@@ -80,6 +80,7 @@ class ActionPreflightResult:
     decision: GateDecision
     authority: str = "cfw_action_gate"
     reason_codes: tuple[str, ...] = ()
+    reason_classes: tuple[str, ...] = ()
 @dataclass(frozen=True)
 class ActionPreparation:
     """One host authorization result and its unique request correlation ID."""
@@ -90,6 +91,7 @@ class ActionPreparation:
     action_digest: str = ""
     authority: str = "cfw_action_gate"
     reason_codes: tuple[str, ...] = ()
+    reason_classes: tuple[str, ...] = ()
 class LifecycleController:
     """Execute pipeline activation metadata at its declared lifecycle point."""
 
@@ -128,7 +130,7 @@ class LifecycleController:
         if leased_value is not None:
             return leased_value
         if (control.expires_at_action is not None
-                and self.action_index >= control.expires_at_action):
+                and self.action_index > control.expires_at_action):
             return COMPONENT_BASELINE_MODES[component_id]
         return control.mode
 
