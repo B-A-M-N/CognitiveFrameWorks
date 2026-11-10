@@ -102,11 +102,11 @@ def check_installed_runtime(runtime_dst: Path, label: str,
         "from digital_psychology_adapter import CFWBehaviorAdapter; "
         "runtime_host = CognitiveRuntime(telemetry_disabled=True); "
         "host = runtime_host.host_handle(session); "
-        "assert host.session_id == session.session_id; "
+        "assert host.session_id == session.identity_authority.identity.session_id; "
         "adapter = CFWBehaviorAdapter(session, runtime_host.agent_handle(session)); "
         "assert adapter.available_component_ids(); "
         "assert session.before_model_call(); "
-        "assert session.current_segment.index == 0; "
+        "assert session.lifecycle_workflow.current_segment_index == 0; "
         "host.close()"
     ) % (str(scripts), str(scripts / "resolve-runtime.py"))
     with tempfile.TemporaryDirectory(prefix="cfw-doctor-") as runtime_dir:
@@ -146,6 +146,12 @@ def check_registry(registry: Path, target: str, problems: list[str], infos: list
         runtime_dst / "scripts" / "digital_psychology_adapter.py",
         runtime_dst / "scripts" / "resolver" / "api.py",
         runtime_dst / "scripts" / "runtime_session" / "session.py",
+        runtime_dst / "scripts" / "runtime_start" / "__init__.py",
+        runtime_dst / "scripts" / "runtime_start" / "authorities.py",
+        runtime_dst / "scripts" / "runtime_start" / "identity.py",
+        runtime_dst / "scripts" / "runtime_start" / "initialization.py",
+        runtime_dst / "scripts" / "runtime_start" / "session_builder.py",
+        runtime_dst / "scripts" / "runtime_start" / "validation.py",
         runtime_dst / "scripts" / "runtime_host" / "__init__.py",
         runtime_dst / "scripts" / "runtime_host" / "session_registry.py",
         runtime_dst / "scripts" / "runtime_host" / "handles.py",

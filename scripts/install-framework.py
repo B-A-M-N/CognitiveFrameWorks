@@ -423,6 +423,7 @@ def _main_impl() -> int:
             shutil.copy2(ROOT / "scripts" / filename, scripts_dst / filename)
         shutil.copytree(ROOT / "scripts" / "resolver", scripts_dst / "resolver")
         shutil.copytree(ROOT / "scripts" / "runtime_session", scripts_dst / "runtime_session")
+        shutil.copytree(ROOT / "scripts" / "runtime_start", scripts_dst / "runtime_start")
         shutil.copytree(ROOT / "scripts" / "runtime_host",
                         scripts_dst / "runtime_host")
         shutil.copytree(ROOT / "scripts" / "runtime_contract",
